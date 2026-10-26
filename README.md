@@ -30,21 +30,28 @@ Use only on networks you own or have explicit written permission to test.
 ## Build
 
 ```bash
-# one-shot bootstrap + static build (detects OS, installs missing deps)
+# one-shot bootstrap + static build + install to /usr/local/bin
 ./install.sh
 
 # or build directly
 go build -o vncshot .
 
 # install.sh options
-./install.sh -y              # non-interactive
-./install.sh --build-only    # skip dependency installation
-./install.sh --install-bin   # also copy binary to /usr/local/bin
+./install.sh -y               # non-interactive
+./install.sh --build-only     # skip dependency installation
+./install.sh --no-install-bin # build only; do not install system-wide
 ```
 
 `install.sh` detects the operating system and package manager (apt, dnf,
 yum, pacman, apk, zypper, brew), installs missing tools only when needed,
-and produces a stripped **statically linked** binary.
+and produces a stripped **statically linked** binary. By default it also
+installs the binary to `/usr/local/bin/vncshot` (using `sudo` when required)
+so it can be run from any directory. Set `INSTALL_PREFIX` to install
+somewhere else.
+
+```bash
+INSTALL_PREFIX="$HOME/.local/bin" ./install.sh -y
+```
 
 There are no runtime external dependencies beyond the Go toolchain used
 for building.
@@ -52,9 +59,9 @@ for building.
 ## Usage
 
 ```bash
-./vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
-./vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
-./vncshot -target 10.0.0.1-50 -pdf report.pdf
+vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
+vncshot -target 10.0.0.1-50 -pdf report.pdf
 ```
 
 | Flag | Default | Description |

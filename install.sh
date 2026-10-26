@@ -7,10 +7,11 @@
 # then produces a stripped static binary.
 #
 # Usage:
-#   ./install.sh              interactive install + build
+#   ./install.sh              interactive install + build + system-wide install
 #   ./install.sh -y           non-interactive
 #   ./install.sh --build-only skip dependency installation
-#   ./install.sh --install-bin also copy the binary into /usr/local/bin
+#   ./install.sh --no-install-bin
+#                             build only, do not install into the binary prefix
 #
 set -euo pipefail
 
@@ -67,21 +68,25 @@ box_row() {
 
 ASSUME_YES=0
 BUILD_ONLY=0
-INSTALL_BIN=0
+INSTALL_BIN=1
 
 usage() {
   cat <<EOF
 Usage: ./install.sh [options]
 
+Builds vncshot and installs the binary into /usr/local/bin by default so it
+can be run from any directory without adjusting PATH.
+
 Options:
   -y, --yes          non-interactive; assume yes on prompts
   --build-only       skip dependency installation, just compile
-  --install-bin      copy the built binary to /usr/local/bin
+  --no-install-bin   build only; do not install into the binary prefix
+  --install-bin      keep the binary install step (default; accepted for compatibility)
   -h, --help         show this help
 
 Environment:
   GO_VERSION         preferred Go release (default: 1.22 or newer required)
-  INSTALL_PREFIX     binary prefix for --install-bin (default: /usr/local/bin)
+  INSTALL_PREFIX     binary install prefix (default: /usr/local/bin)
   NO_COLOR           disable coloured output
 EOF
 }
@@ -91,6 +96,7 @@ while [[ $# -gt 0 ]]; do
     -y|--yes)        ASSUME_YES=1 ;;
     --build-only)    BUILD_ONLY=1 ;;
     --install-bin)   INSTALL_BIN=1 ;;
+    --no-install-bin) INSTALL_BIN=0 ;;
     -h|--help)       usage; exit 0 ;;
     *)               printf 'unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
   esac
@@ -359,19 +365,47 @@ build_static() {
   ok "built $BINARY_PATH (${BINARY_SIZE})"
 }
 
+INSTALLED_BINARY=""
+INSTALLED_ON_PATH=0
+
 install_binary() {
   local prefix="${INSTALL_PREFIX:-/usr/local/bin}"
-  if [[ ! -d "$prefix" ]]; then
-    warn "$prefix does not exist; skipping --install-bin"
+  local target="$prefix/vncshot"
+
+  if [[ "$OS_NAME" == "Windows" ]]; then
+    warn "system-wide install is not supported on $OS_NAME; skipping"
     return
   fi
-  if [[ -w "$prefix" ]]; then
-    cp "$BINARY_PATH" "$prefix/vncshot"
+
+  if [[ -w "$prefix" || ( ! -e "$prefix" && -w "$(dirname -- "$prefix")" ) ]]; then
+    mkdir -p "$prefix"
+    install -m 0755 "$BINARY_PATH" "$target"
+  elif have_cmd sudo && sudo -n true >/dev/null 2>&1; then
+    detail "using sudo to write $target"
+    sudo mkdir -p "$prefix"
+    sudo install -m 0755 "$BINARY_PATH" "$target"
+  elif have_cmd sudo && [[ -t 0 ]]; then
+    detail "elevated permissions required to write $target"
+    sudo mkdir -p "$prefix"
+    sudo install -m 0755 "$BINARY_PATH" "$target"
   else
-    detail "elevated permissions required to write $prefix"
-    sudo cp "$BINARY_PATH" "$prefix/vncshot"
+    err "cannot write $target (no write access; sudo is unavailable or needs a password)"
+    detail "re-run with sudo or set INSTALL_PREFIX to a writable directory"
+    return 1
   fi
-  ok "installed $prefix/vncshot"
+
+  if [[ ! -x "$target" ]]; then
+    err "installation verification failed: $target is not executable"
+    return 1
+  fi
+
+  INSTALLED_BINARY="$target"
+  ok "installed $target"
+  if printf '%s' ":$PATH:" | grep -q ":$prefix:"; then
+    INSTALLED_ON_PATH=1
+  else
+    warn "$prefix is not on PATH; add it to your shell profile to run vncshot directly"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -392,6 +426,9 @@ print_summary() {
   box_row "Package"   "${PKG_MGR:-none}"
   box_row "Binary"    "${BINARY_PATH}"
   box_row "Size"      "${BINARY_SIZE:-n/a}"
+  if [[ -n "$INSTALLED_BINARY" ]]; then
+    box_row "Command"   "$INSTALLED_BINARY"
+  fi
   if [[ ${#DEPS_INSTALLED[@]} -gt 0 ]]; then
     local list
     list="$(printf '%s, ' "${DEPS_INSTALLED[@]}")"
@@ -408,7 +445,14 @@ print_summary() {
   printf "  ${C_CYAN}│${C_RESET} ${C_BOLD}%-13s${C_RESET} ${C_DIM}│${C_RESET} ${color}${C_BOLD}%-46s${C_RESET} ${C_CYAN}│${C_RESET}\n" "Status" "$(echo "$status" | tr '[:lower:]' '[:upper:]')"
   box_bottom
 
-  printf "\n  ${C_DIM}Run it with:${C_RESET} ${C_BOLD}./vncshot -h${C_RESET}\n"
+  if [[ -n "$INSTALLED_BINARY" && "$INSTALLED_ON_PATH" -eq 1 ]]; then
+    printf "\n  ${C_DIM}Run it from anywhere with:${C_RESET} ${C_BOLD}vncshot -h${C_RESET}\n"
+  elif [[ -n "$INSTALLED_BINARY" ]]; then
+    printf "\n  ${C_DIM}Run it with:${C_RESET} ${C_BOLD}%s -h${C_RESET}\n" "$INSTALLED_BINARY"
+  else
+    printf "\n  ${C_DIM}Run it with:${C_RESET} ${C_BOLD}./vncshot -h${C_RESET}\n"
+  fi
+
   printf "  ${C_DIM}Developer: Cuma KURT  ·  cumakurt@gmail.com${C_RESET}\n"
   printf "  ${C_DIM}github.com/cumakurt/vncshot  ·  linkedin.com/in/cuma-kurt-34414917${C_RESET}\n"
   printf "  ${C_DIM}Authorized use only — scan networks you own or have written permission to test.${C_RESET}\n\n"
@@ -422,6 +466,9 @@ main() {
   banner
 
   local total=3
+  if [[ "$INSTALL_BIN" -eq 1 ]]; then
+    total=4
+  fi
 
   step 1 "$total" "Detecting operating system"
   detect_os
@@ -454,7 +501,8 @@ main() {
   build_static
 
   if [[ "$INSTALL_BIN" -eq 1 ]]; then
-    install_binary
+    step 4 "$total" "Installing binary"
+    install_binary || fail "binary installation failed"
   fi
 
   print_summary "success"

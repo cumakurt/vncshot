@@ -30,30 +30,37 @@ Bu aracı yalnızca sahibi olduğunuz veya yazılı izniniz olan ağlarda kullan
 ## Derleme
 
 ```bash
-# tek adımda önyükleme + statik derleme (OS algılar, eksik bağımlılıkları kurar)
+# tek adımda önyükleme + statik derleme + /usr/local/bin kurulumu
 ./install.sh
 
 # veya doğrudan derle
 go build -o vncshot .
 
 # install.sh seçenekleri
-./install.sh -y              # etkileşimsiz
-./install.sh --build-only    # bağımlılık kurulumunu atla
-./install.sh --install-bin   # ikili dosyayı /usr/local/bin'e de kopyala
+./install.sh -y               # etkileşimsiz
+./install.sh --build-only     # bağımlılık kurulumunu atla
+./install.sh --no-install-bin # sadece derle, sisteme kurma
 ```
 
 `install.sh` işletim sistemini ve paket yöneticisini (apt, dnf, yum,
 pacman, apk, zypper, brew) algılar; yalnızca eksik olan araçları kurar ve
-**statik bağlanmış** (statically linked) bir ikili üretir.
+**statik bağlanmış** (statically linked) bir ikili üretir. Varsayılan olarak
+ikili dosyayı `/usr/local/bin/vncshot` altına da kurar (gerekirse `sudo`
+kullanır); böylece her dizinden `vncshot` olarak çalıştırılabilir. Farklı bir
+konum için `INSTALL_PREFIX` kullanılabilir.
+
+```bash
+INSTALL_PREFIX="$HOME/.local/bin" ./install.sh -y
+```
 
 Derleme için gereken Go toolchain dışında çalışma zamanı harici bağımlılık yoktur.
 
 ## Kullanım
 
 ```bash
-./vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
-./vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
-./vncshot -target 10.0.0.1-50 -pdf report.pdf
+vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
+vncshot -target 10.0.0.1-50 -pdf report.pdf
 ```
 
 | Bayrak | Varsayılan | Açıklama |
