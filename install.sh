@@ -38,7 +38,6 @@ fi
 
 readonly RULE="────────────────────────────────────────────────────────────────"
 
-info()    { printf "  ${C_CYAN}•${C_RESET} %s\n" "$*"; }
 step()    { printf "\n  ${C_BOLD}${C_BLUE}[%s/%s]${C_RESET} ${C_BOLD}%s${C_RESET}\n" "$1" "$2" "$3"; }
 detail()  { printf "      ${C_DIM}%s${C_RESET}\n" "$*"; }
 ok()      { printf "      ${C_GREEN}✓${C_RESET} %s\n" "$*"; }
@@ -49,17 +48,13 @@ fail()    { err "$*"; exit 1; }
 banner() {
   printf "\n"
   printf "  ${C_BG_BLUE}${C_WHITE}${C_BOLD}  vncshot  ${C_RESET}  ${C_DIM}security inventory toolkit${C_RESET}\n"
-  printf "  ${C_DIM}%s${C_RESET}\n" "$RULE"
+  printf "  ${C_CYAN}%s${C_RESET}\n" "$RULE"
   printf "  ${C_DIM}Cuma KURT  ·  cumakurt@gmail.com  ·  github.com/cumakurt/vncshot${C_RESET}\n"
 }
 
-box_top()    { printf "  ${C_CYAN}┌%s┐${C_RESET}\n" "$RULE"; }
-box_bottom() { printf "  ${C_CYAN}└%s┘${C_RESET}\n" "$RULE"; }
-box_rule()   { printf "  ${C_CYAN}├%s┤${C_RESET}\n" "$RULE"; }
-box_row() {
-  # Fixed-width columns keep the right border aligned with the rule.
+kv() {
   local label="$1" value="$2"
-  printf "  ${C_CYAN}│${C_RESET} ${C_BOLD}%-13s${C_RESET} ${C_DIM}│${C_RESET} %-46s ${C_CYAN}│${C_RESET}\n" "$label" "$value"
+  printf "    ${C_DIM}%-12s${C_RESET} %s\n" "$label" "$value"
 }
 
 # ---------------------------------------------------------------------------
@@ -74,19 +69,20 @@ usage() {
   cat <<EOF
 Usage: ./install.sh [options]
 
-Builds vncshot and installs the binary into /usr/local/bin by default so it
-can be run from any directory without adjusting PATH.
+Builds vncshot, installs the binary into /usr/local/bin and creates the
+/usr/local/vncshot report directory so scans can be run from any directory.
 
 Options:
   -y, --yes          non-interactive; assume yes on prompts
   --build-only       skip dependency installation, just compile
-  --no-install-bin   build only; do not install into the binary prefix
+  --no-install-bin   build only; do not install binary or report directory
   --install-bin      keep the binary install step (default; accepted for compatibility)
   -h, --help         show this help
 
 Environment:
   GO_VERSION         preferred Go release (default: 1.22 or newer required)
   INSTALL_PREFIX     binary install prefix (default: /usr/local/bin)
+  REPORT_DIR         root for timestamped report folders (default: /usr/local/vncshot)
   NO_COLOR           disable coloured output
 EOF
 }
@@ -117,6 +113,7 @@ GO_BIN=""
 GO_VERSION_STR=""
 BINARY_PATH="$SCRIPT_DIR/vncshot"
 BINARY_SIZE=""
+REPORT_DIR="${REPORT_DIR:-/usr/local/vncshot}"
 DEPS_INSTALLED=()
 DEPS_PRESENT=()
 
@@ -336,7 +333,7 @@ human_size() {
 }
 
 build_static() {
-  local ldflags="-s -w -X main.version=${VERSION:-dev}"
+  local ldflags="-s -w -X main.version=${VERSION:-dev} -X main.reportBaseDir=${REPORT_DIR}"
   # CGO off + -trimpath yields a portable static binary.
   if ! CGO_ENABLED=0 "$GO_BIN" build \
       -trimpath \
@@ -368,6 +365,20 @@ build_static() {
 INSTALLED_BINARY=""
 INSTALLED_ON_PATH=0
 
+# run_privileged runs a command as root directly when possible, otherwise
+# through sudo. Returns non-zero when no privileged path is available.
+run_privileged() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  elif have_cmd sudo && [[ -t 0 ]]; then
+    sudo "$@"
+  elif have_cmd sudo && sudo -n true >/dev/null 2>&1; then
+    sudo -n "$@"
+  else
+    return 1
+  fi
+}
+
 install_binary() {
   local prefix="${INSTALL_PREFIX:-/usr/local/bin}"
   local target="$prefix/vncshot"
@@ -380,14 +391,8 @@ install_binary() {
   if [[ -w "$prefix" || ( ! -e "$prefix" && -w "$(dirname -- "$prefix")" ) ]]; then
     mkdir -p "$prefix"
     install -m 0755 "$BINARY_PATH" "$target"
-  elif have_cmd sudo && sudo -n true >/dev/null 2>&1; then
-    detail "using sudo to write $target"
-    sudo mkdir -p "$prefix"
-    sudo install -m 0755 "$BINARY_PATH" "$target"
-  elif have_cmd sudo && [[ -t 0 ]]; then
-    detail "elevated permissions required to write $target"
-    sudo mkdir -p "$prefix"
-    sudo install -m 0755 "$BINARY_PATH" "$target"
+  elif run_privileged mkdir -p "$prefix" && run_privileged install -m 0755 "$BINARY_PATH" "$target"; then
+    detail "installed with elevated permissions"
   else
     err "cannot write $target (no write access; sudo is unavailable or needs a password)"
     detail "re-run with sudo or set INSTALL_PREFIX to a writable directory"
@@ -408,6 +413,27 @@ install_binary() {
   fi
 }
 
+prepare_report_dir() {
+  if [[ -d "$REPORT_DIR" ]]; then
+    ok "report directory $REPORT_DIR"
+    return 0
+  fi
+  local parent
+  parent="$(dirname -- "$REPORT_DIR")"
+  if [[ "$(id -u)" -eq 0 || ( -d "$parent" && -w "$parent" ) ]]; then
+    if mkdir -p "$REPORT_DIR" && chmod 0755 "$REPORT_DIR"; then
+      ok "created report directory $REPORT_DIR"
+      return 0
+    fi
+  elif run_privileged mkdir -p "$REPORT_DIR" && run_privileged chmod 0755 "$REPORT_DIR"; then
+    ok "created report directory $REPORT_DIR"
+    return 0
+  fi
+  err "cannot create $REPORT_DIR (no write access; sudo is unavailable or needs a password)"
+  detail "re-run with sudo or set REPORT_DIR to a writable directory"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -418,44 +444,40 @@ print_summary() {
   [[ "$status" != "success" ]] && color="$C_YELLOW"
 
   printf "\n"
-  box_top
-  printf "  ${C_CYAN}│${C_RESET} ${C_BOLD}%-62s${C_RESET} ${C_CYAN}│${C_RESET}\n" "vncshot installation summary"
-  box_rule
-  box_row "OS"        "$OS_NAME / $OS_ARCH"
-  box_row "Go"        "${GO_VERSION_STR:-not found}"
-  box_row "Package"   "${PKG_MGR:-none}"
-  box_row "Binary"    "${BINARY_PATH}"
-  box_row "Size"      "${BINARY_SIZE:-n/a}"
-  if [[ -n "$INSTALLED_BINARY" ]]; then
-    box_row "Command"   "$INSTALLED_BINARY"
+  if [[ "$status" == "success" ]]; then
+    printf "  ${color}${C_BOLD}Installation complete${C_RESET}\n"
+  else
+    printf "  ${color}${C_BOLD}Installation %s${C_RESET}\n" "$(echo "$status" | tr '[:lower:]' '[:upper:]')"
   fi
+
+  kv "Binary"    "${INSTALLED_BINARY:-$BINARY_PATH}"
+  kv "Reports"   "$REPORT_DIR"
+  kv "Size"      "${BINARY_SIZE:-n/a}"
+  kv "Go"        "${GO_VERSION_STR:-not found}"
+  kv "OS"        "$OS_NAME / $OS_ARCH"
   if [[ ${#DEPS_INSTALLED[@]} -gt 0 ]]; then
     local list
     list="$(printf '%s, ' "${DEPS_INSTALLED[@]}")"
-    box_row "Installed" "${list%, }"
-  else
-    box_row "Installed" "nothing — all requirements already satisfied"
+    kv "Installed" "${list%, }"
   fi
   if [[ ${#DEPS_PRESENT[@]} -gt 0 ]]; then
     local present
     present="$(printf '%s, ' "${DEPS_PRESENT[@]}")"
-    box_row "Reused"    "${present%, }"
+    kv "Reused"    "${present%, }"
   fi
-  box_rule
-  printf "  ${C_CYAN}│${C_RESET} ${C_BOLD}%-13s${C_RESET} ${C_DIM}│${C_RESET} ${color}${C_BOLD}%-46s${C_RESET} ${C_CYAN}│${C_RESET}\n" "Status" "$(echo "$status" | tr '[:lower:]' '[:upper:]')"
-  box_bottom
 
+  printf "\n"
   if [[ -n "$INSTALLED_BINARY" && "$INSTALLED_ON_PATH" -eq 1 ]]; then
-    printf "\n  ${C_DIM}Run it from anywhere with:${C_RESET} ${C_BOLD}vncshot -h${C_RESET}\n"
+    printf "  ${C_DIM}Run:${C_RESET} ${C_BOLD}sudo vncshot -target 192.168.1.0/24${C_RESET}\n"
   elif [[ -n "$INSTALLED_BINARY" ]]; then
-    printf "\n  ${C_DIM}Run it with:${C_RESET} ${C_BOLD}%s -h${C_RESET}\n" "$INSTALLED_BINARY"
+    printf "  ${C_DIM}Run:${C_RESET} ${C_BOLD}sudo %s -target 192.168.1.0/24${C_RESET}\n" "$INSTALLED_BINARY"
   else
-    printf "\n  ${C_DIM}Run it with:${C_RESET} ${C_BOLD}./vncshot -h${C_RESET}\n"
+    printf "  ${C_DIM}Run:${C_RESET} ${C_BOLD}sudo ./vncshot -target 192.168.1.0/24${C_RESET}\n"
   fi
-
+  printf "  ${C_DIM}vncshot requires root privileges for raw RFB probing.${C_RESET}\n"
+  printf "  ${C_DIM}%s${C_RESET}\n" "$RULE"
   printf "  ${C_DIM}Developer: Cuma KURT  ·  cumakurt@gmail.com${C_RESET}\n"
-  printf "  ${C_DIM}github.com/cumakurt/vncshot  ·  linkedin.com/in/cuma-kurt-34414917${C_RESET}\n"
-  printf "  ${C_DIM}Authorized use only — scan networks you own or have written permission to test.${C_RESET}\n\n"
+  printf "  ${C_DIM}github.com/cumakurt/vncshot  ·  linkedin.com/in/cuma-kurt-34414917${C_RESET}\n\n"
 }
 
 # ---------------------------------------------------------------------------
@@ -467,7 +489,7 @@ main() {
 
   local total=3
   if [[ "$INSTALL_BIN" -eq 1 ]]; then
-    total=4
+    total=5
   fi
 
   step 1 "$total" "Detecting operating system"
@@ -503,6 +525,9 @@ main() {
   if [[ "$INSTALL_BIN" -eq 1 ]]; then
     step 4 "$total" "Installing binary"
     install_binary || fail "binary installation failed"
+
+    step 5 "$total" "Preparing report directory"
+    prepare_report_dir || fail "report directory setup failed"
   fi
 
   print_summary "success"

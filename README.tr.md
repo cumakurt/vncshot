@@ -49,19 +49,38 @@ ikili dosyayı `/usr/local/bin/vncshot` altına da kurar (gerekirse `sudo`
 kullanır); böylece her dizinden `vncshot` olarak çalıştırılabilir. Farklı bir
 konum için `INSTALL_PREFIX` kullanılabilir.
 
+Kurulum ayrıca tarama çıktılarının kök dizini olan `/usr/local/vncshot`
+dizinini oluşturur. İki konum da ortam değişkenleriyle değiştirilebilir:
+
 ```bash
-INSTALL_PREFIX="$HOME/.local/bin" ./install.sh -y
+INSTALL_PREFIX="$HOME/.local/bin" REPORT_DIR="$HOME/vncshot" ./install.sh -y
 ```
 
-Derleme için gereken Go toolchain dışında çalışma zamanı harici bağımlılık yoktur.
+Rapor kök dizini derleme sırasında ikilinin içine gömülür; böylece kurulu
+ikili ile dizin yapısı her zaman tutarlı kalır. Derleme için gereken Go
+toolchain dışında çalışma zamanı harici bağımlılık yoktur.
+
+## Yetkiler
+
+`vncshot` root yetkisi olmadan çalışmayı reddeder:
+
+```bash
+sudo vncshot -target 192.168.1.0/24
+```
+
+Bu kontrol uygulama başlarken yapılır; yarım çalışan bir tarama yerine
+aksiyon alınabilir bir hata ile çıkılır.
 
 ## Kullanım
 
 ```bash
-vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
-vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
-vncshot -target 10.0.0.1-50 -pdf report.pdf
+sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+sudo vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
+sudo vncshot -target 10.0.0.1-50 -out-dir /root/assessments
 ```
+
+Parametresiz çalıştırıldığında yalnızca kullanım metni (yasal uyarı olmadan)
+yazdırılır ve tarama başlatılmaz.
 
 | Bayrak | Varsayılan | Açıklama |
 |--------|------------|----------|
@@ -72,25 +91,40 @@ vncshot -target 10.0.0.1-50 -pdf report.pdf
 | `-vnc-timeout` | `15s` | Toplam RFB handshake/yakalama bütçesi |
 | `-workers` | `150` | Eşzamanlı tarama worker sayısı |
 | `-rate` | `200` | Saniyede en fazla yeni bağlantı (`0` = sınırsız) |
-| `-output` | `vncshot_report.json` | JSON rapor yolu |
-| `-html` | `vncshot_report.html` | HTML rapor yolu |
-| `-pdf` | `vncshot_report.pdf` | PDF rapor yolu (süreç içinde üretilir) |
+| `-out-dir` | `/usr/local/vncshot` | Zaman damgalı tarama klasörlerinin kök dizini |
+| `-output` | `<run-dir>/vncshot_report.json` | JSON rapor yolu |
+| `-html` | `<run-dir>/vncshot_report.html` | HTML rapor yolu |
+| `-pdf` | `<run-dir>/vncshot_report.pdf` | PDF rapor yolu (süreç içinde üretilir) |
 | `-no-pdf` | `false` | PDF üretimini atla |
-| `-screenshot-dir` | `screenshots` | PNG yakalamaların kaydedileceği dizin |
+| `-screenshot-dir` | `<run-dir>/screenshots` | PNG yakalamaların kaydedileceği dizin |
 | `-shared` | `true` | Paylaşımlı RFB oturumu iste (aktif izleyicileri düşürmez) |
 | `-yes` | `false` | Etkileşimli yetki onayını atla |
 
 ## Çıktılar
 
-* `screenshots/{ip}_{port}_{timestamp}.png` — parolasız sunucuların ekran görüntüsü
+Her tarama kendi zaman damgalı klasörüne yazılır; taramalar birbirinin
+üzerine yazmaz:
+
+```
+/usr/local/vncshot/20261026-205304/
+├── screenshots/{ip}_{port}_{timestamp}.png
+├── vncshot_report.json
+├── vncshot_report.html
+└── vncshot_report.pdf
+```
+
+* `screenshots/` — parolasız sunucuların ekran görüntüleri
 * `vncshot_report.json` — tüm sonuç kümesi
 * `vncshot_report.html` — kendi içinde çalışan rapor (gömülü thumbnail, filtre, modal)
 * `vncshot_report.pdf` — tarama sonuçlarından süreç içinde üretilen PDF rapor
 
+`-output`, `-html`, `-pdf` ve `-screenshot-dir` için verilen göreli yollar
+tarama klasörü içinde çözümlenir; mutlak yollar olduğu gibi kullanılır.
+
 ## Paket yapısı
 
 ```
-main.go        CLI bağlantısı + yasal uyarı
+main.go        CLI bağlantısı, root denetimi, rapor dizini yönetimi
 scanner/       hedef genişletme, worker pool, rate limit
 vnc/           RFB 3.3/3.7/3.8 istemcisi, None-auth tespiti, raw yakalama
 screenshot/    PNG kaydetme

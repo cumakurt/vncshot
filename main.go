@@ -22,8 +22,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -35,69 +38,17 @@ import (
 const (
 	appName = "vncshot"
 
-	authorizationNotice = `
-========================================================================
-  vncshot — VNC Security Inventory          LEGAL DISCLAIMER / YASAL UYARI
-========================================================================
-
-  EN — AUTHORIZED USE ONLY
-  This software is published for authorized security testing, defensive
-  research and education. You must scan only networks and systems you
-  own or for which you hold explicit written authorization.
-
-  Unauthorized access to, or interception of, computer systems is a
-  criminal offence in most jurisdictions. You alone are solely and
-  exclusively responsible for ensuring that your use of this software
-  complies with all applicable local, national and international law.
-
-  NO LIABILITY OF THE DEVELOPER
-  The developer (Cuma KURT) shall NOT be held liable, under any
-  circumstances and to the maximum extent permitted by applicable law,
-  for any damage, loss of data, loss of profit, business interruption,
-  legal claim, administrative or criminal proceeding, penalty, fine, or
-  any other direct, indirect, incidental, special, consequential or
-  punitive liability arising out of or in connection with the use,
-  misuse, inability to use, or reliance upon this software, even if the
-  developer has been advised of the possibility of such damages.
-
-  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-  NONINFRINGEMENT. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF
-  THE SOFTWARE IS WITH YOU.
-
-  TR — YALNIZCA YETKILI KULLANIM
-  Bu yazılım yalnızca yetkili güvenlik testleri, savunma amaçlı araştırma
-  ve eğitim amacıyla yayımlanmıştır. Yalnızca sahibi olduğunuz ya da açık
-  yazılı yetkiniz bulunan ağ ve sistemleri tarayabilirsiniz.
-
-  Yetkisiz erişim veya dinleme, çoğu yargı alanında suç teşkil eder.
-  Kullanımınızın tüm yürürlükteki yerel, ulusal ve uluslararası
-  mevzuata uygun olduğunu sağlamak yalnızca sizin sorumluluğunuzdadır.
-
-  GELİŞTİRİCİNİN SORUMLULUĞU REDDEDİLİR
-  Geliştirici (Cuma KURT), yazılımın kullanımından, kötüye
-  kullanımından, kullanılamamasından ya da güvenilmesinden doğabilecek
-  hiçbir zarar, veri kaybı, kâr kaybı, iş kesintisi, hukuki talep, idari
-  ya da cezai yaptırım, para cezası veya dolaylı/sonuçsal hiçbir
-  sorumluluk için, hiçbir koşulda ve yürürlükteki mevzuatın izin verdiği
-  azami ölçüde, sorumlu tutulamaz.
-
-  YAZILIM "OLDUĞU GİBİ", AÇIK VEYA ZIMNİ HİÇBİR GARANTİ OLMAKSIZIN
-  SUNULMUŞTUR; SATILABİLİRLİK, BELİRLİ BİR AMACA UYGUNLUK VE İHLAL
-  ETMEME GARANTİLERİ DAHİL ANCAK BUNLARLA SINIRLI OLMAMAK ÜZERE HİÇBİR
-  GARANTİ VERMEZ.
-
-  By running this tool you are deemed to have read, understood and
-  accepted this disclaimer. Aracı çalıştırarak bu beyanı okuduğunuzu,
-  anladığınızı ve kabul ettiğinizi beyan etmiş sayılırsınız.
-
-  Developer / Geliştirici: Cuma KURT <cumakurt@gmail.com>
-  https://github.com/cumakurt/vncshot
-  License / Lisans: GPL-3.0
-========================================================================
-`
+	// runTimestampLayout names each scan run directory.
+	runTimestampLayout = "20060102-150405"
 )
+
+// reportBaseDir is the root for timestamped run directories. install.sh
+// overrides it at build time via -ldflags so the installed binary and the
+// installed directory tree always agree.
+var reportBaseDir = "/usr/local/vncshot"
+
+// version is injected at build time (-ldflags "-X main.version=...").
+var version = "dev"
 
 type config struct {
 	target        string
@@ -107,6 +58,8 @@ type config struct {
 	vncTimeout    time.Duration
 	workers       int
 	rate          int
+	outDir        string
+	outDirSet     bool
 	output        string
 	html          string
 	pdf           string
@@ -117,7 +70,20 @@ type config struct {
 }
 
 func main() {
+	// Running the tool without arguments is a request for usage, not a scan.
+	if len(os.Args) == 1 {
+		printUsage(os.Stdout)
+		return
+	}
+
 	cfg := parseFlags()
+
+	// Raw RFB probing and the shared report tree require root privileges;
+	// fail fast instead of producing a half-working scan.
+	if err := requireRoot(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 
 	if err := run(cfg); err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -139,33 +105,44 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.vncTimeout, "vnc-timeout", 15*time.Second, "per-operation RFB handshake/capture timeout")
 	flag.IntVar(&cfg.workers, "workers", 150, "concurrent scan workers")
 	flag.IntVar(&cfg.rate, "rate", 200, "max new connections per second (0 = unlimited)")
-	flag.StringVar(&cfg.output, "output", appName+"_report.json", "JSON report path")
-	flag.StringVar(&cfg.html, "html", appName+"_report.html", "HTML report path")
-	flag.StringVar(&cfg.pdf, "pdf", appName+"_report.pdf", "PDF report path")
+	flag.StringVar(&cfg.outDir, "out-dir", reportBaseDir, "root directory for timestamped report folders")
+	flag.StringVar(&cfg.output, "output", "", "JSON report path (default <run-dir>/"+appName+"_report.json)")
+	flag.StringVar(&cfg.html, "html", "", "HTML report path (default <run-dir>/"+appName+"_report.html)")
+	flag.StringVar(&cfg.pdf, "pdf", "", "PDF report path (default <run-dir>/"+appName+"_report.pdf)")
 	flag.BoolVar(&cfg.noPDF, "no-pdf", false, "skip PDF generation")
-	flag.StringVar(&cfg.screenshotDir, "screenshot-dir", "screenshots", "directory for PNG captures")
+	flag.StringVar(&cfg.screenshotDir, "screenshot-dir", "", "directory for PNG captures (default <run-dir>/screenshots)")
 	flag.BoolVar(&cfg.shared, "shared", true, "request shared RFB session (does not kick active viewers)")
 	flag.BoolVar(&cfg.assumeYes, "yes", false, "skip the interactive authorization confirmation")
 
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags]\n\n", appName)
-		fmt.Fprintf(flag.CommandLine.Output(), "%s inventories VNC/RFB endpoints and captures framebuffers\n", appName)
-		fmt.Fprintf(flag.CommandLine.Output(), "from servers that allow unauthenticated access.\n\n")
-		fmt.Fprintln(flag.CommandLine.Output(), "Developer: Cuma KURT <cumakurt@gmail.com>")
-		fmt.Fprintln(flag.CommandLine.Output(), "https://github.com/cumakurt/vncshot")
-		fmt.Fprintln(flag.CommandLine.Output(), "https://www.linkedin.com/in/cuma-kurt-34414917/")
-		fmt.Fprintln(flag.CommandLine.Output(), "\nFlags:")
-		flag.PrintDefaults()
-		fmt.Fprint(flag.CommandLine.Output(), authorizationNotice)
-	}
+	flag.Usage = func() { printUsage(flag.CommandLine.Output()) }
 	flag.Parse()
+
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "out-dir" {
+			cfg.outDirSet = true
+		}
+	})
 
 	return cfg
 }
 
-func run(cfg config) error {
-	fmt.Fprint(os.Stderr, authorizationNotice)
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, "%s %s — VNC security inventory scanner\n\n", appName, version)
+	fmt.Fprintf(w, "Usage:\n")
+	fmt.Fprintf(w, "  sudo %s -target <IP|CIDR|range> [flags]\n", appName)
+	fmt.Fprintf(w, "  sudo %s -file <path> [flags]\n\n", appName)
+	fmt.Fprintf(w, "Probes VNC/RFB endpoints, flags passwordless servers and captures\n")
+	fmt.Fprintf(w, "their framebuffers. Each scan writes JSON, HTML and PDF reports plus\n")
+	fmt.Fprintf(w, "PNG screenshots into a timestamped folder under -out-dir.\n\n")
+	fmt.Fprintf(w, "%s must run as root (directly or via sudo).\n\n", appName)
+	fmt.Fprintf(w, "Flags:\n")
+	flag.PrintDefaults()
+	fmt.Fprintf(w, "\nDeveloper: Cuma KURT <cumakurt@gmail.com>\n")
+	fmt.Fprintf(w, "https://github.com/cumakurt/vncshot\n")
+	fmt.Fprintf(w, "https://www.linkedin.com/in/cuma-kurt-34414917/\n")
+}
 
+func run(cfg config) error {
 	if !cfg.assumeYes {
 		ok, err := confirmAuthorization()
 		if err != nil {
@@ -186,8 +163,22 @@ func run(cfg config) error {
 		return err
 	}
 
+	runDir, err := prepareRunDir(cfg)
+	if err != nil {
+		return err
+	}
+
+	cfg.output = resolveArtifactPath(cfg.output, runDir, appName+"_report.json")
+	cfg.html = resolveArtifactPath(cfg.html, runDir, appName+"_report.html")
+	cfg.pdf = resolveArtifactPath(cfg.pdf, runDir, appName+"_report.pdf")
+	cfg.screenshotDir = resolveArtifactPath(cfg.screenshotDir, runDir, "screenshots")
+	if err := os.MkdirAll(cfg.screenshotDir, 0o755); err != nil {
+		return fmt.Errorf("create screenshot directory: %w", err)
+	}
+
 	fmt.Fprintf(os.Stderr, "targets: %d host:port pairs | ports: %s | workers: %d | rate: %s\n",
 		len(targets), cfg.ports, cfg.workers, rateText(cfg.rate))
+	fmt.Fprintf(os.Stderr, "report directory: %s\n", runDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -217,8 +208,6 @@ func run(cfg config) error {
 			// PDF is a convenience artifact; a render failure must not
 			// discard the scan itself.
 			fmt.Fprintf(os.Stderr, "warning: pdf generation skipped: %v\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "pdf report: %s\n", cfg.pdf)
 		}
 	}
 
@@ -231,8 +220,65 @@ func run(cfg config) error {
 	fmt.Fprintf(os.Stderr, "errors:       %d\n", sum.Errors)
 	fmt.Fprintf(os.Stderr, "json:  %s\n", cfg.output)
 	fmt.Fprintf(os.Stderr, "html:  %s\n", cfg.html)
+	if !cfg.noPDF && cfg.pdf != "" {
+		fmt.Fprintf(os.Stderr, "pdf:   %s\n", cfg.pdf)
+	}
 
 	return scanErr
+}
+
+// prepareRunDir creates the timestamped folder that holds every artifact of
+// this scan. When the default base directory is not writable (for example
+// when running from a source checkout without install.sh), it falls back to
+// a per-user data directory so a scan is never lost to a permissions error.
+func prepareRunDir(cfg config) (string, error) {
+	runDir, err := createRunDir(cfg.outDir)
+	if err == nil {
+		return runDir, nil
+	}
+	if cfg.outDirSet {
+		return "", err
+	}
+
+	fallback := fallbackReportBase()
+	if fallback == "" {
+		return "", err
+	}
+	runDir, fallbackErr := createRunDir(fallback)
+	if fallbackErr != nil {
+		return "", err
+	}
+	fmt.Fprintf(os.Stderr, "warning: %v; writing reports to %s\n", err, fallback)
+	return runDir, nil
+}
+
+func createRunDir(base string) (string, error) {
+	runDir := filepath.Join(base, time.Now().Format(runTimestampLayout))
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return "", fmt.Errorf("create report directory %s: %w", runDir, err)
+	}
+	return runDir, nil
+}
+
+func fallbackReportBase() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", appName)
+}
+
+// resolveArtifactPath keeps default artifacts inside the run directory while
+// honouring explicit absolute paths and treating relative overrides as
+// relative to the run directory.
+func resolveArtifactPath(value, runDir, fallback string) string {
+	if value == "" {
+		return filepath.Join(runDir, fallback)
+	}
+	if filepath.IsAbs(value) {
+		return value
+	}
+	return filepath.Join(runDir, value)
 }
 
 func rateText(rate int) string {
@@ -240,6 +286,22 @@ func rateText(rate int) string {
 		return "unlimited"
 	}
 	return fmt.Sprintf("%d/s", rate)
+}
+
+// requireRoot enforces privileged execution. Raw RFB probing and the shared
+// report tree under /usr/local/vncshot both assume root, so running
+// unprivileged would either fail halfway or silently write to a fallback
+// location.
+func requireRoot() error {
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX effective UID; installing and running there
+		// already requires an elevated shell.
+		return nil
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("root privileges required; re-run with sudo")
+	}
+	return nil
 }
 
 // confirmAuthorization makes the operator acknowledge that the scan is

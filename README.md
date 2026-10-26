@@ -44,25 +44,43 @@ go build -o vncshot .
 
 `install.sh` detects the operating system and package manager (apt, dnf,
 yum, pacman, apk, zypper, brew), installs missing tools only when needed,
-and produces a stripped **statically linked** binary. By default it also
-installs the binary to `/usr/local/bin/vncshot` (using `sudo` when required)
-so it can be run from any directory. Set `INSTALL_PREFIX` to install
-somewhere else.
+and produces a stripped **statically linked** binary. By default it also:
+
+* installs the binary to `/usr/local/bin/vncshot` (using `sudo` when required)
+  so it can be run from any directory, and
+* creates `/usr/local/vncshot`, the root directory for scan output.
+
+Both locations can be changed with `INSTALL_PREFIX` and `REPORT_DIR`:
 
 ```bash
-INSTALL_PREFIX="$HOME/.local/bin" ./install.sh -y
+INSTALL_PREFIX="$HOME/.local/bin" REPORT_DIR="$HOME/vncshot" ./install.sh -y
 ```
 
-There are no runtime external dependencies beyond the Go toolchain used
-for building.
+The report root is compiled into the binary, so the installed binary and the
+installed directory always agree. There are no runtime external dependencies
+beyond the Go toolchain used for building.
+
+## Privileges
+
+`vncshot` refuses to run without root privileges:
+
+```bash
+sudo vncshot -target 192.168.1.0/24
+```
+
+This is enforced at startup; the tool exits with an actionable error instead
+of producing a partially working scan.
 
 ## Usage
 
 ```bash
-vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
-vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
-vncshot -target 10.0.0.1-50 -pdf report.pdf
+sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+sudo vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
+sudo vncshot -target 10.0.0.1-50 -out-dir /root/assessments
 ```
+
+Running the tool without arguments prints the usage text (no legal notice)
+and exits without scanning.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -73,20 +91,35 @@ vncshot -target 10.0.0.1-50 -pdf report.pdf
 | `-vnc-timeout` | `15s` | Overall RFB handshake/capture budget |
 | `-workers` | `150` | Concurrent scan workers |
 | `-rate` | `200` | Max new connections per second (`0` = unlimited) |
-| `-output` | `vncshot_report.json` | JSON report path |
-| `-html` | `vncshot_report.html` | HTML report path |
-| `-pdf` | `vncshot_report.pdf` | PDF report path (generated in-process) |
+| `-out-dir` | `/usr/local/vncshot` | Root directory for timestamped scan folders |
+| `-output` | `<run-dir>/vncshot_report.json` | JSON report path |
+| `-html` | `<run-dir>/vncshot_report.html` | HTML report path |
+| `-pdf` | `<run-dir>/vncshot_report.pdf` | PDF report path (generated in-process) |
 | `-no-pdf` | `false` | Skip PDF generation |
-| `-screenshot-dir` | `screenshots` | Directory for PNG captures |
+| `-screenshot-dir` | `<run-dir>/screenshots` | Directory for PNG captures |
 | `-shared` | `true` | Request shared RFB session (does not kick active viewers) |
 | `-yes` | `false` | Skip the interactive authorization confirmation |
 
 ## Output
 
-* `screenshots/{ip}_{port}_{timestamp}.png` — framebuffer of passwordless servers
+Every scan writes into its own timestamped folder, so runs never overwrite
+each other:
+
+```
+/usr/local/vncshot/20261026-205304/
+├── screenshots/{ip}_{port}_{timestamp}.png
+├── vncshot_report.json
+├── vncshot_report.html
+└── vncshot_report.pdf
+```
+
+* `screenshots/` — framebuffer captures of passwordless servers
 * `vncshot_report.json` — full result set
 * `vncshot_report.html` — self-contained report (embedded thumbnails, filter, modal)
 * `vncshot_report.pdf` — PDF report generated in-process from scan results
+
+Relative paths passed to `-output`, `-html`, `-pdf` or `-screenshot-dir` are
+resolved inside the run folder; absolute paths are used as given.
 
 ## Package layout
 
