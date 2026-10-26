@@ -1,0 +1,7 @@
+# Compiled binary
+/vncshot
+
+# Generated scan reports
+vncshot_report.json
+vncshot_report.html
+vncshot_report.pdf

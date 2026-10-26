@@ -1,0 +1,55 @@
+package screenshot
+
+import (
+	"fmt"
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Save writes img as PNG under dir using the conventional
+// "{ip}_{port}_{timestamp}.png" name and returns the resulting path.
+func Save(img image.Image, dir, ip string, port int, ts time.Time) (string, error) {
+	if img == nil {
+		return "", fmt.Errorf("no image to save")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create screenshot directory: %w", err)
+	}
+
+	name := fmt.Sprintf("%s_%d_%s.png", sanitize(ip), port, ts.Format("20060102-150405"))
+	path := filepath.Join(dir, name)
+
+	f, err := os.Create(path)
+	if err != nil {
+		return "", fmt.Errorf("create screenshot: %w", err)
+	}
+	// Encode first so a failure does not leave an empty file that looks
+	// like a successful capture.
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", fmt.Errorf("encode screenshot: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("close screenshot: %w", err)
+	}
+	return path, nil
+}
+
+// sanitize replaces characters that are unsafe in file names (notably
+// the colons of IPv6 literals) while keeping the address readable.
+func sanitize(ip string) string {
+	ip = strings.TrimSpace(ip)
+	replacer := strings.NewReplacer(
+		":", "_",
+		"/", "_",
+		"\\", "_",
+		" ", "_",
+		"..", "_",
+	)
+	return replacer.Replace(ip)
+}
