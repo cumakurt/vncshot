@@ -2,10 +2,18 @@ package scanner
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
+
+	"vncshot/vnc"
 )
 
 func TestParsePorts(t *testing.T) {
@@ -169,5 +177,168 @@ func TestRateLimiter(t *testing.T) {
 	cancel()
 	if err := rl.Wait(ctx); err == nil {
 		t.Fatal("Wait on cancelled context error = nil, want error")
+	}
+}
+
+// connectFailure builds the error shape vnc.Probe returns when the TCP dial
+// fails: the ErrConnect sentinel joined with the underlying dial error.
+func connectFailure(err error) error {
+	return fmt.Errorf("connect: %w", errors.Join(vnc.ErrConnect, err))
+}
+
+func TestProbeAttemptsOnSuccess(t *testing.T) {
+	calls := 0
+	fn := func(context.Context, string, vnc.Options) (*vnc.Result, error) {
+		calls++
+		return &vnc.Result{
+			Passwordless:      true,
+			SecurityTypeNames: []string{"None"},
+		}, nil
+	}
+
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{}, fn)
+	if calls != 1 {
+		t.Errorf("probe calls = %d, want 1", calls)
+	}
+	if res.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1", res.Attempts)
+	}
+	if !res.Open || !res.RFB {
+		t.Errorf("Open=%v RFB=%v, want both true", res.Open, res.RFB)
+	}
+	if !reflect.DeepEqual(res.SecurityTypes, []string{"None"}) {
+		t.Errorf("SecurityTypes = %v, want [None]", res.SecurityTypes)
+	}
+}
+
+func TestProbeRetriesTransientConnectFailure(t *testing.T) {
+	timeoutErr := connectFailure(&net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded})
+	var calls atomic.Int32
+	fn := func(context.Context, string, vnc.Options) (*vnc.Result, error) {
+		if calls.Add(1) == 1 {
+			return nil, timeoutErr
+		}
+		return &vnc.Result{}, nil
+	}
+
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{
+		MaxRetries:   1,
+		RetryBackoff: time.Millisecond,
+	}, fn)
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("probe calls = %d, want 2", got)
+	}
+	if res.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2", res.Attempts)
+	}
+	if !res.Open || !res.RFB {
+		t.Errorf("Open=%v RFB=%v, want both true after the retry", res.Open, res.RFB)
+	}
+}
+
+func TestProbeDoesNotRetryRefusedConnection(t *testing.T) {
+	refused := connectFailure(&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
+	var calls atomic.Int32
+	fn := func(context.Context, string, vnc.Options) (*vnc.Result, error) {
+		calls.Add(1)
+		return nil, refused
+	}
+
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{
+		MaxRetries:   1,
+		RetryBackoff: time.Millisecond,
+	}, fn)
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("probe calls = %d, want 1 (ECONNREFUSED is definitive)", got)
+	}
+	if res.Open {
+		t.Error("Open = true, want false")
+	}
+	if res.Error != "" {
+		t.Errorf("Error = %q, want empty for a closed port", res.Error)
+	}
+	if res.Attempts != 0 {
+		t.Errorf("Attempts = %d, want 0 for a first-try closed port", res.Attempts)
+	}
+}
+
+func TestProbeRecordsAttemptsWhenRetryStaysClosed(t *testing.T) {
+	timeoutErr := connectFailure(&net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded})
+	var calls atomic.Int32
+	fn := func(context.Context, string, vnc.Options) (*vnc.Result, error) {
+		calls.Add(1)
+		return nil, timeoutErr
+	}
+
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{
+		MaxRetries:   1,
+		RetryBackoff: time.Millisecond,
+	}, fn)
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("probe calls = %d, want 2", got)
+	}
+	if res.Open {
+		t.Error("Open = true, want false")
+	}
+	if res.Error != "" {
+		t.Errorf("Error = %q, want empty for a closed port", res.Error)
+	}
+	if res.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2 so the retry is visible", res.Attempts)
+	}
+}
+
+func TestIsTransientConnectError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "timeout", err: connectFailure(&net.OpError{Op: "dial", Err: os.ErrDeadlineExceeded}), want: true},
+		{name: "refused", err: connectFailure(&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), want: false},
+		{name: "reset", err: connectFailure(&net.OpError{Op: "dial", Err: syscall.ECONNRESET}), want: true},
+		{name: "broken pipe", err: connectFailure(&net.OpError{Op: "dial", Err: syscall.EPIPE}), want: true},
+		{name: "host unreachable", err: connectFailure(&net.OpError{Op: "dial", Err: syscall.EHOSTUNREACH}), want: true},
+		{name: "protocol error", err: errors.New("read protocol version: EOF"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTransientConnectError(tt.err); got != tt.want {
+				t.Errorf("isTransientConnectError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRetryDelayBounds(t *testing.T) {
+	const base = 100 * time.Millisecond
+	tests := []struct {
+		attempt int
+		base    time.Duration
+	}{
+		{attempt: 1, base: base},
+		{attempt: 2, base: 2 * base},
+		{attempt: 3, base: 4 * base},
+	}
+
+	for _, tt := range tests {
+		for i := 0; i < 100; i++ {
+			got := retryDelay(base, tt.attempt)
+			if got < tt.base || got > tt.base*3/2 {
+				t.Fatalf("retryDelay(%v, %d) = %v, want within [%v, %v]",
+					base, tt.attempt, got, tt.base, tt.base*3/2)
+			}
+		}
+	}
+
+	got := retryDelay(0, 1)
+	if got < defaultRetryBackoff || got > defaultRetryBackoff*3/2 {
+		t.Errorf("retryDelay(0, 1) = %v, want within [%v, %v]",
+			got, defaultRetryBackoff, defaultRetryBackoff*3/2)
 	}
 }

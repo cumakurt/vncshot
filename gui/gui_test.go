@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -430,5 +431,337 @@ func TestSummaryIsUpdatedDuringScan(t *testing.T) {
 	sum := report.Summarize(results)
 	if sum.Passwordless != 1 || sum.WeakCredentials != 1 {
 		t.Errorf("summary = %+v, want 1 passwordless and 1 weak credential", sum)
+	}
+}
+
+// login exchanges the session token for the guard cookie.
+func login(t *testing.T, client *http.Client, baseURL string) {
+	t.Helper()
+	resp, _ := doJSON(t, client, http.MethodGet, baseURL+"/?t="+testToken, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token exchange status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// writeRun creates a run folder with the artifacts the history endpoint
+// inspects.
+func writeRun(t *testing.T, root, name string, results []report.Result, withHTML, withPDF bool) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create run dir: %v", err)
+	}
+	if err := report.WriteJSON(filepath.Join(dir, "vncshot_report.json"), results); err != nil {
+		t.Fatalf("write run json: %v", err)
+	}
+	if withHTML {
+		if err := os.WriteFile(filepath.Join(dir, "vncshot_report.html"), []byte("<html></html>"), 0o600); err != nil {
+			t.Fatalf("write run html: %v", err)
+		}
+	}
+	if withPDF {
+		if err := os.WriteFile(filepath.Join(dir, "vncshot_report.pdf"), []byte("%PDF-1.4\n"), 0o600); err != nil {
+			t.Fatalf("write run pdf: %v", err)
+		}
+	}
+	return dir
+}
+
+func TestRunsListsHistoryNewestFirst(t *testing.T) {
+	root := t.TempDir()
+	writeRun(t, root, "20260101-010101", []report.Result{
+		{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true, Passwordless: true},
+	}, true, false)
+	writeRun(t, root, "20260202-020202", []report.Result{
+		{IP: "192.0.2.2", Port: 5900, Open: true, RFB: true, Password: "hunter2", TLS: true},
+		{IP: "192.0.2.3", Port: 5900, Open: true, RFB: true, TLS: true},
+	}, true, true)
+
+	// Non-run folders and symlinks must not show up in the history.
+	if err := os.MkdirAll(filepath.Join(root, "notes"), 0o700); err != nil {
+		t.Fatalf("create non-run dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, "20260101-010101"), filepath.Join(root, "20260303-030303")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+
+	resp, body := doJSON(t, client, http.MethodGet, ts.URL+"/api/runs", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("runs status = %d, want 200 (%s)", resp.StatusCode, body)
+	}
+	var runs []runInfo
+	if err := json.Unmarshal(body, &runs); err != nil {
+		t.Fatalf("decode runs: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("runs = %d, want 2 (symlinks and non-run folders ignored)", len(runs))
+	}
+	if runs[0].Name != "20260202-020202" || runs[1].Name != "20260101-010101" {
+		t.Fatalf("run order = %q, %q; want newest first", runs[0].Name, runs[1].Name)
+	}
+	if !runs[0].HasHTML || !runs[0].HasPDF || !runs[0].HasJSON {
+		t.Errorf("newest run artifacts = %+v, want html, pdf and json", runs[0])
+	}
+	if runs[1].HasPDF {
+		t.Errorf("oldest run reports a PDF it does not have")
+	}
+	if runs[0].Started == "" {
+		t.Error("run has no start timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339, runs[0].Started); err != nil {
+		t.Errorf("started %q is not RFC3339: %v", runs[0].Started, err)
+	}
+	if runs[0].Size <= 0 {
+		t.Errorf("size = %d, want a positive byte count", runs[0].Size)
+	}
+	if runs[0].Summary == nil {
+		t.Fatal("newest run has no summary, want one parsed from JSON")
+	}
+	if runs[0].Summary.Targets != 2 || runs[0].Summary.WeakCredentials != 1 || runs[0].Summary.TLS != 2 {
+		t.Errorf("summary = %+v, want 2 targets, 1 weak credential and 2 TLS services", *runs[0].Summary)
+	}
+
+	// The server must not expose the report root through the API.
+	if strings.Contains(string(body), root) {
+		t.Errorf("runs payload leaks the report root %q", root)
+	}
+}
+
+func TestRunsIgnoresUnreadableJSON(t *testing.T) {
+	root := t.TempDir()
+	dir := writeRun(t, root, "20260101-010101", []report.Result{{IP: "192.0.2.1", Port: 5900}}, false, false)
+	if err := os.WriteFile(filepath.Join(dir, "vncshot_report.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("corrupt report: %v", err)
+	}
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+
+	_, body := doJSON(t, client, http.MethodGet, ts.URL+"/api/runs", nil, nil)
+	var runs []runInfo
+	if err := json.Unmarshal(body, &runs); err != nil {
+		t.Fatalf("decode runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(runs))
+	}
+	if runs[0].Summary != nil {
+		t.Errorf("summary = %+v, want nil for an unreadable report", runs[0].Summary)
+	}
+	if runs[0].HasJSON != true {
+		t.Error("has_json = false, want true because the file exists")
+	}
+}
+
+func TestRunOpenSwitchesCurrentRun(t *testing.T) {
+	root := t.TempDir()
+	name := "20260202-020202"
+	writeRun(t, root, name, []report.Result{
+		{IP: "192.0.2.2", Port: 5900, Open: true, RFB: true, Password: "hunter2",
+			SecurityTypes: []string{"VNC authentication"}, Attempts: 2},
+	}, true, true)
+
+	srv, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+		map[string]string{"name": name}, auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("open status = %d, want 200 (%s)", resp.StatusCode, body)
+	}
+
+	_, raw := doJSON(t, client, http.MethodGet, ts.URL+"/api/state", nil, nil)
+	var state snapshot
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if state.Status != statusCompleted {
+		t.Errorf("status = %q, want %q", state.Status, statusCompleted)
+	}
+	if state.Summary.Targets != 1 || state.Summary.WeakCredentials != 1 {
+		t.Errorf("summary = %+v, want the parsed run summary", state.Summary)
+	}
+	if len(state.Findings) != 1 || state.Findings[0].Attempts != 2 {
+		t.Fatalf("findings = %+v, want one finding with 2 attempts", state.Findings)
+	}
+	if state.RunDir != filepath.Join(root, name) {
+		t.Errorf("run dir = %q, want the opened run folder", state.RunDir)
+	}
+	for _, key := range []string{"json", "html", "pdf"} {
+		link := state.ReportLinks[key]
+		if !strings.HasPrefix(link, "/files/") {
+			t.Errorf("%s link = %q, want a /files/ URL", key, link)
+		}
+	}
+	// The loaded run's artifacts must actually be servable.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+state.ReportLinks["html"], nil)
+	fileResp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("fetch run html: %v", err)
+	}
+	fileResp.Body.Close()
+	if fileResp.StatusCode != http.StatusOK {
+		t.Errorf("run html status = %d, want 200", fileResp.StatusCode)
+	}
+	if srv.run.credentials != 0 {
+		t.Errorf("credentials = %d, want 0 for a loaded run", srv.run.credentials)
+	}
+}
+
+func TestRunOpenRejectsInvalidNames(t *testing.T) {
+	root := t.TempDir()
+	writeRun(t, root, "20260202-020202", []report.Result{{IP: "192.0.2.1", Port: 5900}}, false, false)
+	// A run-shaped folder without a JSON report must not be openable.
+	if err := os.MkdirAll(filepath.Join(root, "20250101-010101"), 0o700); err != nil {
+		t.Fatalf("create empty run dir: %v", err)
+	}
+
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	for _, name := range []string{
+		"../20260202-020202",
+		"..",
+		"/etc",
+		"/etc/passwd",
+		`..\20260202-020202`,
+		"nested/20260202-020202",
+		"20260202-020202/../../../etc",
+		"notes",
+	} {
+		resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+			map[string]string{"name": name}, auth)
+		if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+			t.Errorf("open %q = %d, want 400 or 404", name, resp.StatusCode)
+		}
+		if strings.Contains(string(body), root) {
+			t.Errorf("open %q error leaks the report root", name)
+		}
+	}
+
+	resp, _ := doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+		map[string]string{"name": "20250102-030303"}, auth)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("missing run = %d, want 404", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+		map[string]string{"name": "20250101-010101"}, auth)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("run without JSON = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestRunOpenConflictsWithRunningScan(t *testing.T) {
+	root := t.TempDir()
+	name := "20260202-020202"
+	writeRun(t, root, name, []report.Result{{IP: "192.0.2.1", Port: 5900}}, false, false)
+
+	srv, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	srv.run.status = statusRunning
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, _ := doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+		map[string]string{"name": name}, auth)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("open during scan = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestRunEndpointsRequireGuard(t *testing.T) {
+	root := t.TempDir()
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+
+	resp, _ := doJSON(t, client, http.MethodGet, ts.URL+"/api/runs", nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("runs without cookie = %d, want 401", resp.StatusCode)
+	}
+
+	login(t, client, ts.URL)
+	resp, _ = doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+		map[string]string{"name": "20260202-020202"}, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("open without token header = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestSnapshotExposesTransportAndRetryData(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	srv.run.findings = []finding{toFinding(report.Result{
+		IP:            "192.0.2.1",
+		Port:          5900,
+		Open:          true,
+		RFB:           true,
+		SecurityTypes: []string{"VNC authentication", "VeNCrypt"},
+		TLS:           true,
+		Attempts:      3,
+	})}
+
+	raw, err := json.Marshal(srv.snapshot())
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	var decoded struct {
+		Findings []map[string]json.RawMessage `json:"findings"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if len(decoded.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(decoded.Findings))
+	}
+	finding := decoded.Findings[0]
+	for _, key := range []string{"security_types", "tls", "attempts"} {
+		if _, ok := finding[key]; !ok {
+			t.Errorf("finding JSON is missing %q", key)
+		}
+	}
+	var tls bool
+	if err := json.Unmarshal(finding["tls"], &tls); err != nil || !tls {
+		t.Errorf("tls = %s, want true", finding["tls"])
+	}
+	var attempts int
+	if err := json.Unmarshal(finding["attempts"], &attempts); err != nil || attempts != 3 {
+		t.Errorf("attempts = %s, want 3", finding["attempts"])
+	}
+}
+
+// TestDashboardElementIDsExist keeps the embedded script and markup in sync:
+// every element the script looks up must exist on the page.
+func TestDashboardElementIDsExist(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded html: %v", err)
+	}
+	html := string(page)
+
+	known := map[string]bool{}
+	for _, match := range regexp.MustCompile(`id="([^"]+)"`).FindAllStringSubmatch(html, -1) {
+		known[match[1]] = true
+	}
+
+	referenced := map[string]bool{}
+	for _, pattern := range []string{`\$\("([^"]+)"\)`, `getElementById\("([^"]+)"\)`} {
+		for _, match := range regexp.MustCompile(pattern).FindAllStringSubmatch(html, -1) {
+			referenced[match[1]] = true
+		}
+	}
+	if len(referenced) == 0 {
+		t.Fatal("no element lookups found in index.html")
+	}
+	for id := range referenced {
+		if !known[id] {
+			t.Errorf("index.html references #%s but no element defines it", id)
+		}
 	}
 }

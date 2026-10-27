@@ -133,6 +133,43 @@
     color: var(--muted);
     line-height: 1.6;
   }
+  .run-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .run-list li {
+    padding: 7px 0;
+    border-bottom: 1px dotted var(--rule);
+  }
+  .run-list li:last-child { border-bottom: 0; }
+  .run-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .run-name {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    cursor: pointer;
+    text-align: left;
+  }
+  .run-name:hover { text-decoration: underline; }
+  .run-name.current { color: var(--ink); font-weight: 700; cursor: default; text-decoration: none; }
+  .run-meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .run-meta a { margin-left: 6px; }
   /* ---------- main ---------- */
   main { padding: 28px 34px 60px; min-width: 0; }
   .masthead {
@@ -487,6 +524,13 @@
       </div>
     </form>
 
+    <div class="rail-section">
+      <p class="rail-title">Previous runs</p>
+      <div id="historyList">
+        <div class="empty">No earlier runs.</div>
+      </div>
+    </div>
+
     <p class="rail-foot">
       Loopback only · session token protected<br>
       vncshot <span id="version">dev</span> · GPL-3.0<br>
@@ -527,6 +571,7 @@
       <div class="counter"><div class="k">Targets</div><div class="v" id="cTargets">0</div></div>
       <div class="counter"><div class="k">Open ports</div><div class="v" id="cOpen">0</div></div>
       <div class="counter"><div class="k">RFB services</div><div class="v" id="cRfb">0</div></div>
+      <div class="counter good"><div class="k">TLS services</div><div class="v" id="cTls">0</div></div>
       <div class="counter hot"><div class="k">Passwordless</div><div class="v" id="cNoAuth">0</div></div>
       <div class="counter hot"><div class="k">Weak creds</div><div class="v" id="cWeak">0</div></div>
       <div class="counter good"><div class="k">Screenshots</div><div class="v" id="cShots">0</div></div>
@@ -578,6 +623,8 @@
   // memory for the custom header required on state-changing requests.
   var state = null;
   var es = null;
+  var lastStatus = null;
+  var lastRunDir = null;
 
   function $(id) { return document.getElementById(id); }
 
@@ -613,6 +660,7 @@
     $("cTargets").textContent = s.summary.targets || 0;
     $("cOpen").textContent = s.summary.open || 0;
     $("cRfb").textContent = s.summary.rfb || 0;
+    $("cTls").textContent = s.summary.tls_services || 0;
     $("cNoAuth").textContent = s.summary.passwordless || 0;
     $("cWeak").textContent = s.summary.weak_credentials || 0;
     $("cShots").textContent = s.summary.screenshots || 0;
@@ -653,6 +701,148 @@
     }
   }
 
+  function runNameFromPath(path) {
+    if (!path) return "";
+    var parts = String(path).split(/[\\/]/);
+    return parts[parts.length - 1] || "";
+  }
+
+  function renderHistory(runs) {
+    var host = $("historyList");
+    if (!runs || !runs.length) {
+      host.innerHTML = '<div class="empty">No earlier runs.</div>';
+      return;
+    }
+    var current = runNameFromPath(state && state.run_dir);
+    var links = (state && state.report_links) || {};
+    var list = document.createElement("ul");
+    list.className = "run-list";
+
+    runs.forEach(function (run) {
+      var isCurrent = run.name === current;
+      var li = document.createElement("li");
+      var head = document.createElement("div");
+      head.className = "run-head";
+
+      var name = document.createElement("button");
+      name.type = "button";
+      name.className = "run-name" + (isCurrent ? " current" : "");
+      name.textContent = run.name;
+      name.title = isCurrent ? "current run" : "open this run";
+      if (isCurrent) {
+        name.disabled = true;
+      } else {
+        name.addEventListener("click", function () { openRun(run.name); });
+      }
+      head.appendChild(name);
+
+      var meta = document.createElement("div");
+      meta.className = "run-meta";
+      if (run.summary) {
+        meta.textContent = run.summary.passwordless + " pwless · " +
+          run.summary.weak_credentials + " weak";
+      } else {
+        meta.textContent = "no report data";
+      }
+      // Artifact URLs only exist for the run the server currently serves;
+      // history entries are opened through the API instead of guessed paths.
+      if (isCurrent) {
+        ["html", "pdf"].forEach(function (key) {
+          if (!links[key]) return;
+          var a = document.createElement("a");
+          a.href = links[key];
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.textContent = key.toUpperCase();
+          meta.appendChild(a);
+        });
+      }
+
+      li.appendChild(head);
+      li.appendChild(meta);
+      list.appendChild(li);
+    });
+
+    host.innerHTML = "";
+    host.appendChild(list);
+  }
+
+  var historyLoading = false;
+  var historyRuns = null;
+
+  function loadHistory() {
+    if (historyLoading) return;
+    historyLoading = true;
+    api("/api/runs")
+      .then(function (res) {
+        if (!res.ok) throw new Error("history unavailable");
+        return res.json();
+      })
+      .then(function (runs) {
+        historyRuns = runs;
+        renderHistory(runs);
+      })
+      .catch(function () {
+        $("historyList").innerHTML = '<div class="empty">History unavailable.</div>';
+      })
+      .then(function () { historyLoading = false; });
+  }
+
+  function openRun(name) {
+    api("/api/runs/open", { method: "POST", body: JSON.stringify({ name: name }) })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
+        return api("/api/state").then(function (stateRes) { return stateRes.json(); }).then(render);
+      })
+      .then(loadHistory)
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  }
+
+  // Form values survive reloads, except the authorization checkbox which
+  // must be re-confirmed every time. Storage failures (private mode) are
+  // ignored so the dashboard keeps working.
+  var FORM_STORAGE_KEY = "vncshot.form.v1";
+  var formFields = [
+    "target", "file", "ports", "workers", "rate", "timeout_ms", "vnc_timeout_ms",
+    "out_dir", "output", "html", "pdf", "screenshot_dir", "no_pdf", "shared",
+    "word_list", "no_default_passwords", "no_password_check"
+  ];
+
+  function saveForm() {
+    try {
+      var data = {};
+      formFields.forEach(function (id) {
+        var el = $(id);
+        if (!el) return;
+        data[id] = el.type === "checkbox" ? el.checked : el.value;
+      });
+      localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(data));
+    } catch (e) { /* storage unavailable */ }
+  }
+
+  function loadForm() {
+    try {
+      var raw = localStorage.getItem(FORM_STORAGE_KEY);
+      if (raw) {
+        var data = JSON.parse(raw);
+        formFields.forEach(function (id) {
+          var el = $(id);
+          if (!el || !(id in data)) return;
+          if (el.type === "checkbox") {
+            el.checked = !!data[id];
+          } else {
+            el.value = String(data[id]);
+          }
+        });
+      }
+    } catch (e) { /* storage unavailable or malformed payload */ }
+    var authorized = $("authorized");
+    if (authorized) authorized.checked = false;
+  }
+
   function renderFindings(s) {
     var host = $("findingsHost");
     var rows = s.findings || [];
@@ -662,7 +852,7 @@
     }
     var table = document.createElement("table");
     table.innerHTML = "<thead><tr>" +
-      "<th>Address</th><th>State</th><th>Server</th><th>Screen</th>" +
+      "<th>Address</th><th>State</th><th>Transport</th><th>Server</th><th>Screen</th>" +
       "<th>Shot</th><th>Latency</th><th>Note</th>" +
       "</tr></thead>";
     var tbody = document.createElement("tbody");
@@ -676,15 +866,25 @@
             : (f.auth_locked
                 ? '<span class="tag">locked out</span>'
                 : (f.rfb ? '<span class="tag ok">rfb</span>' : '<span class="tag">open</span>')));
+      var transport = (f.security_types || []).join(" · ");
+      var transportCell = transport ? esc(transport) : '<span class="mono">—</span>';
+      if (f.tls) {
+        transportCell += ' <span class="tag ok">tls</span>';
+      }
+      var latency = (f.duration_ms || 0) + " ms";
+      if (f.attempts > 1) {
+        latency += ' <span class="tag">×' + f.attempts + "</span>";
+      }
       var shot = f.screenshot
         ? '<a class="shot-link" href="' + f.screenshot + '" target="_blank" rel="noopener"><img src="' + f.screenshot + '" alt="screenshot"></a>'
         : '<span class="mono">—</span>';
       tr.innerHTML = "<td class=\"mono\">" + esc(f.addr) + "</td>" +
         "<td>" + stateCell + "</td>" +
+        "<td>" + transportCell + "</td>" +
         "<td>" + esc(f.server_name || "—") + "</td>" +
         "<td class=\"mono\">" + esc(f.dimensions || "—") + "</td>" +
         "<td>" + shot + "</td>" +
-        "<td class=\"mono\">" + (f.duration_ms || 0) + " ms</td>" +
+        "<td class=\"mono\">" + latency + "</td>" +
         "<td class=\"mono\">" + esc(f.error || "") + "</td>";
       tbody.appendChild(tr);
     });
@@ -741,6 +941,20 @@
     renderReports(s);
     renderFindings(s);
     renderLog(s);
+
+    // A finished scan just wrote a new run folder; refresh the history so it
+    // appears without a manual reload.
+    if (lastStatus === "running" && s.status !== "running") {
+      loadHistory();
+    }
+    lastStatus = s.status;
+
+    // The current-run marker and its artifact links depend on run_dir, which
+    // can change when a previous run is opened.
+    if (lastRunDir !== s.run_dir) {
+      lastRunDir = s.run_dir;
+      if (historyRuns) renderHistory(historyRuns);
+    }
   }
 
   function connect() {
@@ -757,8 +971,11 @@
     };
   }
 
+  $("form").addEventListener("change", saveForm);
+
   $("form").addEventListener("submit", function (ev) {
     ev.preventDefault();
+    saveForm();
     var body = {
       target: $("target").value.trim(),
       file: $("file").value.trim(),
@@ -807,6 +1024,8 @@
       });
   });
 
+  loadForm();
+  loadHistory();
   api("/api/state").then(function (res) { return res.json(); }).then(render).catch(function () {});
   connect();
 })();

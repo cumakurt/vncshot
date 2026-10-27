@@ -25,11 +25,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"vncshot/app"
+	configfile "vncshot/config"
 	"vncshot/gui"
 )
 
@@ -51,11 +53,16 @@ type config struct {
 	vncTimeout    time.Duration
 	workers       int
 	rate          int
+	retries       int
 	outDir        string
 	outDirSet     bool
 	output        string
 	html          string
 	pdf           string
+	csv           string
+	baseline      string
+	manifest      bool
+	webhook       string
 	noPDF         bool
 	screenshotDir string
 	shared        bool
@@ -67,6 +74,8 @@ type config struct {
 	host          string
 	port          int
 	noBrowser     bool
+	configPath    string
+	showVersion   bool
 }
 
 func (c config) appConfig() app.Config {
@@ -78,6 +87,7 @@ func (c config) appConfig() app.Config {
 		VNCTimeout:         c.vncTimeout,
 		Workers:            c.workers,
 		RatePerSec:         c.rate,
+		MaxRetries:         c.retries,
 		Shared:             c.shared,
 		NoPDF:              c.noPDF,
 		WordList:           c.wordList,
@@ -88,18 +98,35 @@ func (c config) appConfig() app.Config {
 		Output:             c.output,
 		HTML:               c.html,
 		PDF:                c.pdf,
+		CSV:                c.csv,
 		ScreenshotDir:      c.screenshotDir,
+		Baseline:           c.baseline,
+		WebhookURL:         c.webhook,
+		Manifest:           c.manifest,
 	}
 }
 
 func main() {
+	// The app package builds outbound requests (webhook User-Agent), so it
+	// needs the version that install.sh injected at build time.
+	app.Version = version
+
 	// Running the tool without arguments is a request for usage, not a scan.
 	if len(os.Args) == 1 {
 		printUsage(os.Stdout)
 		return
 	}
 
-	cfg := parseFlags()
+	cfg, err := parseFlags()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if cfg.showVersion {
+		// Build information is harmless and must not require root.
+		fmt.Println(versionText())
+		return
+	}
 
 	// Raw RFB probing and the shared report tree under /usr/local/vncshot
 	// require root; fail fast instead of producing a half-working scan.
@@ -108,7 +135,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	var err error
 	if cfg.gui {
 		err = gui.Run(gui.Config{
 			Scan:        cfg.appConfig(),
@@ -132,9 +158,10 @@ func main() {
 	}
 }
 
-func parseFlags() config {
+func parseFlags() (config, error) {
 	var cfg config
 
+	flag.BoolVar(&cfg.showVersion, "version", false, "print version information and exit")
 	flag.StringVar(&cfg.target, "target", "", "single IP, CIDR or IPv4 range (e.g. 192.168.1.1, 192.168.1.0/24, 192.168.1.1-50)")
 	flag.StringVar(&cfg.file, "file", "", "file with IPs/CIDRs/ranges, one per line (# comments allowed)")
 	flag.StringVar(&cfg.ports, "ports", "5900", "ports to scan (list/ranges, e.g. 5900,5901-5910)")
@@ -142,10 +169,16 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.vncTimeout, "vnc-timeout", 15*time.Second, "per-operation RFB handshake/capture timeout")
 	flag.IntVar(&cfg.workers, "workers", 150, "concurrent scan workers")
 	flag.IntVar(&cfg.rate, "rate", 200, "max new connections per second (0 = unlimited)")
+	flag.IntVar(&cfg.retries, "retries", 1, "extra connect attempts for transient failures (0 = none)")
 	flag.StringVar(&cfg.outDir, "out-dir", reportBaseDir, "root directory for timestamped report folders")
 	flag.StringVar(&cfg.output, "output", "", "JSON report path (default <run-dir>/"+appName+"_report.json)")
 	flag.StringVar(&cfg.html, "html", "", "HTML report path (default <run-dir>/"+appName+"_report.html)")
 	flag.StringVar(&cfg.pdf, "pdf", "", "PDF report path (default <run-dir>/"+appName+"_report.pdf)")
+	flag.StringVar(&cfg.csv, "csv", "", "CSV report path (default <run-dir>/"+appName+"_report.csv)")
+	flag.StringVar(&cfg.baseline, "baseline", "", "previous run directory to compare against")
+	flag.BoolVar(&cfg.manifest, "manifest", false, "write a SHA-256 checksum manifest for the run artifacts")
+	flag.StringVar(&cfg.webhook, "webhook", "", "POST a JSON summary to this URL when the scan finishes with new findings or weak credentials")
+	flag.StringVar(&cfg.configPath, "config", "", "config file with flag defaults (JSON or simple YAML)")
 	flag.BoolVar(&cfg.noPDF, "no-pdf", false, "skip PDF generation")
 	flag.StringVar(&cfg.screenshotDir, "screenshot-dir", "", "directory for PNG captures (default <run-dir>/screenshots)")
 	flag.BoolVar(&cfg.shared, "shared", true, "request shared RFB session (does not kick active viewers)")
@@ -162,13 +195,38 @@ func parseFlags() config {
 	flag.Usage = func() { printUsage(flag.CommandLine.Output()) }
 	flag.Parse()
 
+	// -version must succeed even when a config file is broken or missing.
+	if cfg.showVersion {
+		return cfg, nil
+	}
+
+	configPath := cfg.configPath
+	if configPath == "" {
+		configPath = os.Getenv("VNCSHOT_CONFIG")
+	}
+	if configPath != "" {
+		values, err := configfile.Load(configPath)
+		if err != nil {
+			return cfg, err
+		}
+		if err := configfile.Apply(flag.CommandLine, values); err != nil {
+			return cfg, err
+		}
+	}
+
+	// fs.Set, used for environment and config values, also records the flag
+	// as visited, so this catches every explicit source, not just the CLI.
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "out-dir" {
 			cfg.outDirSet = true
 		}
 	})
 
-	return cfg
+	return cfg, nil
+}
+
+func versionText() string {
+	return fmt.Sprintf("%s %s (%s/%s, %s)", appName, version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }
 
 func printUsage(w io.Writer) {
@@ -229,13 +287,34 @@ func runCLI(cfg config) error {
 	fmt.Fprintf(os.Stderr, "weak creds:   %d\n", out.Summary.WeakCredentials)
 	fmt.Fprintf(os.Stderr, "screenshots:  %d\n", out.Summary.Screenshots)
 	fmt.Fprintf(os.Stderr, "errors:       %d\n", out.Summary.Errors)
+	writeDiffSummary(os.Stderr, out.Diff)
 	fmt.Fprintf(os.Stderr, "json:  %s\n", out.JSON)
 	fmt.Fprintf(os.Stderr, "html:  %s\n", out.HTML)
 	if out.PDF != "" {
 		fmt.Fprintf(os.Stderr, "pdf:   %s\n", out.PDF)
 	}
+	if out.CSV != "" {
+		fmt.Fprintf(os.Stderr, "csv:   %s\n", out.CSV)
+	}
+	if out.Manifest != "" {
+		fmt.Fprintf(os.Stderr, "manifest: %s\n", out.Manifest)
+	}
+	if out.Warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", out.Warning)
+	}
 
 	return scanErr
+}
+
+// writeDiffSummary reports baseline comparison counts when one was requested.
+func writeDiffSummary(w io.Writer, diff *app.Diff) {
+	if diff == nil {
+		return
+	}
+	fmt.Fprintf(w, "baseline:     %s\n", diff.Baseline)
+	fmt.Fprintf(w, "new findings: %d\n", len(diff.New))
+	fmt.Fprintf(w, "resolved:     %d\n", len(diff.Resolved))
+	fmt.Fprintf(w, "changed:      %d\n", len(diff.Changed))
 }
 
 func rateText(rate int) string {

@@ -15,6 +15,10 @@ type Options struct {
 	// Timeout bounds each network read/write. The caller is expected to
 	// cancel ctx for an overall operation deadline.
 	Timeout time.Duration
+	// ConnectTimeout bounds the TCP connect attempt; 0 falls back to
+	// Timeout. Keeping it separate lets a scan fail a dead host quickly
+	// without shortening the budget for RFB reads on a live one.
+	ConnectTimeout time.Duration
 	// Shared requests a shared session so the probe does not disconnect
 	// an existing viewer. Inventory scans should leave this enabled.
 	Shared bool
@@ -33,6 +37,13 @@ type Result struct {
 	// AuthTypes lists the security types the server advertised, when the
 	// protocol version provides a list (3.7+).
 	AuthTypes []uint8
+	// SecurityTypeNames is AuthTypes mapped through SecurityTypeName, in
+	// the order the server advertised them.
+	SecurityTypeNames []string
+	// TLS is true when at least one advertised security type provides an
+	// encrypted channel. A server may offer both None and an encrypted
+	// type; this stays true even though the probe prefers the weaker None.
+	TLS bool
 	// ServerName is the desktop name from ServerInit.
 	ServerName string
 	Width      int
@@ -59,6 +70,78 @@ type Result struct {
 // Result (RFB, auth types, server name).
 var errStopProbe = errors.New("probe stopped before session init")
 
+// ErrConnect marks a failure to establish the TCP connection, as opposed to
+// a protocol error on an established connection. Callers can use
+// errors.Is(err, ErrConnect) to tell a closed/filtered port from a service
+// that answered with something unexpected.
+var ErrConnect = errors.New("connect failed")
+
+// connectError attaches ErrConnect to a dial error while preserving both the
+// original error chain and its message. The message deliberately stays the
+// dial error's text so it remains actionable, e.g.
+// "connect: dial tcp 10.0.0.1:5900: i/o timeout".
+type connectError struct{ err error }
+
+func (e *connectError) Error() string { return e.err.Error() }
+
+// Unwrap exposes both ErrConnect and the underlying dial error, so
+// errors.Is/As can match either the sentinel or a syscall/net error.
+func (e *connectError) Unwrap() []error { return []error{ErrConnect, e.err} }
+
+// SecurityTypeName returns the human-readable name of an RFB security type.
+// The numbers follow the IANA RFB security-type registry and the protocol
+// specification's security handshake section:
+// https://www.iana.org/assignments/rfb/
+func SecurityTypeName(t uint8) string {
+	switch t {
+	case 1:
+		return "None"
+	case 2:
+		return "VNC authentication"
+	case 5:
+		return "RA2"
+	case 6:
+		return "RA2ne"
+	case 16:
+		return "Tight"
+	case 17:
+		return "Ultra"
+	case 18:
+		return "TLS"
+	case 19:
+		return "VeNCrypt"
+	case 20:
+		return "SASL"
+	case 21:
+		return "MD5"
+	case 22:
+		return "xvp"
+	case 30:
+		return "Apple Remote Desktop"
+	case 113:
+		return "MSLogon II"
+	default:
+		return fmt.Sprintf("type %d", t)
+	}
+}
+
+// securityTypeProvidesTLS reports whether the security type is defined to
+// establish, or able to negotiate, an encrypted channel.
+//
+// Tight (16) and Ultra (17) are included on purpose: both can tunnel the RFB
+// session inside TLS as a negotiated capability, so a server advertising them
+// can offer confidentiality. The flag describes that capability, not a
+// guarantee that every session actually uses TLS. SASL (20) is included for
+// the same reason: its negotiated security layer can provide confidentiality.
+func securityTypeProvidesTLS(t uint8) bool {
+	switch t {
+	case 5, 16, 17, 18, 19, 20:
+		return true
+	default:
+		return false
+	}
+}
+
 // errAuthRejected means the server refused the credential for this
 // connection. It is the expected outcome for most word-list entries.
 var errAuthRejected = errors.New("authentication rejected")
@@ -77,6 +160,9 @@ var errAuthLocked = errors.New("authentication locked out")
 func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Second
+	}
+	if opts.ConnectTimeout <= 0 {
+		opts.ConnectTimeout = opts.Timeout
 	}
 
 	// Discovery attempt: learn the security types without sending any
@@ -116,10 +202,10 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 // probeOnce runs one complete RFB session. An empty credential means the
 // caller only wants the security-type discovery step.
 func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) (*Result, error) {
-	dialer := net.Dialer{Timeout: opts.Timeout}
+	dialer := net.Dialer{Timeout: opts.ConnectTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+		return nil, fmt.Errorf("connect: %w", &connectError{err: err})
 	}
 	defer conn.Close()
 
@@ -262,6 +348,16 @@ func (c *client) securityHandshake() error {
 		return err
 	}
 	c.result.AuthTypes = append([]uint8(nil), types...)
+	// Record the advertised capabilities before selecting a type: the
+	// report must show that TLS was available even when the probe takes the
+	// weaker None path.
+	c.result.SecurityTypeNames = make([]string, len(types))
+	for i, t := range types {
+		c.result.SecurityTypeNames[i] = SecurityTypeName(t)
+		if securityTypeProvidesTLS(t) {
+			c.result.TLS = true
+		}
+	}
 
 	hasNone, hasVNC, hasOther := false, false, false
 	for _, t := range types {

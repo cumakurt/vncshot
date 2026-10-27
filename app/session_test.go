@@ -2,12 +2,17 @@ package app
 
 import (
 	"context"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"vncshot/report"
 	"vncshot/vnc"
 )
 
@@ -150,10 +155,13 @@ func TestPrepareCreatesRunDirectoryAndResolvesArtifacts(t *testing.T) {
 	if filepath.Dir(session.RunDir) != base {
 		t.Errorf("run dir %q is not inside %q", session.RunDir, base)
 	}
-	for _, path := range []string{session.JSONPath, session.HTMLPath, session.PDFPath} {
+	for _, path := range []string{session.JSONPath, session.HTMLPath, session.PDFPath, session.CSVPath} {
 		if filepath.Dir(path) != session.RunDir {
 			t.Errorf("artifact %q is not inside the run directory %q", path, session.RunDir)
 		}
+	}
+	if filepath.Base(session.CSVPath) != "vncshot_report.csv" {
+		t.Errorf("default csv path = %q, want vncshot_report.csv", session.CSVPath)
 	}
 	info, err := os.Stat(session.ShotDir)
 	if err != nil {
@@ -167,6 +175,158 @@ func TestPrepareCreatesRunDirectoryAndResolvesArtifacts(t *testing.T) {
 	}
 	if warning := session.FallbackWarning(); warning != "" {
 		t.Errorf("unexpected fallback warning: %s", warning)
+	}
+}
+
+func TestPrepareKeepsAbsoluteCSVOverride(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "exports", "results.csv")
+	session, err := Prepare(Config{
+		Target:         "192.0.2.1",
+		Ports:          "5900",
+		OutDir:         t.TempDir(),
+		OutDirExplicit: true,
+		CSV:            custom,
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if session.CSVPath != custom {
+		t.Errorf("csv path = %q, want the absolute override %q", session.CSVPath, custom)
+	}
+}
+
+func TestPrepareRejectsBrokenBaseline(t *testing.T) {
+	cfg := Config{
+		Target:         "192.0.2.1",
+		Ports:          "5900",
+		OutDir:         t.TempDir(),
+		OutDirExplicit: true,
+	}
+	cfg.Baseline = t.TempDir()
+	if _, err := Prepare(cfg); err == nil {
+		t.Fatal("Prepare accepted a baseline directory without a report")
+	}
+
+	path := filepath.Join(t.TempDir(), "run.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	cfg.Baseline = path
+	if _, err := Prepare(cfg); err == nil {
+		t.Fatal("Prepare accepted a regular file as a baseline directory")
+	}
+}
+
+// closedLocalPorts returns local ports that were just released, so a scan
+// against them exercises the connection-refused path without needing RFB.
+func closedLocalPorts(t *testing.T, count int) []int {
+	t.Helper()
+	listeners := make([]net.Listener, 0, count)
+	ports := make([]int, 0, count)
+	for i := 0; i < count; i++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("reserve local port: %v", err)
+		}
+		listeners = append(listeners, listener)
+		ports = append(ports, listener.Addr().(*net.TCPAddr).Port)
+	}
+	for _, listener := range listeners {
+		if err := listener.Close(); err != nil {
+			t.Fatalf("release local port: %v", err)
+		}
+	}
+	return ports
+}
+
+func TestScanWritesCSVManifestAndDeterministicOrder(t *testing.T) {
+	base := t.TempDir()
+	ports := closedLocalPorts(t, 2)
+
+	session, err := Prepare(Config{
+		Target: "127.0.0.1",
+		// Larger port first so the sorted output is observably different
+		// from the requested order.
+		Ports:          fmt.Sprintf("%d,%d", ports[1], ports[0]),
+		ConnectTimeout: 200 * time.Millisecond,
+		VNCTimeout:     200 * time.Millisecond,
+		Workers:        2,
+		OutDir:         base,
+		OutDirExplicit: true,
+		NoPDF:          true,
+		Manifest:       true,
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := session.Scan(ctx, nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(out.Results))
+	}
+	if out.CSV != session.CSVPath {
+		t.Errorf("outcome csv = %q, want %q", out.CSV, session.CSVPath)
+	}
+	for _, path := range []string{out.JSON, out.HTML, out.CSV, out.Manifest} {
+		if path == "" {
+			t.Fatal("an expected artifact path is empty")
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("artifact %q is missing: %v", path, err)
+		}
+	}
+	if out.Manifest != filepath.Join(session.RunDir, ManifestFilename) {
+		t.Errorf("manifest = %q, want it inside the run directory", out.Manifest)
+	}
+	if err := VerifyManifest(session.RunDir); err != nil {
+		t.Errorf("VerifyManifest: %v", err)
+	}
+
+	sorted := append([]report.Result(nil), out.Results...)
+	report.SortResults(sorted)
+
+	data, err := os.ReadFile(out.JSON)
+	if err != nil {
+		t.Fatalf("read json report: %v", err)
+	}
+	var doc report.Document
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parse json report: %v", err)
+	}
+	if len(doc.Results) != len(sorted) {
+		t.Fatalf("json results = %d, want %d", len(doc.Results), len(sorted))
+	}
+	for i := range sorted {
+		if doc.Results[i].Addr() != sorted[i].Addr() {
+			t.Fatalf("json row %d = %s, want %s", i, doc.Results[i].Addr(), sorted[i].Addr())
+		}
+	}
+
+	file, err := os.Open(out.CSV)
+	if err != nil {
+		t.Fatalf("open csv report: %v", err)
+	}
+	records, err := csv.NewReader(file).ReadAll()
+	file.Close()
+	if err != nil {
+		t.Fatalf("parse csv report: %v", err)
+	}
+	if len(records) != len(sorted)+1 {
+		t.Fatalf("csv rows = %d, want header plus %d", len(records), len(sorted))
+	}
+	for i, r := range sorted {
+		row := records[i+1]
+		if len(row) < 2 {
+			t.Fatalf("csv row %d is too short: %v", i+1, row)
+		}
+		if addr := row[0] + ":" + row[1]; addr != r.Addr() {
+			t.Errorf("csv row %d = %s, want %s", i+1, addr, r.Addr())
+		}
 	}
 }
 

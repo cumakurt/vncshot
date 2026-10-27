@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/schollz/progressbar/v3"
@@ -28,6 +30,17 @@ type Options struct {
 	Workers int
 	// RatePerSec caps new connection attempts per second; 0 disables.
 	RatePerSec int
+	// MaxRetries is how many times a transient connect failure is retried.
+	// Only 0 (no retry) and 1 are supported; negative values are treated as
+	// 0 and larger values are clamped to 1.
+	MaxRetries int
+	// RetryBackoff is the base delay before a retry; 0 uses 150ms. Actual
+	// delays use exponential backoff with up to 50% jitter.
+	RetryBackoff time.Duration
+	// HostConcurrency caps how many probes run against the same target IP
+	// at once; <= 0 uses 2. It complements the global worker pool so one
+	// host is not hit by every worker at the same time.
+	HostConcurrency int
 	// ScreenshotDir is where passwordless captures are written.
 	ScreenshotDir string
 	// Shared requests a shared RFB session (does not kick active viewers).
@@ -57,6 +70,7 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]report.Result, 
 	}
 
 	limiter := NewRateLimiter(opts.RatePerSec)
+	hostLimiter := newHostLimiter(opts.HostConcurrency)
 	jobs := make(chan Target)
 	results := make(chan report.Result)
 
@@ -70,7 +84,14 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]report.Result, 
 					// Context cancelled while waiting for a token.
 					return
 				}
-				results <- probe(ctx, t, opts)
+				releaseHost, err := hostLimiter.acquire(ctx, t.IP)
+				if err != nil {
+					// Context cancelled while waiting for the host slot.
+					return
+				}
+				res := probe(ctx, t, opts)
+				releaseHost()
+				results <- res
 			}
 		}()
 	}
@@ -126,9 +147,18 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]report.Result, 
 	return out, nil
 }
 
-// probe performs the TCP connect and, when the port is open, the RFB
-// handshake plus an optional screenshot.
-func probe(ctx context.Context, t Target, opts Options) (res report.Result) {
+// probe performs the RFB probe and, when the service allows a session, an
+// optional screenshot. vnc.Probe owns the single TCP connection, so the
+// scanner no longer dials once to test openness and again for the handshake.
+func probe(ctx context.Context, t Target, opts Options) report.Result {
+	return probeWith(ctx, t, opts, vnc.Probe)
+}
+
+// vncProbeFunc matches vnc.Probe. It is an unexported test seam so the retry
+// policy can be exercised without a live network.
+type vncProbeFunc func(context.Context, string, vnc.Options) (*vnc.Result, error)
+
+func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc) (res report.Result) {
 	start := time.Now()
 	res = report.Result{
 		IP:        t.IP,
@@ -144,37 +174,78 @@ func probe(ctx context.Context, t Target, opts Options) (res report.Result) {
 		return res
 	}
 
+	maxRetries := opts.MaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	if maxRetries > 1 {
+		maxRetries = 1
+	}
+	backoff := opts.RetryBackoff
+	if backoff <= 0 {
+		backoff = defaultRetryBackoff
+	}
+
 	addr := t.Addr()
-	dialer := net.Dialer{Timeout: opts.ConnectTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
+	vncOpts := vnc.Options{
+		Timeout:        opts.VNCTimeout,
+		ConnectTimeout: opts.ConnectTimeout,
+		Shared:         opts.Shared,
+		Passwords:      opts.Passwords,
+	}
+
+	var vncRes *vnc.Result
+	for attempt := 1; ; attempt++ {
+		var err error
+		vncRes, err = doProbe(ctx, addr, vncOpts)
+		if err == nil {
+			res.Attempts = attempt
+			break
+		}
+
+		if !errors.Is(err, vnc.ErrConnect) {
+			// The TCP connect succeeded, so the port is open; the service
+			// just did not speak usable RFB.
+			res.Open = true
+			res.Attempts = attempt
+			res.Error = err.Error()
+			return res
+		}
+
 		if ctx.Err() != nil {
 			res.Error = ctx.Err().Error()
-		} else {
-			// Closed/filtered ports are normal scan noise, not errors worth
-			// surfacing in the report.
-			res.Error = ""
+			if attempt > 1 {
+				res.Attempts = attempt
+			}
+			return res
+		}
+
+		if attempt <= maxRetries && isTransientConnectError(err) {
+			if waitErr := sleepCtx(ctx, retryDelay(backoff, attempt)); waitErr != nil {
+				res.Error = waitErr.Error()
+				res.Attempts = attempt
+				return res
+			}
+			continue
+		}
+
+		// Closed/filtered ports are normal scan noise, not errors worth
+		// surfacing in the report. A retry is still recorded so operators
+		// can spot hosts that were flaky rather than definitively closed.
+		if attempt > 1 {
+			res.Attempts = attempt
 		}
 		return res
 	}
+
 	res.Open = true
-	conn.Close()
-
-	vncRes, err := vnc.Probe(ctx, addr, vnc.Options{
-		Timeout:   opts.VNCTimeout,
-		Shared:    opts.Shared,
-		Passwords: opts.Passwords,
-	})
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
-
 	res.RFB = true
 	res.Passwordless = vncRes.Passwordless
 	res.Password = vncRes.Password
 	res.PasswordSource = vncRes.PasswordSource
 	res.AuthLocked = vncRes.AuthLocked
+	res.SecurityTypes = vncRes.SecurityTypeNames
+	res.TLS = vncRes.TLS
 	res.ServerName = vncRes.ServerName
 	res.ScreenWidth = vncRes.Width
 	res.ScreenHeight = vncRes.Height
@@ -204,4 +275,69 @@ func saveScreenshot(img image.Image, dir string, t Target, ts time.Time) (string
 		return "", fmt.Errorf("resolve screenshot directory: %w", err)
 	}
 	return screenshot.Save(img, abs, t.IP, t.Port, ts)
+}
+
+const (
+	// defaultHostConcurrency bounds simultaneous probes against one IP.
+	defaultHostConcurrency = 2
+	// defaultRetryBackoff is the base delay before a transient retry.
+	defaultRetryBackoff = 150 * time.Millisecond
+)
+
+// isTransientConnectError reports whether a connect failure may succeed on a
+// retry. A refused connection is definitive (nothing is listening), while
+// timeouts, resets, broken pipes and unreachable hosts can be transient.
+func isTransientConnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.EHOSTUNREACH)
+}
+
+// retryDelay returns the jittered exponential backoff before the next
+// attempt. attempt is 1-based, so the first retry waits
+// [base, base*1.5].
+func retryDelay(base time.Duration, attempt int) time.Duration {
+	if base <= 0 {
+		base = defaultRetryBackoff
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := base
+	for i := 1; i < attempt; i++ {
+		// Overflow guard: no realistic scan reaches this, but a corrupted
+		// retry count must not produce a negative delay.
+		if delay > time.Duration(1<<62) {
+			break
+		}
+		delay *= 2
+	}
+	// Up to 50% jitter keeps simultaneous retries from synchronising.
+	jitter := time.Duration(rand.Int64N(int64(delay/2) + 1))
+	return delay + jitter
+}
+
+// sleepCtx waits for d unless ctx is cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

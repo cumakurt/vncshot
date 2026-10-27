@@ -15,12 +15,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,20 +76,36 @@ type event struct {
 }
 
 type finding struct {
-	IP           string `json:"ip"`
-	Port         int    `json:"port"`
-	Addr         string `json:"addr"`
-	ServerName   string `json:"server_name"`
-	Dimensions   string `json:"dimensions"`
-	Passwordless bool   `json:"passwordless"`
-	Password     string `json:"password,omitempty"`
-	AuthLocked   bool   `json:"auth_locked,omitempty"`
-	Open         bool   `json:"open"`
-	RFB          bool   `json:"rfb"`
-	Error        string `json:"error"`
-	DurationMs   int64  `json:"duration_ms"`
-	Screenshot   string `json:"screenshot"`
-	Timestamp    string `json:"timestamp"`
+	IP            string   `json:"ip"`
+	Port          int      `json:"port"`
+	Addr          string   `json:"addr"`
+	ServerName    string   `json:"server_name"`
+	Dimensions    string   `json:"dimensions"`
+	Passwordless  bool     `json:"passwordless"`
+	Password      string   `json:"password,omitempty"`
+	AuthLocked    bool     `json:"auth_locked,omitempty"`
+	SecurityTypes []string `json:"security_types"`
+	TLS           bool     `json:"tls"`
+	Attempts      int      `json:"attempts"`
+	Open          bool     `json:"open"`
+	RFB           bool     `json:"rfb"`
+	Error         string   `json:"error"`
+	DurationMs    int64    `json:"duration_ms"`
+	Screenshot    string   `json:"screenshot"`
+	Timestamp     string   `json:"timestamp"`
+}
+
+// runInfo is one entry of the run history shown in the dashboard.
+type runInfo struct {
+	Name      string          `json:"name"`
+	Started   string          `json:"started"`
+	Files     []string        `json:"files"`
+	HasHTML   bool            `json:"has_html"`
+	HasPDF    bool            `json:"has_pdf"`
+	HasJSON   bool            `json:"has_json"`
+	Size      int64           `json:"size"`
+	Summary   *report.Summary `json:"summary"`
+	startedAt time.Time
 }
 
 type snapshot struct {
@@ -147,6 +165,12 @@ const (
 	statusCompleted = "completed"
 	statusCancelled = "cancelled"
 	statusFailed    = "failed"
+
+	// defaultReportRoot matches the CLI default when no root was configured.
+	defaultReportRoot = "/usr/local/vncshot"
+	// maxRunHistory bounds the history payload so a long-lived report tree
+	// cannot make the dashboard request arbitrarily expensive.
+	maxRunHistory = 100
 )
 
 type server struct {
@@ -243,6 +267,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/state", s.guard(s.handleState))
 	mux.HandleFunc("/api/scan", s.guard(s.handleScan))
 	mux.HandleFunc("/api/cancel", s.guard(s.handleCancel))
+	mux.HandleFunc("/api/runs", s.guard(s.handleRuns))
+	mux.HandleFunc("/api/runs/open", s.guard(s.handleRunOpen))
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
 	mux.HandleFunc("/files/", s.guard(s.handleFiles))
 	return mux
@@ -424,6 +450,15 @@ func (s *server) execute(ctx context.Context, session *app.Session, cancel conte
 // collectFiles lists the artifacts of a finished run so the UI can link to
 // them without guessing file names.
 func (s *server) collectFiles(runDir string) {
+	files := listRunFiles(runDir)
+	s.run.mu.Lock()
+	s.run.files = files
+	s.run.mu.Unlock()
+}
+
+// listRunFiles returns every regular file below runDir as a slash-separated
+// path relative to the run folder.
+func listRunFiles(runDir string) []string {
 	var files []string
 	_ = filepath.WalkDir(runDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -436,9 +471,255 @@ func (s *server) collectFiles(runDir string) {
 		files = append(files, filepath.ToSlash(rel))
 		return nil
 	})
+	return files
+}
+
+// reportRoot is the directory that holds timestamped run folders.
+func (s *server) reportRoot() string {
+	if s.cfg.Scan.OutDir != "" {
+		return filepath.Clean(s.cfg.Scan.OutDir)
+	}
+	return defaultReportRoot
+}
+
+// handleRuns lists previous run folders, newest first.
+func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, s.listRuns())
+}
+
+func (s *server) listRuns() []runInfo {
+	root := s.reportRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		// A missing report root simply means there is no history yet.
+		return []runInfo{}
+	}
+
+	runs := make([]runInfo, 0, len(entries))
+	for _, entry := range entries {
+		// Symlinked directories can point outside the report root, so they
+		// are never treated as runs.
+		if entry.Type()&fs.ModeSymlink != 0 || !entry.IsDir() {
+			continue
+		}
+		started, err := time.ParseInLocation(app.RunTimestampLayout, entry.Name(), time.Local)
+		if err != nil {
+			continue
+		}
+		runs = append(runs, describeRun(filepath.Join(root, entry.Name()), entry.Name(), started))
+	}
+
+	sort.Slice(runs, func(i, j int) bool { return runs[i].startedAt.After(runs[j].startedAt) })
+	if len(runs) > maxRunHistory {
+		runs = runs[:maxRunHistory]
+	}
+	return runs
+}
+
+// describeRun inspects one run folder without following symlinks inside it.
+func describeRun(dir, name string, started time.Time) runInfo {
+	info := runInfo{
+		Name:      name,
+		Started:   started.Format(time.RFC3339),
+		Files:     []string{},
+		startedAt: started,
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return info
+	}
+	jsonPath := ""
+	for _, entry := range entries {
+		if entry.Type()&fs.ModeSymlink != 0 || entry.IsDir() {
+			continue
+		}
+		info.Files = append(info.Files, entry.Name())
+		if fileInfo, statErr := entry.Info(); statErr == nil {
+			info.Size += fileInfo.Size()
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".html") {
+			info.HasHTML = true
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".pdf") {
+			info.HasPDF = true
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			info.HasJSON = true
+			if jsonPath == "" || entry.Name() == defaultJSONReport {
+				jsonPath = filepath.Join(dir, entry.Name())
+			}
+		}
+	}
+	if jsonPath == "" {
+		return info
+	}
+	doc, err := readRunDocument(jsonPath)
+	if err != nil {
+		return info
+	}
+	summary := doc.Summary
+	info.Summary = &summary
+	return info
+}
+
+const defaultJSONReport = "vncshot_report.json"
+
+// readRunDocument parses a finished run's JSON report. Reports written by
+// this tool wrap the results in Document; a bare result array is accepted so
+// runs from older or external producers still open.
+func readRunDocument(path string) (report.Document, error) {
+	var doc report.Document
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return doc, err
+	}
+	decodeErr := json.Unmarshal(data, &doc)
+	if decodeErr == nil {
+		return doc, nil
+	}
+	var results []report.Result
+	if arrayErr := json.Unmarshal(data, &results); arrayErr != nil {
+		return doc, fmt.Errorf("decode run report: %w", decodeErr)
+	}
+	return report.Document{
+		Results: results,
+		Summary: report.Summarize(results),
+	}, nil
+}
+
+// validRunName rejects anything that is not a bare timestamp folder name.
+func validRunName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") || filepath.IsAbs(name) {
+		return false
+	}
+	_, err := time.ParseInLocation(app.RunTimestampLayout, name, time.Local)
+	return err == nil
+}
+
+// handleRunOpen switches the dashboard to a previous run folder.
+func (s *server) handleRunOpen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if !validRunName(name) {
+		http.Error(w, "invalid run name", http.StatusBadRequest)
+		return
+	}
+
+	root := s.reportRoot()
+	dir := filepath.Join(root, name)
+	if filepath.Dir(dir) != root {
+		http.Error(w, "invalid run name", http.StatusBadRequest)
+		return
+	}
+	if info, err := os.Lstat(dir); err != nil || !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+
 	s.run.mu.Lock()
-	s.run.files = files
+	running := s.run.status == statusRunning
 	s.run.mu.Unlock()
+	if running {
+		http.Error(w, "a scan is running", http.StatusConflict)
+		return
+	}
+
+	jsonPath := filepath.Join(dir, defaultJSONReport)
+	doc, err := readRunDocument(jsonPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "run report not found", http.StatusNotFound)
+			return
+		}
+		// The error may mention the filesystem path, which must not reach
+		// the browser.
+		http.Error(w, "run report is unreadable", http.StatusInternalServerError)
+		return
+	}
+
+	started, _ := time.ParseInLocation(app.RunTimestampLayout, name, time.Local)
+	finished := doc.GeneratedAt.Local()
+	if finished.IsZero() {
+		if info, statErr := os.Stat(jsonPath); statErr == nil {
+			finished = info.ModTime()
+		}
+	}
+
+	summary := report.Summarize(doc.Results)
+	findings := make([]finding, 0, len(doc.Results))
+	for _, result := range doc.Results {
+		if result.Open || result.Passwordless || result.Error != "" {
+			findings = append(findings, toFinding(result))
+		}
+	}
+
+	s.run.mu.Lock()
+	s.run.status = statusCompleted
+	s.run.errMsg = ""
+	s.run.started = started
+	s.run.finished = finished
+	s.run.done = summary.Targets
+	s.run.total = summary.Targets
+	s.run.summary = summary
+	s.run.runDir = dir
+	s.run.credentials = 0
+	s.run.jsonPath = jsonPath
+	s.run.htmlPath = runArtifact(dir, "vncshot_report.html", ".html")
+	s.run.pdfPath = runArtifact(dir, "vncshot_report.pdf", ".pdf")
+	s.run.files = listRunFiles(dir)
+	s.run.results = doc.Results
+	s.run.findings = findings
+	s.run.events = []event{}
+	s.run.warning = ""
+	s.run.session = nil
+	s.run.cancel = nil
+	s.run.mu.Unlock()
+
+	s.broadcast(true)
+	writeJSON(w, s.snapshot())
+}
+
+// runArtifact resolves a report artifact inside runDir, preferring the
+// conventional file name and falling back to the first file with the wanted
+// extension so overridden report names still resolve.
+func runArtifact(dir, preferred, ext string) string {
+	preferredPath := filepath.Join(dir, preferred)
+	if info, err := os.Stat(preferredPath); err == nil && !info.IsDir() {
+		return preferredPath
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ext) {
+			return filepath.Join(dir, entry.Name())
+		}
+	}
+	return ""
 }
 
 func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -692,20 +973,23 @@ func toFinding(r report.Result) finding {
 		dims = fmt.Sprintf("%dx%d", r.ScreenWidth, r.ScreenHeight)
 	}
 	return finding{
-		IP:           r.IP,
-		Port:         r.Port,
-		Addr:         r.Addr(),
-		ServerName:   r.ServerName,
-		Dimensions:   dims,
-		Passwordless: r.Passwordless,
-		Password:     r.Password,
-		AuthLocked:   r.AuthLocked,
-		Open:         r.Open,
-		RFB:          r.RFB,
-		Error:        r.Error,
-		DurationMs:   r.DurationMs,
-		Screenshot:   r.Screenshot,
-		Timestamp:    r.Timestamp.UTC().Format("2006-01-02 15:04:05"),
+		IP:            r.IP,
+		Port:          r.Port,
+		Addr:          r.Addr(),
+		ServerName:    r.ServerName,
+		Dimensions:    dims,
+		Passwordless:  r.Passwordless,
+		Password:      r.Password,
+		AuthLocked:    r.AuthLocked,
+		SecurityTypes: append([]string(nil), r.SecurityTypes...),
+		TLS:           r.TLS,
+		Attempts:      r.Attempts,
+		Open:          r.Open,
+		RFB:           r.RFB,
+		Error:         r.Error,
+		DurationMs:    r.DurationMs,
+		Screenshot:    r.Screenshot,
+		Timestamp:     r.Timestamp.UTC().Format("2006-01-02 15:04:05"),
 	}
 }
 

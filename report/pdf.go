@@ -70,6 +70,13 @@ const (
 // WritePDF renders the scan results as a PDF report. Generation is done
 // entirely in-process: no browser, no external tools.
 func WritePDF(path string, results []Result) error {
+	return WritePDFWithDiff(path, results, nil)
+}
+
+// WritePDFWithDiff renders the report together with a baseline comparison.
+// A nil diff keeps the output identical to WritePDF.
+func WritePDFWithDiff(path string, results []Result, diff *Diff) error {
+	diff = normalizedDiff(diff)
 	sum := Summarize(results)
 
 	pdf := fpdf.New("P", "mm", "A4", "")
@@ -86,6 +93,9 @@ func WritePDF(path string, results []Result) error {
 	pdf.AliasNbPages("{nb}")
 
 	writeCover(pdf, results, sum)
+	if hasBaselineSection(diff) {
+		writeDiff(pdf, diff)
+	}
 	writeFindings(pdf, results)
 	writeOpenTable(pdf, results)
 
@@ -119,11 +129,16 @@ func coverStats(sum Summary) []statCell {
 	if sum.Errors > 0 {
 		errorColor = colorDanger
 	}
+	tlsColor := colorInk
+	if sum.TLS > 0 {
+		tlsColor = colorAccent
+	}
 
 	return []statCell{
 		{"Targets", itoa(sum.Targets), colorInk},
 		{"Open ports", itoa(sum.Open), colorInk},
 		{"RFB services", itoa(sum.RFB), colorInk},
+		{"TLS services", itoa(sum.TLS), tlsColor},
 		{"Passwordless", itoa(sum.Passwordless), colorWarning},
 		{"Weak creds", itoa(sum.WeakCredentials), weakColor},
 		{"Screenshots", itoa(sum.Screenshots), colorAccent},
@@ -304,6 +319,203 @@ func drawLegalNotice(pdf *pdfType, y float64) float64 {
 	return y + height
 }
 
+// diffTransition renders the compact before → after state description used
+// by the PDF comparison rows.
+func diffTransition(before, after Result) string {
+	return diffStateLabel(before) + " → " + diffStateLabel(after)
+}
+
+// pdfDiffRowLimit caps each baseline group. A comparison over a large range
+// must stay a summary rather than a second copy of the endpoint table.
+const pdfDiffRowLimit = 25
+
+const (
+	diffAddrW  = 38.0
+	diffGap    = 2.0
+	diffStateW = 17.0
+	diffArrowW = 7.0
+)
+
+// writeDiff renders the baseline comparison as a page-break safe section:
+// group headings and rows move to a continuation page when they no longer
+// fit above the footer.
+func writeDiff(pdf *pdfType, diff *Diff) {
+	pdf.AddPage()
+
+	note := "No baseline differences were recorded."
+	if diff.Baseline != "" {
+		note = "Compared with " + sanitizePDFText(diff.Baseline) + "."
+	}
+	y := sectionHeader(pdf, "BASELINE COMPARISON", "Changes since baseline", note)
+
+	if diff.Empty() {
+		pdf.SetFont(fontFamily, "", 9.5)
+		colorMuted.text(pdf)
+		pdf.SetXY(marginX, y+2)
+		pdf.CellFormat(contentWidth, 6, "No changes since the baseline run.", "", 0, "L", false, 0, "")
+		return
+	}
+
+	y = writeDiffResultGroup(pdf, y, "New", diff.New)
+	y = writeDiffResultGroup(pdf, y, "Resolved", diff.Resolved)
+	writeDiffChangedGroup(pdf, y, "Changed", diff.Changed)
+}
+
+// writeDiffResultGroup renders one New or Resolved group and returns the y
+// coordinate below it.
+func writeDiffResultGroup(pdf *pdfType, y float64, title string, results []Result) float64 {
+	if len(results) == 0 {
+		return y
+	}
+	if y+18 > 270 {
+		pdf.AddPage()
+		y = continuationHeader(pdf, "BASELINE COMPARISON / CONTINUED",
+			"Changes since baseline / continued")
+	}
+	y = drawDiffGroupHead(pdf, y, title, len(results))
+
+	rows, hidden := capDiff(results, pdfDiffRowLimit)
+	for _, r := range rows {
+		if y+7.4 > 270 {
+			pdf.AddPage()
+			y = continuationHeader(pdf, "BASELINE COMPARISON / CONTINUED",
+				"Changes since baseline / continued")
+			y = drawDiffGroupHead(pdf, y, title, len(results))
+		}
+		drawDiffResultRow(pdf, r, y)
+		y += 7.0
+	}
+	if hidden > 0 {
+		y = drawDiffMore(pdf, y, hidden)
+	}
+	return y + 8
+}
+
+// writeDiffChangedGroup renders risk transitions for findings that exist in
+// both runs but changed state.
+func writeDiffChangedGroup(pdf *pdfType, y float64, title string, changes []Change) float64 {
+	if len(changes) == 0 {
+		return y
+	}
+	if y+18 > 270 {
+		pdf.AddPage()
+		y = continuationHeader(pdf, "BASELINE COMPARISON / CONTINUED",
+			"Changes since baseline / continued")
+	}
+	y = drawDiffGroupHead(pdf, y, title, len(changes))
+
+	rows, hidden := capDiff(changes, pdfDiffRowLimit)
+	for _, c := range rows {
+		if y+7.4 > 270 {
+			pdf.AddPage()
+			y = continuationHeader(pdf, "BASELINE COMPARISON / CONTINUED",
+				"Changes since baseline / continued")
+			y = drawDiffGroupHead(pdf, y, title, len(changes))
+		}
+		drawDiffChangedRow(pdf, c, y)
+		y += 7.0
+	}
+	if hidden > 0 {
+		y = drawDiffMore(pdf, y, hidden)
+	}
+	return y + 8
+}
+
+// drawDiffGroupHead renders the bold group label and its hairline rule.
+func drawDiffGroupHead(pdf *pdfType, y float64, title string, count int) float64 {
+	pdf.SetFont(fontFamily, "B", 7.2)
+	colorInk.text(pdf)
+	pdf.SetXY(marginX, y)
+	pdf.CellFormat(contentWidth, 5,
+		sanitizePDFText(fmt.Sprintf("%s (%d)", title, count)), "", 0, "L", false, 0, "")
+
+	colorHairline.draw(pdf)
+	pdf.SetLineWidth(0.2)
+	pdf.Line(marginX, y+5.6, pageWidth-marginX, y+5.6)
+
+	return y + 8.5
+}
+
+// drawDiffResultRow renders one address and its current state tag.
+func drawDiffResultRow(pdf *pdfType, r Result, y float64) {
+	pdf.SetFont(fontFamily, "B", 8)
+	colorInk.text(pdf)
+	pdf.SetXY(marginX, y)
+	addr := sanitizePDFText(r.Addr())
+	pdf.CellFormat(diffAddrW, 4.4, fitCellText(pdf, addr, diffAddrW-1), "", 0, "L", false, 0, "")
+
+	drawDiffState(pdf, marginX+diffAddrW+diffGap, y, diffStateW, diffStateLabel(r))
+
+	colorHairline.draw(pdf)
+	pdf.SetLineWidth(0.1)
+	pdf.Line(marginX, y+6.6, pageWidth-marginX, y+6.6)
+}
+
+// drawDiffChangedRow renders the address, the before → after transition and
+// the change reason on a single aligned row.
+func drawDiffChangedRow(pdf *pdfType, c Change, y float64) {
+	pdf.SetFont(fontFamily, "B", 8)
+	colorInk.text(pdf)
+	pdf.SetXY(marginX, y)
+	addr := sanitizePDFText(c.After.Addr())
+	pdf.CellFormat(diffAddrW, 4.4, fitCellText(pdf, addr, diffAddrW-1), "", 0, "L", false, 0, "")
+
+	x := marginX + diffAddrW + diffGap
+	drawDiffState(pdf, x, y, diffStateW, diffStateLabel(c.Before))
+
+	x += diffStateW
+	pdf.SetFont(fontFamily, "", 7.6)
+	colorMuted.text(pdf)
+	pdf.SetXY(x, y)
+	pdf.CellFormat(diffArrowW, 4.4, "→", "", 0, "C", false, 0, "")
+
+	x += diffArrowW
+	drawDiffState(pdf, x, y, diffStateW, diffStateLabel(c.After))
+
+	x += diffStateW + diffGap
+	reasonW := pageWidth - marginX - x
+	pdf.SetFont(fontFamily, "", 7.8)
+	colorInkSoft.text(pdf)
+	pdf.SetXY(x, y)
+	reason := sanitizePDFText(c.Reason)
+	pdf.CellFormat(reasonW, 4.4, fitCellText(pdf, reason, reasonW-1), "", 0, "L", false, 0, "")
+
+	colorHairline.draw(pdf)
+	pdf.SetLineWidth(0.1)
+	pdf.Line(marginX, y+6.6, pageWidth-marginX, y+6.6)
+}
+
+// drawDiffState paints a compact state label with the severity colour used by
+// the endpoint table.
+func drawDiffState(pdf *pdfType, x, y, w float64, label string) {
+	pdf.SetFont(fontFamily, "B", 7.4)
+	diffStateColor(label).text(pdf)
+	pdf.SetXY(x, y)
+	pdf.CellFormat(w, 4.4, sanitizePDFText(label), "", 0, "L", false, 0, "")
+}
+
+// diffStateColor maps a comparison state to the dossier palette.
+func diffStateColor(label string) pdfColor {
+	switch label {
+	case "no auth", "weak":
+		return colorWarning
+	case "closed":
+		return colorMuted
+	default:
+		return colorAccent
+	}
+}
+
+// drawDiffMore renders the muted count of entries omitted by the row cap.
+func drawDiffMore(pdf *pdfType, y float64, hidden int) float64 {
+	pdf.SetFont(fontFamily, "", 7.4)
+	colorMuted.text(pdf)
+	pdf.SetXY(marginX, y)
+	pdf.CellFormat(contentWidth, 4,
+		sanitizePDFText(fmt.Sprintf("and %d more", hidden)), "", 0, "L", false, 0, "")
+	return y + 5.5
+}
+
 func writeFindings(pdf *pdfType, results []Result) {
 	findings := findingRows(results)
 
@@ -404,12 +616,14 @@ func continuationHeader(pdf *pdfType, eyebrow, note string) float64 {
 }
 
 // findingRow is one line of the definition list next to a finding's capture.
-// suffix carries a muted trailing note, currently the credential source.
+// suffix carries a muted trailing note, currently the credential source or a
+// retry marker; emphasis selects bold ink for the value itself.
 type findingRow struct {
-	label   string
-	value   string
-	suffix  string
-	warning bool
+	label    string
+	value    string
+	suffix   string
+	warning  bool
+	emphasis bool
 }
 
 // drawFindingEntry renders one dossier entry: framed capture on the left,
@@ -487,16 +701,17 @@ func drawFindingEntry(pdf *pdfType, r Result, idx int, y float64) {
 	}
 
 	rows := []findingRow{
-		{"Server", serverName, "", false},
-		{"Screen", dims, "", false},
-		{"Captured", captured, "", false},
-		{"Authentication", authSummary(r), "", true},
+		{"Server", serverName, "", false, false},
+		{"Screen", dims, "", false, false},
+		{"Captured", captured, retrySuffix(r), false, false},
+		{"Authentication", authSummary(r), "", true, false},
+		{"Transport", transportValue(r), "", false, false},
 	}
 	if r.Password != "" {
 		password, source := credentialParts(r)
-		rows = append(rows, findingRow{"Credential", password, source, false})
+		rows = append(rows, findingRow{"Credential", password, source, false, true})
 	}
-	rows = append(rows, findingRow{"Evidence", evidence, "", false})
+	rows = append(rows, findingRow{"Evidence", evidence, "", false, false})
 
 	rowY := y + 17
 	const labelW = 28.0
@@ -512,7 +727,7 @@ func drawFindingEntry(pdf *pdfType, r Result, idx int, y float64) {
 		case row.warning:
 			pdf.SetFont(fontFamily, "B", 8.4)
 			colorWarning.text(pdf)
-		case row.suffix != "":
+		case row.emphasis:
 			// The credential is the most sensitive value on the page, so it
 			// is set in bold ink while its source stays muted.
 			pdf.SetFont(fontFamily, "B", 8.4)
@@ -592,9 +807,13 @@ func drawScreenshot(pdf *pdfType, path string, x, y, w, h float64) bool {
 // generation is single-threaded, so a plain counter is sufficient.
 var imageSeq int
 
+// The endpoint table trades two columns for transport visibility: RFB and
+// Passwordless collapse into one STATE column ("no auth", "weak", "rfb", or
+// "open") and SECURITY carries the advertised security types. The widths sum
+// to contentWidth, so the table still fits the page exactly.
 var (
-	tableHeaders = []string{"IP", "PORT", "RFB", "PASSWORDLESS", "PASSWORD", "SERVER", "SCREEN", "DURATION", "TIME"}
-	tableWidths  = []float64{26, 11, 9, 24, 24, 38, 18, 15, 13}
+	tableHeaders = []string{"IP", "PORT", "STATE", "PASSWORD", "SECURITY", "SERVER", "SCREEN", "DURATION", "TIME"}
+	tableWidths  = []float64{26, 10, 16, 22, 33, 28, 16, 14, 13}
 )
 
 func writeOpenTable(pdf *pdfType, results []Result) {
@@ -668,15 +887,20 @@ func drawTableRow(pdf *pdfType, r Result, y float64) {
 		dims = fmt.Sprintf("%dx%d", r.ScreenWidth, r.ScreenHeight)
 	}
 
+	security := sanitizePDFText(securitySummary(r.SecurityTypes))
+	if security == "" {
+		security = "-"
+	}
+
 	cells := []string{
 		sanitizePDFText(r.IP),
 		itoa(r.Port),
-		yesNo(r.RFB),
-		yesNo(r.Passwordless),
+		stateLabel(r),
 		passwordCell(r),
+		security,
 		sanitizePDFText(truncate(r.ServerName, 24)),
 		dims,
-		fmt.Sprintf("%d ms", r.DurationMs),
+		durationCell(r),
 		r.Timestamp.UTC().Format("15:04:05"),
 	}
 
@@ -684,10 +908,7 @@ func drawTableRow(pdf *pdfType, r Result, y float64) {
 	for i, cell := range cells {
 		pdf.SetXY(x, y+1.6)
 		switch {
-		case i == 3 && r.Passwordless:
-			pdf.SetFont(fontFamily, "B", 7.8)
-			colorWarning.text(pdf)
-		case i == 4 && r.Password != "":
+		case (i == 2 && (r.Passwordless || r.Password != "")) || (i == 3 && r.Password != ""):
 			pdf.SetFont(fontFamily, "B", 7.8)
 			colorWarning.text(pdf)
 		case i == 2 || i == 3 || i == 4 || i == 7 || i == 8:
@@ -697,14 +918,57 @@ func drawTableRow(pdf *pdfType, r Result, y float64) {
 			pdf.SetFont(fontFamily, "", 7.8)
 			colorInk.text(pdf)
 		}
-		if i == 4 || i == 5 {
-			// Passwords and server names vary wildly in glyph width; fit the
-			// cell to the column instead of trusting a fixed character count.
+		if i == 3 || i == 4 || i == 5 || i == 7 {
+			// Passwords, server names and security lists vary wildly in glyph
+			// width; fit the cell to the column instead of trusting a fixed
+			// character count.
 			cell = fitCellText(pdf, cell, tableWidths[i]-1)
 		}
 		pdf.CellFormat(tableWidths[i], 4.4, cell, "", 0, "L", false, 0, "")
 		x += tableWidths[i]
 	}
+}
+
+// stateLabel collapses the RFB and passwordless flags into one table cell,
+// which frees the width the security column needs.
+func stateLabel(r Result) string {
+	switch {
+	case r.Passwordless:
+		return "no auth"
+	case r.Password != "":
+		return "weak"
+	case r.RFB:
+		return "rfb"
+	default:
+		return "open"
+	}
+}
+
+// durationCell appends the connection attempt count when a host only
+// answered after a retry, so flaky endpoints stand out in the table.
+func durationCell(r Result) string {
+	cell := fmt.Sprintf("%d ms", r.DurationMs)
+	if r.Attempts > 1 {
+		cell += fmt.Sprintf(" ×%d", r.Attempts)
+	}
+	return cell
+}
+
+// retrySuffix is the muted variant of the retry marker used in findings.
+func retrySuffix(r Result) string {
+	if r.Attempts <= 1 {
+		return ""
+	}
+	return fmt.Sprintf("retried ×%d", r.Attempts)
+}
+
+// transportValue renders the transport line for findings, falling back to a
+// dash when the server advertised no security types at all.
+func transportValue(r Result) string {
+	if transport := transportDescription(r); transport != "" {
+		return sanitizePDFText(transport)
+	}
+	return "-"
 }
 
 // fitCellText shortens s until it fits width at the currently selected

@@ -401,6 +401,323 @@ func TestPasswordCell(t *testing.T) {
 	}
 }
 
+func TestSecuritySummary(t *testing.T) {
+	tests := []struct {
+		name  string
+		types []string
+		want  string
+	}{
+		{name: "none", types: nil, want: ""},
+		{name: "vnc auth abbreviated", types: []string{"VNC authentication"}, want: "VNC auth"},
+		{name: "multiple types", types: []string{"VeNCrypt", "VNC authentication"}, want: "VeNCrypt · VNC auth"},
+		{name: "blank entries skipped", types: []string{"", "  ", "Tight"}, want: "Tight"},
+		{name: "unknown type verbatim", types: []string{"RA2"}, want: "RA2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := securitySummary(tt.types); got != tt.want {
+				t.Fatalf("securitySummary(%v) = %q, want %q", tt.types, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTransportDescription(t *testing.T) {
+	tests := []struct {
+		name   string
+		result Result
+		want   string
+	}{
+		{name: "no types", result: Result{}, want: ""},
+		{name: "clear text", result: Result{SecurityTypes: []string{"VNC authentication"}},
+			want: "VNC authentication (clear text)"},
+		{name: "tls", result: Result{SecurityTypes: []string{"VeNCrypt"}, TLS: true},
+			want: "VeNCrypt (TLS)"},
+		{name: "tls without type", result: Result{TLS: true}, want: "TLS (encrypted)"},
+		{name: "multiple types", result: Result{SecurityTypes: []string{"VeNCrypt", "VNC authentication"}},
+			want: "VeNCrypt · VNC authentication (clear text)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := transportDescription(tt.result); got != tt.want {
+				t.Fatalf("transportDescription() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStateLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		result Result
+		want   string
+	}{
+		{name: "passwordless", result: Result{Open: true, RFB: true, Passwordless: true}, want: "no auth"},
+		{name: "weak password", result: Result{Open: true, RFB: true, Password: "hunter2"}, want: "weak"},
+		{name: "rfb", result: Result{Open: true, RFB: true}, want: "rfb"},
+		{name: "plain open port", result: Result{Open: true}, want: "open"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stateLabel(tt.result); got != tt.want {
+				t.Fatalf("stateLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDurationCellMarksRetries(t *testing.T) {
+	if got := durationCell(Result{DurationMs: 42}); got != "42 ms" {
+		t.Fatalf("durationCell(single attempt) = %q, want %q", got, "42 ms")
+	}
+	if got := durationCell(Result{DurationMs: 42, Attempts: 3}); got != "42 ms ×3" {
+		t.Fatalf("durationCell(retried) = %q, want %q", got, "42 ms ×3")
+	}
+	if got := retrySuffix(Result{Attempts: 1}); got != "" {
+		t.Fatalf("retrySuffix(1) = %q, want empty", got)
+	}
+	if got := retrySuffix(Result{Attempts: 2}); got != "retried ×2" {
+		t.Fatalf("retrySuffix(2) = %q, want %q", got, "retried ×2")
+	}
+}
+
+func TestOpenTableFitsContentWidth(t *testing.T) {
+	if len(tableHeaders) != len(tableWidths) {
+		t.Fatalf("table headers = %d, widths = %d; want equal", len(tableHeaders), len(tableWidths))
+	}
+	total := 0.0
+	for _, w := range tableWidths {
+		total += w
+	}
+	if total != contentWidth {
+		t.Fatalf("table width total = %v mm, want content width %v mm", total, contentWidth)
+	}
+}
+
+func TestWritePDFWithTransportSecurity(t *testing.T) {
+	dir := t.TempDir()
+	shot := writeTinyPNG(t, dir)
+	ts := time.Date(2026, 10, 27, 8, 30, 0, 0, time.UTC)
+
+	results := []Result{
+		{
+			IP:            "192.0.2.60",
+			Port:          5900,
+			Open:          true,
+			RFB:           true,
+			Passwordless:  true,
+			SecurityTypes: []string{"VeNCrypt", "VNC authentication"},
+			TLS:           true,
+			Attempts:      2,
+			ServerName:    "Encrypted but open",
+			ScreenWidth:   1024,
+			ScreenHeight:  768,
+			Screenshot:    shot,
+			DurationMs:    88,
+			Timestamp:     ts,
+		},
+		{
+			IP:            "192.0.2.61",
+			Port:          5900,
+			Open:          true,
+			RFB:           true,
+			Password:      "hunter2",
+			SecurityTypes: []string{"VNC authentication"},
+			ServerName:    "Clear text weak auth",
+			DurationMs:    12,
+			Timestamp:     ts.Add(time.Second),
+		},
+	}
+
+	path := filepath.Join(dir, "security.pdf")
+	if err := WritePDF(path, results); err != nil {
+		t.Fatalf("WritePDF with transport security: %v", err)
+	}
+	requireValidPDF(t, path)
+
+	stats := coverStats(Summarize(results))
+	var tls *statCell
+	for i := range stats {
+		if stats[i].label == "TLS services" {
+			tls = &stats[i]
+		}
+	}
+	if tls == nil {
+		t.Fatal(`coverStats has no "TLS services" counter`)
+	}
+	if tls.value != "1" {
+		t.Fatalf("TLS services = %q, want 1", tls.value)
+	}
+	if tls.color != colorAccent {
+		t.Fatalf("TLS services colour = %+v, want accent %+v", tls.color, colorAccent)
+	}
+}
+
+func TestWritePDFWithDiff(t *testing.T) {
+	dir := t.TempDir()
+	shot := writeTinyPNG(t, dir)
+	ts := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+
+	results := []Result{
+		{
+			IP:           "192.0.2.140",
+			Port:         5900,
+			Open:         true,
+			RFB:          true,
+			Passwordless: true,
+			Screenshot:   shot,
+			Timestamp:    ts,
+		},
+	}
+	diff := &Diff{
+		Baseline: "/var/lib/vncshot/runs/20261026-120000",
+		New: []Result{
+			{IP: "192.0.2.140", Port: 5900, Open: true, RFB: true, Passwordless: true},
+		},
+		Resolved: []Result{
+			{IP: "192.0.2.141", Port: 5900, Open: true, RFB: true},
+		},
+		Changed: []Change{
+			{
+				Before: Result{IP: "192.0.2.142", Port: 5900, Open: true, RFB: true, Password: "hunter2"},
+				After:  Result{IP: "192.0.2.142", Port: 5900, Open: true, RFB: true},
+				Reason: "password no longer accepted",
+			},
+		},
+	}
+
+	path := filepath.Join(dir, "diff.pdf")
+	if err := WritePDFWithDiff(path, results, diff); err != nil {
+		t.Fatalf("WritePDFWithDiff: %v", err)
+	}
+	requireValidPDF(t, path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat pdf: %v", err)
+	}
+	if info.Size() < 4096 {
+		t.Fatalf("pdf size = %d bytes, want at least 4096", info.Size())
+	}
+}
+
+func TestDiffTransition(t *testing.T) {
+	tests := []struct {
+		name   string
+		before Result
+		after  Result
+		want   string
+	}{
+		{
+			name:   "weak to rfb",
+			before: Result{Open: true, RFB: true, Password: "hunter2"},
+			after:  Result{Open: true, RFB: true},
+			want:   "weak → rfb",
+		},
+		{
+			name:   "passwordless to closed",
+			before: Result{Open: true, RFB: true, Passwordless: true},
+			after:  Result{Open: false},
+			want:   "no auth → closed",
+		},
+		{
+			name:   "rfb to plain open",
+			before: Result{Open: true, RFB: true},
+			after:  Result{Open: true},
+			want:   "rfb → open",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := diffTransition(tt.before, tt.after)
+			if got != tt.want {
+				t.Fatalf("diffTransition() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCapDiffRows(t *testing.T) {
+	entries := make([]Result, 60)
+	for i := range entries {
+		entries[i] = Result{IP: "192.0.2.1", Port: 5900 + i}
+	}
+
+	kept, hidden := capDiff(entries, pdfDiffRowLimit)
+	if len(kept) != pdfDiffRowLimit || hidden != 60-pdfDiffRowLimit {
+		t.Fatalf("capDiff(pdf limit) = %d kept, %d hidden; want %d, %d",
+			len(kept), hidden, pdfDiffRowLimit, 60-pdfDiffRowLimit)
+	}
+
+	kept, hidden = capDiff(entries, htmlDiffRowLimit)
+	if len(kept) != htmlDiffRowLimit || hidden != 60-htmlDiffRowLimit {
+		t.Fatalf("capDiff(html limit) = %d kept, %d hidden; want %d, %d",
+			len(kept), hidden, htmlDiffRowLimit, 60-htmlDiffRowLimit)
+	}
+
+	kept, hidden = capDiff(entries[:3], pdfDiffRowLimit)
+	if len(kept) != 3 || hidden != 0 {
+		t.Fatalf("capDiff(short) = %d kept, %d hidden; want 3, 0", len(kept), hidden)
+	}
+
+	kept, hidden = capDiff([]Result(nil), pdfDiffRowLimit)
+	if kept != nil || hidden != 0 {
+		t.Fatalf("capDiff(nil) = %v, %d; want nil, 0", kept, hidden)
+	}
+}
+
+func TestBaselineSectionOnlyWithDiff(t *testing.T) {
+	if hasBaselineSection(nil) {
+		t.Fatal("hasBaselineSection(nil) = true, want false")
+	}
+	if normalizedDiff(nil) != nil {
+		t.Fatal("normalizedDiff(nil) != nil")
+	}
+	if !hasBaselineSection(&Diff{}) {
+		t.Fatal("hasBaselineSection(empty diff) = false, want true")
+	}
+	if !(&Diff{}).Empty() {
+		t.Fatal("empty diff reports changes")
+	}
+}
+
+func TestNormalizedDiffSortsAndReducesBaseline(t *testing.T) {
+	diff := &Diff{
+		Baseline: "/var/lib/vncshot/runs/20261026-120000",
+		New: []Result{
+			{IP: "192.0.2.10", Port: 5901},
+			{IP: "192.0.2.9", Port: 5900},
+			{IP: "192.0.2.10", Port: 5900},
+		},
+		Changed: []Change{
+			{Before: Result{IP: "192.0.2.20", Port: 5900}, After: Result{IP: "192.0.2.20", Port: 5900}},
+			{Before: Result{IP: "192.0.2.3", Port: 5901}, After: Result{IP: "192.0.2.3", Port: 5901}},
+		},
+	}
+
+	got := normalizedDiff(diff)
+	if got.Baseline != "20261026-120000" {
+		t.Fatalf("Baseline = %q, want base name", got.Baseline)
+	}
+	wantNew := []string{"192.0.2.9:5900", "192.0.2.10:5900", "192.0.2.10:5901"}
+	for i, want := range wantNew {
+		if got.New[i].Addr() != want {
+			t.Fatalf("New[%d] = %s, want %s", i, got.New[i].Addr(), want)
+		}
+	}
+	if got.Changed[0].Before.Addr() != "192.0.2.3:5901" {
+		t.Fatalf("Changed[0] = %s, want numeric IP order", got.Changed[0].Before.Addr())
+	}
+	// The helper must not reorder the caller's slices in place.
+	if diff.New[0].Addr() != "192.0.2.10:5901" || diff.Baseline != "/var/lib/vncshot/runs/20261026-120000" {
+		t.Fatal("normalizedDiff mutated its input")
+	}
+}
+
 func TestSummaryWeakCredentialsCounted(t *testing.T) {
 	results := []Result{
 		{IP: "192.0.2.50", Port: 5900, Open: true, Passwordless: true},

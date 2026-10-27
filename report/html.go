@@ -8,12 +8,135 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
 // thumbMaxWidth bounds embedded card previews so a large report stays
 // usable in a browser.
 const thumbMaxWidth = 320
+
+// htmlDiffRowLimit caps each baseline group so a large comparison stays a
+// compact summary; the remaining count is rendered as a single line.
+const htmlDiffRowLimit = 50
+
+// Diff describes how the current scan compares with a baseline run. It mirrors
+// the scan pipeline's comparison without importing the application package,
+// which already depends on report.
+type Diff struct {
+	// Baseline names the compared run. Reports render only its base name so
+	// the scanner's filesystem layout never leaks into an artifact.
+	Baseline string
+	// New lists findings that were not present in the baseline.
+	New []Result
+	// Resolved lists baseline findings that are absent from the current run.
+	Resolved []Result
+	// Changed lists findings whose risk state differs from the baseline.
+	Changed []Change
+}
+
+// Change is one finding whose risk state differs from the baseline run.
+// Reason is the operator-facing description of the transition, for example
+// "became passwordless".
+type Change struct {
+	Before Result
+	After  Result
+	Reason string
+}
+
+// Empty reports whether the comparison found no differences. A nil diff is
+// treated as empty, which keeps callers free of nil checks.
+func (d *Diff) Empty() bool {
+	return d == nil || (len(d.New) == 0 && len(d.Resolved) == 0 && len(d.Changed) == 0)
+}
+
+// hasBaselineSection reports whether a diff should produce a baseline section
+// at all. A nil diff means no baseline was requested, so the report stays
+// identical to a scan without -baseline.
+func hasBaselineSection(diff *Diff) bool {
+	return diff != nil
+}
+
+// normalizedDiff returns a copy of diff with the baseline reduced to a display
+// safe name and every group in canonical order (numeric IP, then port). The
+// caller's slices are never modified. Entries are already sorted by the scan
+// pipeline; re-sorting here keeps hand-built diffs stable as well.
+func normalizedDiff(diff *Diff) *Diff {
+	if diff == nil {
+		return nil
+	}
+	out := &Diff{
+		Baseline: baselineName(diff.Baseline),
+		New:      append([]Result(nil), diff.New...),
+		Resolved: append([]Result(nil), diff.Resolved...),
+		Changed:  append([]Change(nil), diff.Changed...),
+	}
+	SortResults(out.New)
+	SortResults(out.Resolved)
+	sort.SliceStable(out.Changed, func(i, j int) bool {
+		return compareResults(out.Changed[i].Before, out.Changed[j].Before) < 0
+	})
+	return out
+}
+
+// baselineName reduces a run reference to its base name so reports never
+// contain an absolute filesystem path.
+func baselineName(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	base := filepath.Base(filepath.Clean(ref))
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
+}
+
+// diffStateLabel names the endpoint state used by the baseline comparison.
+// Closed ports are shown explicitly because a resolved finding frequently
+// means the service is simply gone.
+func diffStateLabel(r Result) string {
+	if !r.Open {
+		return "closed"
+	}
+	return stateLabel(r)
+}
+
+// diffTagClass picks the compact state tag style. Weak and unauthenticated
+// endpoints keep the warning treatment; other RFB services use the accent
+// variant, and plain/closed ports stay muted.
+func diffTagClass(r Result) string {
+	switch {
+	case r.Passwordless || r.Password != "":
+		return "tag hot"
+	case r.RFB:
+		return "tag ok"
+	default:
+		return "tag"
+	}
+}
+
+// diffSearchIndex extends the endpoint search index with the change reason so
+// the existing report filter also matches baseline rows by their description.
+func diffSearchIndex(r Result, reason string) string {
+	index := searchIndex(r)
+	if reason != "" {
+		index += " " + reason
+	}
+	return index
+}
+
+// capDiff keeps at most limit entries and reports how many were dropped.
+// A non-positive limit means no cap.
+func capDiff[T any](entries []T, limit int) ([]T, int) {
+	if limit <= 0 || len(entries) <= limit {
+		return entries, 0
+	}
+	return entries[:limit], len(entries) - limit
+}
 
 type cardData struct {
 	IP             string
@@ -28,6 +151,8 @@ type cardData struct {
 	AuthLocked     bool
 	Password       string
 	PasswordSource string
+	Transport      string
+	Attempts       int
 	ThumbURL       template.URL
 	FullURL        template.URL
 	SearchIndex    string
@@ -43,11 +168,14 @@ type rowData struct {
 	AuthLocked     bool
 	Password       string
 	PasswordSource string
+	Security       string
+	TLS            bool
 	ServerName     string
 	Dimensions     string
 	Screenshot     string
 	Error          string
 	DurationMs     string
+	Attempts       int
 	Timestamp      string
 	SearchIndex    string
 }
@@ -57,15 +185,57 @@ type htmlData struct {
 	Summary     Summary
 	Cards       []cardData
 	Rows        []rowData
+	Diff        *htmlDiffData
+}
+
+// diffRowData is one line of a baseline comparison group.
+type diffRowData struct {
+	Addr        string
+	Tag         string
+	TagClass    string
+	Reason      string
+	Before      string
+	BeforeClass string
+	After       string
+	AfterClass  string
+	SearchIndex string
+}
+
+// diffGroupData is one group of the baseline section: New, Resolved or
+// Changed. More counts entries omitted by the row cap.
+type diffGroupData struct {
+	Count int
+	Rows  []diffRowData
+	More  int
+}
+
+// htmlDiffData is the template-facing view of a baseline comparison.
+type htmlDiffData struct {
+	Baseline string
+	Empty    bool
+	New      diffGroupData
+	Resolved diffGroupData
+	Changed  diffGroupData
 }
 
 // WriteHTML renders a self-contained HTML report to path. Thumbnails and
 // full-size captures are embedded as data URIs so the file can be shared
 // as a single artifact.
 func WriteHTML(path string, results []Result) error {
+	return WriteHTMLWithDiff(path, results, nil)
+}
+
+// WriteHTMLWithDiff renders the report together with a baseline comparison.
+// A nil diff keeps the output identical to WriteHTML.
+func WriteHTMLWithDiff(path string, results []Result, diff *Diff) error {
+	diff = normalizedDiff(diff)
+
 	doc := htmlData{
 		GeneratedAt: time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 		Summary:     Summarize(results),
+	}
+	if hasBaselineSection(diff) {
+		doc.Diff = buildHTMLDiff(diff)
 	}
 
 	for _, r := range results {
@@ -94,6 +264,8 @@ func WriteHTML(path string, results []Result) error {
 				AuthLocked:     r.AuthLocked,
 				Password:       r.Password,
 				PasswordSource: credentialSourceLabel(r.PasswordSource),
+				Transport:      transportDescription(r),
+				Attempts:       r.Attempts,
 				ThumbURL:       template.URL(thumb),
 				FullURL:        template.URL(full),
 				SearchIndex:    searchIndex(r),
@@ -115,11 +287,14 @@ func WriteHTML(path string, results []Result) error {
 			AuthLocked:     r.AuthLocked,
 			Password:       r.Password,
 			PasswordSource: credentialSourceLabel(r.PasswordSource),
+			Security:       securitySummary(r.SecurityTypes),
+			TLS:            r.TLS,
 			ServerName:     r.ServerName,
 			Dimensions:     dims,
 			Screenshot:     r.Screenshot,
 			Error:          r.Error,
 			DurationMs:     fmt.Sprintf("%d", r.DurationMs),
+			Attempts:       r.Attempts,
 			Timestamp:      r.Timestamp.UTC().Format("2006-01-02 15:04:05"),
 			SearchIndex:    searchIndex(r),
 		})
@@ -148,12 +323,69 @@ func searchIndex(r Result) string {
 		status = "open non-rfb"
 	}
 	index := fmt.Sprintf("%s %d %s %s", r.IP, r.Port, status, r.ServerName)
+	if security := securitySummary(r.SecurityTypes); security != "" {
+		index += " " + security
+	}
+	if r.TLS {
+		index += " tls"
+	}
 	// The "weak password" chip matches by substring, so the term is kept
 	// as a single token even though it reads as two words.
 	if r.Password != "" {
 		index += " weakpassword"
 	}
 	return index
+}
+
+// securityTypeAbbreviations keeps the endpoint table compact without
+// inventing names for security types the scanner did not recognise.
+var securityTypeAbbreviations = map[string]string{
+	"VNC authentication": "VNC auth",
+}
+
+// securityTypeLabel abbreviates a single RFB security type for tabular
+// output. Unknown types are shown verbatim.
+func securityTypeLabel(name string) string {
+	name = strings.TrimSpace(name)
+	if short, ok := securityTypeAbbreviations[name]; ok {
+		return short
+	}
+	return name
+}
+
+// securitySummary joins the advertised security types into one compact cell
+// value, for example "VNC auth · VeNCrypt". It returns "" when the server
+// advertised none.
+func securitySummary(types []string) string {
+	labels := make([]string, 0, len(types))
+	for _, name := range types {
+		if label := securityTypeLabel(name); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return strings.Join(labels, " · ")
+}
+
+// transportDescription renders the transport posture in prose, using the
+// full security type names: "VeNCrypt (TLS)" or "VNC authentication (clear
+// text)". An empty result means the server advertised no security types.
+func transportDescription(r Result) string {
+	names := make([]string, 0, len(r.SecurityTypes))
+	for _, name := range r.SecurityTypes {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	switch {
+	case len(names) == 0 && r.TLS:
+		return "TLS (encrypted)"
+	case len(names) == 0:
+		return ""
+	case r.TLS:
+		return strings.Join(names, " · ") + " (TLS)"
+	default:
+		return strings.Join(names, " · ") + " (clear text)"
+	}
 }
 
 // credentialSourceLabel renders the scanner's machine-readable credential
@@ -218,6 +450,51 @@ func resizeNearest(img image.Image, maxWidth int) image.Image {
 		}
 	}
 	return dst
+}
+
+// buildHTMLDiff converts a normalized comparison into the template view.
+func buildHTMLDiff(diff *Diff) *htmlDiffData {
+	data := &htmlDiffData{Baseline: diff.Baseline, Empty: diff.Empty()}
+	if data.Empty {
+		return data
+	}
+
+	newRows, newMore := capDiff(diff.New, htmlDiffRowLimit)
+	for _, r := range newRows {
+		data.New.Rows = append(data.New.Rows, htmlDiffRow(r, ""))
+	}
+	data.New.Count, data.New.More = len(diff.New), newMore
+
+	resolvedRows, resolvedMore := capDiff(diff.Resolved, htmlDiffRowLimit)
+	for _, r := range resolvedRows {
+		data.Resolved.Rows = append(data.Resolved.Rows, htmlDiffRow(r, ""))
+	}
+	data.Resolved.Count, data.Resolved.More = len(diff.Resolved), resolvedMore
+
+	changedRows, changedMore := capDiff(diff.Changed, htmlDiffRowLimit)
+	for _, c := range changedRows {
+		row := htmlDiffRow(c.After, c.Reason)
+		row.Before = diffStateLabel(c.Before)
+		row.BeforeClass = diffTagClass(c.Before)
+		row.After = diffStateLabel(c.After)
+		row.AfterClass = diffTagClass(c.After)
+		data.Changed.Rows = append(data.Changed.Rows, row)
+	}
+	data.Changed.Count, data.Changed.More = len(diff.Changed), changedMore
+
+	return data
+}
+
+// htmlDiffRow renders the shared address and state columns of a comparison
+// row. Changed rows add the reason and transition fields on top.
+func htmlDiffRow(r Result, reason string) diffRowData {
+	return diffRowData{
+		Addr:        r.Addr(),
+		Tag:         diffStateLabel(r),
+		TagClass:    diffTagClass(r),
+		Reason:      reason,
+		SearchIndex: diffSearchIndex(r, reason),
+	}
 }
 
 var htmlTmpl = template.Must(template.New("report").Parse(`<!DOCTYPE html>
@@ -318,7 +595,7 @@ h1 {
 /* Stat strip ----------------------------------------------------------- */
 .stat-strip {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   border-bottom: 1px solid var(--rule);
 }
 .stat {
@@ -518,6 +795,79 @@ h2 {
   border-color: #F0D3AB;
   background: var(--warning-soft);
   color: var(--warning);
+}
+.tag.tls {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.tag.ok {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+/* Baseline comparison -------------------------------------------------- */
+.diff-groups {
+  display: grid;
+  gap: 26px;
+}
+.diff-group-head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.diff-label {
+  font: 600 9.5px/1.4 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.diff-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 8px 18px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.diff-row:last-child { border-bottom: 0; }
+.diff-addr {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.diff-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+}
+.diff-reason { color: var(--ink); }
+.diff-transition {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+.diff-arrow { color: var(--muted); }
+.diff-more {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.diff-empty {
+  margin: 0;
+  padding: 4px 0 2px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.retried {
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .cred-source {
   color: var(--muted);
@@ -725,6 +1075,7 @@ footer a:hover { border-bottom-color: var(--accent); }
   <div class="stat"><div class="label">Targets</div><div class="value">{{.Summary.Targets}}</div></div>
   <div class="stat"><div class="label">Open ports</div><div class="value">{{.Summary.Open}}</div></div>
   <div class="stat"><div class="label">RFB services</div><div class="value">{{.Summary.RFB}}</div></div>
+  <div class="stat{{if .Summary.TLS}} good{{end}}"><div class="label">TLS services</div><div class="value">{{.Summary.TLS}}</div></div>
   <div class="stat alert"><div class="label">Passwordless</div><div class="value">{{.Summary.Passwordless}}</div></div>
   <div class="stat{{if .Summary.WeakCredentials}} alert{{end}}"><div class="label">Weak creds</div><div class="value">{{.Summary.WeakCredentials}}</div></div>
   <div class="stat good"><div class="label">Screenshots</div><div class="value">{{.Summary.Screenshots}}</div></div>
@@ -761,7 +1112,8 @@ footer a:hover { border-bottom-color: var(--accent); }
         <figcaption class="meta">
           <div class="addr">{{.Addr}}</div>
           <div class="line">{{if .Dimensions}}<span class="mono">{{.Dimensions}}</span>{{end}}{{if .ServerName}}{{if .Dimensions}} · {{end}}{{.ServerName}}{{end}}</div>
-          <div class="line"><span class="mono">{{.CapturedAt}}</span> · <span class="mono">{{.DurationMs}}</span> ms</div>
+          {{if .Transport}}<div class="line">{{.Transport}}</div>{{end}}
+          <div class="line"><span class="mono">{{.CapturedAt}}</span> · <span class="mono">{{.DurationMs}}</span> ms{{if gt .Attempts 1}} · <span class="retried">retried ×{{.Attempts}}</span>{{end}}</div>
           {{if .Passwordless}}<div class="badge">no authentication</div>{{else if .Authenticated}}<div class="badge">password: <span class="mono">{{.Password}}</span>{{if .PasswordSource}} · {{.PasswordSource}}{{end}}</div>{{end}}
         </figcaption>
       </figure>
@@ -771,6 +1123,60 @@ footer a:hover { border-bottom-color: var(--accent); }
     <div class="empty" id="cards">No unauthenticated or weak-password VNC endpoints with captures were found.</div>
     {{end}}
   </section>
+
+  {{with .Diff}}
+  <section class="section" aria-label="Changes since baseline">
+    <div class="section-head">
+      <h2>Changes since baseline</h2>
+      {{if .Baseline}}<span class="section-note">Compared with <span class="mono">{{.Baseline}}</span></span>{{else}}<span class="section-note">Baseline comparison</span>{{end}}
+    </div>
+    {{if .Empty}}
+    <p class="diff-empty">No changes since the baseline run.</p>
+    {{else}}
+    <div class="diff-groups">
+      {{if .New.Count}}
+      <div class="diff-group">
+        <div class="diff-group-head"><span class="diff-label">New ({{.New.Count}})</span></div>
+        {{range .New.Rows}}
+        <div class="diff-row" data-search="{{.SearchIndex}}">
+          <span class="diff-addr">{{.Addr}}</span>
+          <span class="diff-detail"><span class="{{.TagClass}}">{{.Tag}}</span></span>
+        </div>
+        {{end}}
+        {{if .New.More}}<p class="diff-more">… and {{.New.More}} more</p>{{end}}
+      </div>
+      {{end}}
+      {{if .Resolved.Count}}
+      <div class="diff-group">
+        <div class="diff-group-head"><span class="diff-label">Resolved ({{.Resolved.Count}})</span></div>
+        {{range .Resolved.Rows}}
+        <div class="diff-row" data-search="{{.SearchIndex}}">
+          <span class="diff-addr">{{.Addr}}</span>
+          <span class="diff-detail"><span class="{{.TagClass}}">{{.Tag}}</span></span>
+        </div>
+        {{end}}
+        {{if .Resolved.More}}<p class="diff-more">… and {{.Resolved.More}} more</p>{{end}}
+      </div>
+      {{end}}
+      {{if .Changed.Count}}
+      <div class="diff-group">
+        <div class="diff-group-head"><span class="diff-label">Changed ({{.Changed.Count}})</span></div>
+        {{range .Changed.Rows}}
+        <div class="diff-row" data-search="{{.SearchIndex}}">
+          <span class="diff-addr">{{.Addr}}</span>
+          <span class="diff-detail">
+            <span class="diff-reason">{{.Reason}}</span>
+            <span class="diff-transition"><span class="{{.BeforeClass}}">{{.Before}}</span><span class="diff-arrow">→</span><span class="{{.AfterClass}}">{{.After}}</span></span>
+          </span>
+        </div>
+        {{end}}
+        {{if .Changed.More}}<p class="diff-more">… and {{.Changed.More}} more</p>{{end}}
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+  </section>
+  {{end}}
 
   <section class="section">
     <div class="section-head">
@@ -782,7 +1188,7 @@ footer a:hover { border-bottom-color: var(--accent); }
       <table>
         <thead>
           <tr>
-            <th scope="col">IP</th><th scope="col">Port</th><th scope="col">RFB</th><th scope="col">Passwordless</th><th scope="col">Password</th><th scope="col">Server</th>
+            <th scope="col">IP</th><th scope="col">Port</th><th scope="col">RFB</th><th scope="col">Passwordless</th><th scope="col">Security</th><th scope="col">Password</th><th scope="col">Server</th>
             <th scope="col">Screen</th><th scope="col">Screenshot</th><th scope="col">Error</th><th scope="col">Duration</th><th scope="col">Time</th>
           </tr>
         </thead>
@@ -793,12 +1199,13 @@ footer a:hover { border-bottom-color: var(--accent); }
             <td class="mono">{{.Port}}</td>
             <td class="{{if .RFB}}yes{{else}}no{{end}}">{{if .RFB}}yes{{else}}no{{end}}</td>
             <td class="{{if .Passwordless}}yes{{else}}no{{end}}">{{if .Passwordless}}yes{{else}}no{{end}}</td>
+            <td>{{if .Security}}{{.Security}}{{else}}<span class="no">—</span>{{end}}{{if .TLS}} <span class="tag tls">tls</span>{{end}}</td>
             <td>{{if .Password}}<span class="tag hot">weak</span> <span class="mono">{{.Password}}</span> <span class="cred-source">{{.PasswordSource}}</span>{{else if .AuthLocked}}<span class="tag">locked out</span>{{else}}<span class="no">—</span>{{end}}</td>
             <td>{{.ServerName}}</td>
             <td class="mono">{{.Dimensions}}</td>
             <td class="mono">{{.Screenshot}}</td>
             <td class="err">{{.Error}}</td>
-            <td class="mono">{{.DurationMs}} ms</td>
+            <td class="mono">{{.DurationMs}} ms{{if gt .Attempts 1}} <span class="retried">retried ×{{.Attempts}}</span>{{end}}</td>
             <td class="mono">{{.Timestamp}}</td>
           </tr>
           {{end}}

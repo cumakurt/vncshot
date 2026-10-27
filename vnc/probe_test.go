@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"image"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -285,6 +287,110 @@ func TestProbeRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestExportedSecurityTypeName(t *testing.T) {
+	tests := []struct {
+		typ  uint8
+		want string
+	}{
+		{typ: 1, want: "None"},
+		{typ: 2, want: "VNC authentication"},
+		{typ: 5, want: "RA2"},
+		{typ: 6, want: "RA2ne"},
+		{typ: 16, want: "Tight"},
+		{typ: 17, want: "Ultra"},
+		{typ: 18, want: "TLS"},
+		{typ: 19, want: "VeNCrypt"},
+		{typ: 20, want: "SASL"},
+		{typ: 21, want: "MD5"},
+		{typ: 22, want: "xvp"},
+		{typ: 30, want: "Apple Remote Desktop"},
+		{typ: 113, want: "MSLogon II"},
+		{typ: 0, want: "type 0"},
+		{typ: 200, want: "type 200"},
+	}
+
+	for _, tt := range tests {
+		if got := vnc.SecurityTypeName(tt.typ); got != tt.want {
+			t.Errorf("SecurityTypeName(%d) = %q, want %q", tt.typ, got, tt.want)
+		}
+	}
+}
+
+func TestProbeReportsEncryptedSecurityTypes(t *testing.T) {
+	// VeNCrypt (19) plus VNC authentication (2): the probe takes no
+	// credential and stops after the list, but the report must still show
+	// that an encrypted channel was on offer.
+	addr := serveRFB(t, func(s *rfbServer) {
+		s.sendBanner("RFB 003.008\n")
+		s.mustWrite([]byte{2, 19, 2})
+	})
+
+	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+	})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Probe returned nil result")
+	}
+	if !result.TLS {
+		t.Error("TLS = false, want true for VeNCrypt")
+	}
+	want := []string{"VeNCrypt", "VNC authentication"}
+	if !reflect.DeepEqual(result.SecurityTypeNames, want) {
+		t.Errorf("SecurityTypeNames = %v, want %v", result.SecurityTypeNames, want)
+	}
+	if !result.AuthRequired {
+		t.Error("AuthRequired = false, want true")
+	}
+}
+
+func TestProbeReportsPlainSecurityTypes(t *testing.T) {
+	t.Run("None only", func(t *testing.T) {
+		addr := serveRFB(t, func(s *rfbServer) {
+			s.sendBanner("RFB 003.008\n")
+			s.mustWrite([]byte{1, 1}) // None only
+			_ = s.mustRead(1)         // security selection
+			s.mustWriteU32(0)         // SecurityResult: OK
+			_ = s.mustRead(1)         // ClientInit
+			s.sendServerInit(4, 3, "plain-desktop")
+			s.readCaptureMessages()
+			s.sendSolidRawRect(4, 3, 255, 0, 0)
+		})
+
+		result, err := vnc.Probe(t.Context(), addr, vnc.Options{Timeout: probeTimeout})
+		if err != nil {
+			t.Fatalf("Probe error: %v", err)
+		}
+		if result.TLS {
+			t.Error("TLS = true, want false for None")
+		}
+		if want := []string{"None"}; !reflect.DeepEqual(result.SecurityTypeNames, want) {
+			t.Errorf("SecurityTypeNames = %v, want %v", result.SecurityTypeNames, want)
+		}
+	})
+
+	t.Run("VNC authentication only", func(t *testing.T) {
+		addr := serveRFB(t, func(s *rfbServer) {
+			s.sendBanner("RFB 003.008\n")
+			s.mustWrite([]byte{1, 2})
+		})
+
+		result, err := vnc.Probe(t.Context(), addr, vnc.Options{Timeout: probeTimeout})
+		if err != nil {
+			t.Fatalf("Probe error: %v", err)
+		}
+		if result.TLS {
+			t.Error("TLS = true, want false for VNC authentication")
+		}
+		if want := []string{"VNC authentication"}; !reflect.DeepEqual(result.SecurityTypeNames, want) {
+			t.Errorf("SecurityTypeNames = %v, want %v", result.SecurityTypeNames, want)
+		}
+	})
+}
+
 func TestProbeRFB33Passwordless(t *testing.T) {
 	addr := serveRFB(t, func(s *rfbServer) {
 		s.sendBanner("RFB 003.003\n")
@@ -358,6 +464,12 @@ func TestProbeConnectRefused(t *testing.T) {
 	result, err := vnc.Probe(t.Context(), addr, vnc.Options{Timeout: probeTimeout})
 	if err == nil {
 		t.Fatalf("Probe = (%+v, nil), want connect error", result)
+	}
+	if !errors.Is(err, vnc.ErrConnect) {
+		t.Errorf("Probe error = %v, want errors.Is(err, vnc.ErrConnect)", err)
+	}
+	if !strings.HasPrefix(err.Error(), "connect: ") {
+		t.Errorf("Probe error = %q, want a %q prefix", err.Error(), "connect: ")
 	}
 }
 

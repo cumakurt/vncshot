@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -88,9 +89,10 @@ func (s *fakeRFB) target() scanner.Target {
 	return scanner.Target{IP: "127.0.0.1", Port: s.port()}
 }
 
-// serveConn speaks one RFB 3.8 session. The scanner dials twice per probe
-// (a TCP openness check that closes immediately, then the real handshake),
-// so short-lived connections must exit cleanly on EOF.
+// serveConn speaks one RFB 3.8 session. The scanner uses a single TCP
+// connection per probe (vnc.Probe owns the dial), so every accepted
+// connection is the real handshake; short-lived failures still have to exit
+// cleanly on EOF.
 func (s *fakeRFB) serveConn(conn net.Conn) {
 	defer conn.Close()
 	// Bound every exchange so a wedged client cannot hang the test.
@@ -319,6 +321,15 @@ func TestScanPipelineEndToEnd(t *testing.T) {
 		if ra.ScreenWidth != 4 || ra.ScreenHeight != 3 {
 			t.Errorf("server A: screen = %dx%d, want 4x3", ra.ScreenWidth, ra.ScreenHeight)
 		}
+		if want := []string{"None"}; !reflect.DeepEqual(ra.SecurityTypes, want) {
+			t.Errorf("server A: SecurityTypes = %v, want %v", ra.SecurityTypes, want)
+		}
+		if ra.TLS {
+			t.Error("server A: TLS = true, want false for None")
+		}
+		if ra.Attempts != 1 {
+			t.Errorf("server A: Attempts = %d, want 1", ra.Attempts)
+		}
 		if ra.Screenshot == "" {
 			t.Error("server A: Screenshot is empty, want a file path")
 		} else {
@@ -347,6 +358,15 @@ func TestScanPipelineEndToEnd(t *testing.T) {
 		if rb.Screenshot != "" {
 			t.Errorf("server B: Screenshot = %q, want empty", rb.Screenshot)
 		}
+		if want := []string{"VNC authentication"}; !reflect.DeepEqual(rb.SecurityTypes, want) {
+			t.Errorf("server B: SecurityTypes = %v, want %v", rb.SecurityTypes, want)
+		}
+		if rb.TLS {
+			t.Error("server B: TLS = true, want false for VNC authentication")
+		}
+		if rb.Attempts != 1 {
+			t.Errorf("server B: Attempts = %d, want 1", rb.Attempts)
+		}
 
 		// Closed port: no service, no screenshot.
 		rc, ok := byPort[closed]
@@ -361,6 +381,9 @@ func TestScanPipelineEndToEnd(t *testing.T) {
 		}
 		if rc.Screenshot != "" {
 			t.Errorf("closed port: Screenshot = %q, want empty", rc.Screenshot)
+		}
+		if rc.Attempts != 0 {
+			t.Errorf("closed port: Attempts = %d, want 0 (no retry needed)", rc.Attempts)
 		}
 
 		// Report exporters: JSON and HTML artifacts must be written.
@@ -813,5 +836,162 @@ func TestScanRecordsAuthenticationLockout(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte(`"auth_locked": true`)) {
 		t.Errorf("JSON report does not record the lockout:\n%s", body)
+	}
+}
+
+// TestScanReportsEncryptedSecurityTypes checks the end-to-end path from the
+// advertised RFB security types to the report: a server offering VeNCrypt
+// must be marked TLS even though the scanner sends no credential.
+func TestScanReportsEncryptedSecurityTypes(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			_, _ = conn.Write([]byte("RFB 003.008\n"))
+			_, _ = io.ReadFull(conn, make([]byte, 12))
+			// Two types: VNC authentication and VeNCrypt.
+			_, _ = conn.Write([]byte{2, 2, 19})
+			conn.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close()
+		wg.Wait()
+	})
+
+	results, err := scanner.Run(context.Background(),
+		[]scanner.Target{{IP: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port}},
+		scanner.Options{
+			ConnectTimeout: 2 * time.Second,
+			VNCTimeout:     2 * time.Second,
+			Workers:        1,
+			ScreenshotDir:  t.TempDir(),
+			Shared:         true,
+		})
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Run returned %d results, want 1", len(results))
+	}
+
+	r := results[0]
+	if !r.Open || !r.RFB {
+		t.Errorf("Open=%v RFB=%v, want both true", r.Open, r.RFB)
+	}
+	if !r.TLS {
+		t.Error("TLS = false, want true when VeNCrypt is advertised")
+	}
+	want := []string{"VNC authentication", "VeNCrypt"}
+	if !reflect.DeepEqual(r.SecurityTypes, want) {
+		t.Errorf("SecurityTypes = %v, want %v", r.SecurityTypes, want)
+	}
+	if r.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1", r.Attempts)
+	}
+}
+
+// TestHostConcurrencyCap asserts the per-IP semaphore keeps several open
+// ports on one host from being probed by more workers than configured.
+func TestHostConcurrencyCap(t *testing.T) {
+	const (
+		portCount       = 8
+		hostConcurrency = 2
+		probeHoldTime   = 50 * time.Millisecond
+	)
+
+	var (
+		mu          sync.Mutex
+		inFlight    int
+		maxInFlight int
+	)
+
+	listeners := make([]net.Listener, 0, portCount)
+	targets := make([]scanner.Target, 0, portCount)
+
+	var servers sync.WaitGroup
+	for i := 0; i < portCount; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		listeners = append(listeners, ln)
+		targets = append(targets, scanner.Target{
+			IP:   "127.0.0.1",
+			Port: ln.Addr().(*net.TCPAddr).Port,
+		})
+
+		servers.Add(1)
+		go func(ln net.Listener) {
+			defer servers.Done()
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+
+				mu.Lock()
+				inFlight++
+				if inFlight > maxInFlight {
+					maxInFlight = inFlight
+				}
+				mu.Unlock()
+
+				// Hold the connection so overlapping probes are observable.
+				// The decrement happens before Close: the scanner cannot
+				// dial the next target until this probe sees the close, so
+				// the counter can never be inflated by a stale connection.
+				time.Sleep(probeHoldTime)
+
+				mu.Lock()
+				inFlight--
+				mu.Unlock()
+
+				conn.Close()
+			}
+		}(ln)
+	}
+	t.Cleanup(func() {
+		for _, ln := range listeners {
+			ln.Close()
+		}
+		servers.Wait()
+	})
+
+	results, err := scanner.Run(context.Background(), targets, scanner.Options{
+		ConnectTimeout:  2 * time.Second,
+		VNCTimeout:      2 * time.Second,
+		Workers:         portCount,
+		HostConcurrency: hostConcurrency,
+		ScreenshotDir:   t.TempDir(),
+		Shared:          true,
+	})
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(results) != portCount {
+		t.Fatalf("Run returned %d results, want %d", len(results), portCount)
+	}
+
+	mu.Lock()
+	observed := maxInFlight
+	mu.Unlock()
+
+	if observed > hostConcurrency {
+		t.Errorf("max probes in flight = %d, want <= %d", observed, hostConcurrency)
+	}
+	if observed < hostConcurrency {
+		t.Errorf("max probes in flight = %d, want the cap of %d to be used", observed, hostConcurrency)
 	}
 }
