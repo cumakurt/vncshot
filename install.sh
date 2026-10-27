@@ -2,9 +2,9 @@
 #
 # install.sh — dependency bootstrap and static build for vncshot.
 #
-# Detects the host operating system and package manager, installs any
-# missing toolchain pieces exactly once (existing installs are reused),
-# then produces a stripped static binary.
+# Linux only. Detects the host distribution and package manager, installs
+# any missing toolchain pieces exactly once (existing installs are reused),
+# then produces a stripped static Linux binary.
 #
 # Usage:
 #   ./install.sh              interactive install + build + system-wide install
@@ -69,8 +69,9 @@ usage() {
   cat <<EOF
 Usage: ./install.sh [options]
 
-Builds vncshot, installs the binary into /usr/local/bin and creates the
-/usr/local/vncshot report directory so scans can be run from any directory.
+Builds vncshot on Linux, installs the binary into /usr/local/bin and
+creates the /usr/local/vncshot report directory so scans can be run from
+any directory. vncshot supports Linux only.
 
 Options:
   -y, --yes          non-interactive; assume yes on prompts
@@ -123,14 +124,9 @@ DEPS_PRESENT=()
 
 detect_os() {
   OS_ARCH="$(uname -m)"
-  case "$(uname -s)" in
-    Linux)  OS_NAME="Linux" ;;
-    Darwin) OS_NAME="macOS" ;;
-    MINGW*|MSYS*|CYGWIN*) OS_NAME="Windows" ;;
-    *)      OS_NAME="$(uname -s)" ;;
-  esac
+  OS_NAME="Linux"
 
-  if [[ "$OS_NAME" == "Linux" ]] && [[ -r /etc/os-release ]]; then
+  if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
     . /etc/os-release
     OS_NAME="Linux (${ID:-unknown})"
@@ -138,10 +134,6 @@ detect_os() {
 }
 
 detect_package_manager() {
-  if [[ "$OS_NAME" == "macOS" ]] && command -v brew >/dev/null 2>&1; then
-    PKG_MGR="brew"; PKG_INSTALL="brew install"
-    return
-  fi
   if command -v apt-get >/dev/null 2>&1; then
     PKG_MGR="apt"; PKG_INSTALL="apt-get install -y"
   elif command -v dnf >/dev/null 2>&1; then
@@ -168,7 +160,7 @@ run_pkg() {
       sudo apt-get update -qq >/dev/null 2>&1 || true
       sudo $PKG_INSTALL "$@" >/dev/null 2>&1
     fi
-  elif [[ "$(id -u)" -eq 0 ]] || [[ "$PKG_MGR" == "brew" ]]; then
+  elif [[ "$(id -u)" -eq 0 ]]; then
     $PKG_INSTALL "$@" >/dev/null 2>&1
   else
     sudo $PKG_INSTALL "$@" >/dev/null 2>&1
@@ -212,21 +204,15 @@ check_go() {
 
 install_go_from_tarball() {
   local ver="${GO_VERSION:-1.22.10}"
-  local os_lc arch_tar goos goarch
-  os_lc="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  local arch_tar
   case "$(uname -m)" in
     x86_64)          arch_tar="amd64" ;;
     aarch64|arm64)   arch_tar="arm64" ;;
     armv7l)          arch_tar="armv6l" ;;
-    *)               fail "unsupported architecture for Go tarball: $(uname -m)" ;;
-  esac
-  case "$os_lc" in
-    linux)  goos="linux" ;;
-    darwin) goos="darwin" ;;
-    *)      fail "unsupported OS for Go tarball: $os_lc" ;;
+    *)               fail "unsupported architecture for Go tarball: $(uname -m) (supported: x86_64, aarch64/arm64, armv7l)" ;;
   esac
 
-  local tarball="go${ver}.${goos}-${arch_tar}.tar.gz"
+  local tarball="go${ver}.linux-${arch_tar}.tar.gz"
   local url="https://go.dev/dl/${tarball}"
   local dest="$CACHE_DIR/$tarball"
   local prefix="$HOME/.local/go"
@@ -276,7 +262,6 @@ ensure_go() {
   if [[ -n "$PKG_MGR" ]]; then
     local pkg_name="go"
     if [[ "$PKG_MGR" == "apt" ]]; then pkg_name="golang-go"; fi
-    if [[ "$PKG_MGR" == "brew" ]]; then pkg_name="go"; fi
     detail "installing Go via $PKG_MGR ($pkg_name)"
     if run_pkg "$pkg_name"; then
       if check_go; then
@@ -334,8 +319,8 @@ human_size() {
 
 build_static() {
   local ldflags="-s -w -X main.version=${VERSION:-dev} -X main.reportBaseDir=${REPORT_DIR}"
-  # CGO off + -trimpath yields a portable static binary.
-  if ! CGO_ENABLED=0 "$GO_BIN" build \
+  # CGO off + explicit GOOS + -trimpath yields a portable static Linux binary.
+  if ! CGO_ENABLED=0 GOOS=linux "$GO_BIN" build \
       -trimpath \
       -ldflags "$ldflags" \
       -o "$BINARY_PATH" . ; then
@@ -382,11 +367,6 @@ run_privileged() {
 install_binary() {
   local prefix="${INSTALL_PREFIX:-/usr/local/bin}"
   local target="$prefix/vncshot"
-
-  if [[ "$OS_NAME" == "Windows" ]]; then
-    warn "system-wide install is not supported on $OS_NAME; skipping"
-    return
-  fi
 
   if [[ -w "$prefix" || ( ! -e "$prefix" && -w "$(dirname -- "$prefix")" ) ]]; then
     mkdir -p "$prefix"
@@ -486,6 +466,11 @@ print_summary() {
 
 main() {
   banner
+
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    err "unsupported operating system: $(uname -s) (vncshot supports Linux only)"
+    exit 1
+  fi
 
   local total=3
   if [[ "$INSTALL_BIN" -eq 1 ]]; then

@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vncshot · control room</title>
+<style>
+  :root {
+    --paper: #fbf9f6;
+    --paper-2: #f4f0ea;
+    --ink: #1b2a32;
+    --ink-soft: #4c5b63;
+    --muted: #7c8a91;
+    --rule: #ded6cb;
+    --accent: #0e6e62;
+    --accent-soft: #e3f0ed;
+    --warn: #b45309;
+    --warn-soft: #fdf1e0;
+    --danger: #a3312a;
+    --radius: 4px;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 14px/1.55 var(--sans);
+  }
+  .shell {
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr);
+    min-height: 100vh;
+  }
+  /* ---------- left rail ---------- */
+  aside {
+    border-right: 1px solid var(--rule);
+    padding: 26px 22px 40px;
+    background: var(--paper-2);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  .brand {
+    font-family: var(--serif);
+    font-size: 26px;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  .brand span { color: var(--accent); }
+  .tagline {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 2px 0 22px;
+  }
+  .rail-section {
+    border-top: 1px solid var(--rule);
+    padding-top: 16px;
+    margin-top: 18px;
+  }
+  .rail-title {
+    font-family: var(--serif);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--ink-soft);
+    margin: 0 0 12px;
+  }
+  label { display: block; margin-bottom: 12px; }
+  label .lbl {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  input:focus, select:focus {
+    outline: 2px solid var(--accent-soft);
+    border-color: var(--accent);
+  }
+  input[type="checkbox"] { accent-color: var(--accent); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .check {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    margin-bottom: 12px;
+  }
+  .check input { margin-top: 3px; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #0b5a50; }
+  .btn-ghost {
+    background: transparent;
+    border-color: var(--rule);
+    color: var(--ink-soft);
+    margin-top: 8px;
+  }
+  .btn-ghost:hover { border-color: var(--danger); color: var(--danger); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .rail-foot {
+    margin-top: 22px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  /* ---------- main ---------- */
+  main { padding: 28px 34px 60px; min-width: 0; }
+  .masthead {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 14px;
+  }
+  .masthead h1 {
+    font-family: var(--serif);
+    font-size: 30px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+  .masthead .meta {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: right;
+    white-space: nowrap;
+  }
+  .status-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin: 18px 0 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid var(--rule);
+    background: #fff;
+    color: var(--muted);
+  }
+  .pill .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .pill.running { border-color: #bcd9d3; background: var(--accent-soft); color: var(--accent); }
+  .pill.running .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  .pill.completed { border-color: #bcd9d3; background: var(--accent-soft); color: var(--accent); }
+  .pill.completed .dot { background: var(--accent); }
+  .pill.failed, .pill.cancelled { border-color: #e8c9c5; background: #fbeeec; color: var(--danger); }
+  .pill.failed .dot, .pill.cancelled .dot { background: var(--danger); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+  .progress-wrap { margin: 18px 0 6px; }
+  .progress-track {
+    height: 6px;
+    background: var(--paper-2);
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid var(--rule);
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--accent), #2a9d8f);
+    transition: width 0.25s ease;
+  }
+  .progress-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+    font-family: var(--mono);
+  }
+
+  .counters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: #fff;
+    margin: 24px 0;
+    overflow: hidden;
+  }
+  .counter {
+    padding: 14px 16px;
+    border-right: 1px solid var(--rule);
+  }
+  .counter:last-child { border-right: 0; }
+  .counter .k {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+  .counter .v {
+    font-family: var(--serif);
+    font-size: 27px;
+    line-height: 1.15;
+    margin-top: 2px;
+  }
+  .counter.hot .v { color: var(--warn); }
+  .counter.good .v { color: var(--accent); }
+
+  .block { margin-top: 30px; }
+  .block-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 8px;
+    margin-bottom: 14px;
+  }
+  .block-head h2 {
+    font-family: var(--serif);
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .block-head .hint { font-size: 11.5px; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+  td { padding: 8px 10px; border-bottom: 1px solid #eee8e0; vertical-align: middle; }
+  tr:hover td { background: #fdfbf7; }
+  .mono { font-family: var(--mono); font-size: 11.5px; }
+  .tag {
+    display: inline-block;
+    font-size: 10.5px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--paper-2);
+    color: var(--ink-soft);
+    border: 1px solid var(--rule);
+  }
+  .tag.hot { background: var(--warn-soft); border-color: #f0d3ab; color: var(--warn); }
+  .tag.ok { background: var(--accent-soft); border-color: #bcd9d3; color: var(--accent); }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  .shot-link { display: inline-block; }
+  .shot-link img {
+    height: 34px;
+    width: 54px;
+    object-fit: cover;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    display: block;
+  }
+  .empty {
+    border: 1px dashed var(--rule);
+    border-radius: var(--radius);
+    padding: 26px;
+    color: var(--muted);
+    font-size: 13px;
+    background: #fff;
+  }
+  .log {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  .log li {
+    display: flex;
+    gap: 12px;
+    padding: 5px 0;
+    border-bottom: 1px dotted #e8e1d7;
+    color: var(--ink-soft);
+  }
+  .log li time { color: var(--muted); flex: none; }
+  .reports { display: flex; flex-wrap: wrap; gap: 10px; }
+  .report-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--rule);
+    background: #fff;
+    border-radius: var(--radius);
+    padding: 9px 14px;
+    font-size: 12.5px;
+    color: var(--ink);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .report-link:hover { border-color: var(--accent); color: var(--accent); }
+  .report-link span.ext {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  .notice {
+    background: var(--warn-soft);
+    border: 1px solid #f0d3ab;
+    color: #7c4512;
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 12.5px;
+    margin: 14px 0;
+  }
+  .error-box {
+    background: #fbeeec;
+    border: 1px solid #e8c9c5;
+    color: var(--danger);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 12.5px;
+    margin: 14px 0;
+    white-space: pre-wrap;
+  }
+  .hidden { display: none !important; }
+  .disclaimer {
+    margin-top: 34px;
+    border-top: 1px solid var(--rule);
+    padding-top: 14px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.65;
+  }
+  @media (max-width: 980px) {
+    .shell { grid-template-columns: 1fr; }
+    aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
+    main { padding: 22px 18px 40px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <h1 class="brand">vnc<span>shot</span></h1>
+    <p class="tagline">VNC security inventory · control room</p>
+
+    <form id="form" autocomplete="off">
+      <div class="rail-section">
+        <p class="rail-title">Scope</p>
+        <label>
+          <span class="lbl">Target</span>
+          <input type="text" id="target" placeholder="192.168.1.0/24 or 10.0.0.1-50">
+        </label>
+        <label>
+          <span class="lbl">Target file</span>
+          <input type="text" id="file" placeholder="/root/targets.txt">
+        </label>
+        <label>
+          <span class="lbl">Ports</span>
+          <input type="text" id="ports" placeholder="5900,5901-5910">
+        </label>
+      </div>
+
+      <div class="rail-section">
+        <p class="rail-title">Performance</p>
+        <div class="pair">
+          <label>
+            <span class="lbl">Workers</span>
+            <input type="number" id="workers" min="1" max="5000">
+          </label>
+          <label>
+            <span class="lbl">Rate / s</span>
+            <input type="number" id="rate" min="0" max="10000">
+          </label>
+        </div>
+        <div class="pair">
+          <label>
+            <span class="lbl">Connect ms</span>
+            <input type="number" id="timeout_ms" min="1">
+          </label>
+          <label>
+            <span class="lbl">RFB ms</span>
+            <input type="number" id="vnc_timeout_ms" min="1">
+          </label>
+        </div>
+      </div>
+
+      <div class="rail-section">
+        <p class="rail-title">Output</p>
+        <label>
+          <span class="lbl">Report root</span>
+          <input type="text" id="out_dir" placeholder="/usr/local/vncshot">
+        </label>
+        <label>
+          <span class="lbl">JSON override</span>
+          <input type="text" id="output" placeholder="default: &lt;run-dir&gt;/vncshot_report.json">
+        </label>
+        <label>
+          <span class="lbl">HTML override</span>
+          <input type="text" id="html" placeholder="default: &lt;run-dir&gt;/vncshot_report.html">
+        </label>
+        <label>
+          <span class="lbl">PDF override</span>
+          <input type="text" id="pdf" placeholder="default: &lt;run-dir&gt;/vncshot_report.pdf">
+        </label>
+        <label>
+          <span class="lbl">Screenshot dir</span>
+          <input type="text" id="screenshot_dir" placeholder="default: &lt;run-dir&gt;/screenshots">
+        </label>
+        <label class="check">
+          <input type="checkbox" id="no_pdf">
+          <span>Skip the PDF report (faster on very large scans)</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="shared" checked>
+          <span>Request a shared RFB session (do not kick active viewers)</span>
+        </label>
+      </div>
+
+      <div class="rail-section">
+        <p class="rail-title">Passwords</p>
+        <label>
+          <span class="lbl">Word list</span>
+          <input type="text" id="word_list" placeholder="/root/wordlist.txt (one per line)">
+        </label>
+        <label class="check">
+          <input type="checkbox" id="no_default_passwords">
+          <span>Skip the built-in weak-password list</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="no_password_check">
+          <span>Skip password testing entirely (passwordless check only)</span>
+        </label>
+        <p class="hint" style="font-size:11px;color:var(--muted);margin:0">
+          The scanner only reads one frame and disconnects. No input or
+          clipboard is ever sent.
+        </p>
+      </div>
+
+      <div class="rail-section">
+        <p class="rail-title">Authorization</p>
+        <label class="check">
+          <input type="checkbox" id="authorized">
+          <span>I confirm I own, or hold explicit written permission to test, every target in scope.</span>
+        </label>
+        <button class="btn btn-primary" type="submit" id="start">Start scan</button>
+        <button class="btn btn-ghost" type="button" id="cancel" disabled>Cancel scan</button>
+      </div>
+    </form>
+
+    <p class="rail-foot">
+      Loopback only · session token protected<br>
+      vncshot <span id="version">dev</span> · GPL-3.0<br>
+      Cuma KURT · cumakurt@gmail.com
+    </p>
+  </aside>
+
+  <main>
+    <div class="masthead">
+      <div>
+        <h1>Scan control</h1>
+      </div>
+      <div class="meta">
+        <div id="startedAt">no scan started</div>
+        <div id="runDir" class="mono"></div>
+      </div>
+    </div>
+
+    <div class="status-line">
+      <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">idle</span></span>
+      <span id="elapsed">—</span>
+      <span id="rateLine"></span>
+      <span id="credLine"></span>
+    </div>
+
+    <div id="warningBox" class="notice hidden"></div>
+    <div id="errorBox" class="error-box hidden"></div>
+
+    <div class="progress-wrap">
+      <div class="progress-track"><div class="progress-fill" id="bar"></div></div>
+      <div class="progress-meta">
+        <span id="progressText">0 / 0 probes</span>
+        <span id="progressPct">0%</span>
+      </div>
+    </div>
+
+    <div class="counters">
+      <div class="counter"><div class="k">Targets</div><div class="v" id="cTargets">0</div></div>
+      <div class="counter"><div class="k">Open ports</div><div class="v" id="cOpen">0</div></div>
+      <div class="counter"><div class="k">RFB services</div><div class="v" id="cRfb">0</div></div>
+      <div class="counter hot"><div class="k">Passwordless</div><div class="v" id="cNoAuth">0</div></div>
+      <div class="counter hot"><div class="k">Weak creds</div><div class="v" id="cWeak">0</div></div>
+      <div class="counter good"><div class="k">Screenshots</div><div class="v" id="cShots">0</div></div>
+      <div class="counter"><div class="k">Errors</div><div class="v" id="cErrors">0</div></div>
+    </div>
+
+    <div class="block" id="reportsBlock">
+      <div class="block-head">
+        <h2>Reports</h2>
+        <span class="hint">written into the timestamped run folder</span>
+      </div>
+      <div class="reports" id="reportLinks">
+        <div class="empty">Reports appear here when the scan finishes.</div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <h2>Findings</h2>
+        <span class="hint" id="findingHint">open ports, RFB services and passwordless hosts</span>
+      </div>
+      <div id="findingsHost">
+        <div class="empty">No findings yet.</div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <h2>Activity</h2>
+        <span class="hint">live events from the scanner</span>
+      </div>
+      <ul class="log" id="log"><li><time>—</time><span>waiting for a scan</span></li></ul>
+    </div>
+
+    <div class="disclaimer">
+      Authorized use only. Scan only networks you own or have explicit written permission to test.
+      Captured desktops are sensitive evidence; report findings only to the network owner.
+      The developer accepts no liability for use or misuse of this tool. See LICENSE for the full terms.
+    </div>
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var token = new URLSearchParams(window.location.search).get("t") || "";
+  // The token is also set as an HttpOnly cookie by the server; keep it in
+  // memory for the custom header required on state-changing requests.
+  var state = null;
+  var es = null;
+
+  function $(id) { return document.getElementById(id); }
+
+  function api(path, options) {
+    options = options || {};
+    options.headers = Object.assign({
+      "X-Vncshot-Token": token,
+      "Content-Type": "application/json"
+    }, options.headers || {});
+    return fetch(path, options);
+  }
+
+  function fmtDuration(ms) {
+    if (!ms || ms < 0) return "—";
+    var s = Math.floor(ms / 1000);
+    var m = Math.floor(s / 60);
+    var h = Math.floor(m / 60);
+    if (h > 0) return h + "h " + (m % 60) + "m";
+    if (m > 0) return m + "m " + (s % 60) + "s";
+    return s + "s";
+  }
+
+  function setStatus(status) {
+    var pill = $("statusPill");
+    pill.className = "pill " + (status || "idle");
+    $("statusText").textContent = status || "idle";
+    var running = status === "running";
+    $("start").disabled = running;
+    $("cancel").disabled = !running;
+  }
+
+  function renderCounters(s) {
+    $("cTargets").textContent = s.summary.targets || 0;
+    $("cOpen").textContent = s.summary.open || 0;
+    $("cRfb").textContent = s.summary.rfb || 0;
+    $("cNoAuth").textContent = s.summary.passwordless || 0;
+    $("cWeak").textContent = s.summary.weak_credentials || 0;
+    $("cShots").textContent = s.summary.screenshots || 0;
+    $("cErrors").textContent = s.summary.errors || 0;
+  }
+
+  function renderProgress(s) {
+    var pct = s.total > 0 ? Math.min(100, Math.round((s.done / s.total) * 100)) : 0;
+    $("bar").style.width = pct + "%";
+    $("progressText").textContent = s.done + " / " + s.total + " probes";
+    $("progressPct").textContent = pct + "%";
+    $("elapsed").textContent = s.elapsed_ms ? "elapsed " + fmtDuration(s.elapsed_ms) : "—";
+    $("rateLine").textContent = s.progress_rate ? s.progress_rate.toFixed(0) + " probes/s" : "";
+    $("credLine").textContent = s.credentials ? s.credentials + " password candidates" : "";
+  }
+
+  function renderReports(s) {
+    var host = $("reportLinks");
+    var links = s.report_links || {};
+    var order = [["html", "HTML report"], ["pdf", "PDF report"], ["json", "JSON data"]];
+    var found = false;
+    host.innerHTML = "";
+    order.forEach(function (pair) {
+      var key = pair[0];
+      var href = links[key];
+      if (!href) return;
+      found = true;
+      var a = document.createElement("a");
+      a.className = "report-link";
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.innerHTML = pair[1] + ' <span class="ext">' + key + "</span>";
+      host.appendChild(a);
+    });
+    if (!found) {
+      host.innerHTML = '<div class="empty">Reports appear here when the scan finishes.</div>';
+    }
+  }
+
+  function renderFindings(s) {
+    var host = $("findingsHost");
+    var rows = s.findings || [];
+    if (!rows.length) {
+      host.innerHTML = '<div class="empty">No findings yet.</div>';
+      return;
+    }
+    var table = document.createElement("table");
+    table.innerHTML = "<thead><tr>" +
+      "<th>Address</th><th>State</th><th>Server</th><th>Screen</th>" +
+      "<th>Shot</th><th>Latency</th><th>Note</th>" +
+      "</tr></thead>";
+    var tbody = document.createElement("tbody");
+
+    rows.slice().reverse().forEach(function (f) {
+      var tr = document.createElement("tr");
+      var stateCell = f.passwordless
+        ? '<span class="tag hot">no auth</span>'
+        : (f.password
+            ? '<span class="tag hot">weak: ' + esc(f.password) + '</span>'
+            : (f.auth_locked
+                ? '<span class="tag">locked out</span>'
+                : (f.rfb ? '<span class="tag ok">rfb</span>' : '<span class="tag">open</span>')));
+      var shot = f.screenshot
+        ? '<a class="shot-link" href="' + f.screenshot + '" target="_blank" rel="noopener"><img src="' + f.screenshot + '" alt="screenshot"></a>'
+        : '<span class="mono">—</span>';
+      tr.innerHTML = "<td class=\"mono\">" + esc(f.addr) + "</td>" +
+        "<td>" + stateCell + "</td>" +
+        "<td>" + esc(f.server_name || "—") + "</td>" +
+        "<td class=\"mono\">" + esc(f.dimensions || "—") + "</td>" +
+        "<td>" + shot + "</td>" +
+        "<td class=\"mono\">" + (f.duration_ms || 0) + " ms</td>" +
+        "<td class=\"mono\">" + esc(f.error || "") + "</td>";
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    host.innerHTML = "";
+    host.appendChild(table);
+  }
+
+  function renderLog(s) {
+    var list = $("log");
+    var events = s.events || [];
+    if (!events.length) return;
+    list.innerHTML = "";
+    events.slice().reverse().forEach(function (e) {
+      var li = document.createElement("li");
+      var t = document.createElement("time");
+      t.textContent = new Date(e.at).toLocaleTimeString();
+      var span = document.createElement("span");
+      span.textContent = "[" + e.kind + "] " + e.message;
+      li.appendChild(t);
+      li.appendChild(span);
+      list.appendChild(li);
+    });
+  }
+
+  function esc(v) {
+    return String(v).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function render(s) {
+    state = s;
+    setStatus(s.status);
+    $("version").textContent = s.version || "dev";
+    $("startedAt").textContent = s.started ? "started " + s.started : "no scan started";
+    $("runDir").textContent = s.run_dir || "";
+
+    if (s.warning) {
+      $("warningBox").classList.remove("hidden");
+      $("warningBox").textContent = s.warning;
+    } else {
+      $("warningBox").classList.add("hidden");
+    }
+    if (s.error) {
+      $("errorBox").classList.remove("hidden");
+      $("errorBox").textContent = s.error;
+    } else {
+      $("errorBox").classList.add("hidden");
+    }
+
+    renderProgress(s);
+    renderCounters(s);
+    renderReports(s);
+    renderFindings(s);
+    renderLog(s);
+  }
+
+  function connect() {
+    if (es) es.close();
+    es = new EventSource("/api/events");
+    es.onmessage = function (msg) {
+      try { render(JSON.parse(msg.data)); } catch (e) { /* ignore malformed frame */ }
+    };
+    es.onerror = function () {
+      // The server closes the stream when the GUI shuts down; retry with a
+      // delay so a transient disconnect does not freeze the dashboard.
+      es.close();
+      setTimeout(connect, 2000);
+    };
+  }
+
+  $("form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var body = {
+      target: $("target").value.trim(),
+      file: $("file").value.trim(),
+      ports: $("ports").value.trim(),
+      workers: parseInt($("workers").value || "0", 10),
+      rate: parseInt($("rate").value || "0", 10),
+      timeout_ms: parseInt($("timeout_ms").value || "0", 10),
+      vnc_timeout_ms: parseInt($("vnc_timeout_ms").value || "0", 10),
+      out_dir: $("out_dir").value.trim(),
+      output: $("output").value.trim(),
+      html: $("html").value.trim(),
+      pdf: $("pdf").value.trim(),
+      screenshot_dir: $("screenshot_dir").value.trim(),
+      no_pdf: $("no_pdf").checked,
+      shared: $("shared").checked,
+      word_list: $("word_list").value.trim(),
+      no_default_passwords: $("no_default_passwords").checked,
+      no_password_check: $("no_password_check").checked,
+      authorized: $("authorized").checked
+    };
+    if (!body.authorized) {
+      $("errorBox").classList.remove("hidden");
+      $("errorBox").textContent = "Confirm your authorization before starting a scan.";
+      return;
+    }
+    api("/api/scan", { method: "POST", body: JSON.stringify(body) })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
+        return res.json().then(render);
+      })
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  });
+
+  $("cancel").addEventListener("click", function () {
+    api("/api/cancel", { method: "POST" })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
+        return res.json().then(render);
+      })
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  });
+
+  api("/api/state").then(function (res) { return res.json(); }).then(render).catch(function () {});
+  connect();
+})();
+</script>
+</body>
+</html>

@@ -30,7 +30,9 @@ func WriteJSON(path string, results []Result) error {
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	// Reports may contain weak credentials and captured desktops, so they
+	// are owner-readable only.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write json report: %w", err)
 	}
 	return nil

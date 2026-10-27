@@ -14,7 +14,7 @@
 // Command vncshot is a VNC security inventory scanner for authorized
 // network assessments. It expands IP/CIDR/range targets, probes RFB
 // endpoints, flags passwordless servers, captures their framebuffers and
-// writes JSON/HTML/PDF reports.
+// writes JSON/HTML/PDF reports. It is supported on Linux only.
 package main
 
 import (
@@ -25,22 +25,15 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
-	"vncshot/report"
-	"vncshot/scanner"
+	"vncshot/app"
+	"vncshot/gui"
 )
 
-const (
-	appName = "vncshot"
-
-	// runTimestampLayout names each scan run directory.
-	runTimestampLayout = "20060102-150405"
-)
+const appName = "vncshot"
 
 // reportBaseDir is the root for timestamped run directories. install.sh
 // overrides it at build time via -ldflags so the installed binary and the
@@ -66,7 +59,37 @@ type config struct {
 	noPDF         bool
 	screenshotDir string
 	shared        bool
+	wordList      string
+	noDefaultPw   bool
+	noPasswordChk bool
 	assumeYes     bool
+	gui           bool
+	host          string
+	port          int
+	noBrowser     bool
+}
+
+func (c config) appConfig() app.Config {
+	return app.Config{
+		Target:             c.target,
+		File:               c.file,
+		Ports:              c.ports,
+		ConnectTimeout:     c.timeout,
+		VNCTimeout:         c.vncTimeout,
+		Workers:            c.workers,
+		RatePerSec:         c.rate,
+		Shared:             c.shared,
+		NoPDF:              c.noPDF,
+		WordList:           c.wordList,
+		NoDefaultPasswords: c.noDefaultPw,
+		NoPasswordCheck:    c.noPasswordChk,
+		OutDir:             c.outDir,
+		OutDirExplicit:     c.outDirSet,
+		Output:             c.output,
+		HTML:               c.html,
+		PDF:                c.pdf,
+		ScreenshotDir:      c.screenshotDir,
+	}
 }
 
 func main() {
@@ -78,14 +101,28 @@ func main() {
 
 	cfg := parseFlags()
 
-	// Raw RFB probing and the shared report tree require root privileges;
-	// fail fast instead of producing a half-working scan.
+	// Raw RFB probing and the shared report tree under /usr/local/vncshot
+	// require root; fail fast instead of producing a half-working scan.
 	if err := requireRoot(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
-	if err := run(cfg); err != nil {
+	var err error
+	if cfg.gui {
+		err = gui.Run(gui.Config{
+			Scan:        cfg.appConfig(),
+			Version:     version,
+			Host:        cfg.host,
+			Port:        cfg.port,
+			OpenBrowser: !cfg.noBrowser,
+			Reason:      "gui",
+		})
+	} else {
+		err = runCLI(cfg)
+	}
+
+	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(os.Stderr, "\nscan interrupted; partial results were written")
 			os.Exit(130)
@@ -112,7 +149,15 @@ func parseFlags() config {
 	flag.BoolVar(&cfg.noPDF, "no-pdf", false, "skip PDF generation")
 	flag.StringVar(&cfg.screenshotDir, "screenshot-dir", "", "directory for PNG captures (default <run-dir>/screenshots)")
 	flag.BoolVar(&cfg.shared, "shared", true, "request shared RFB session (does not kick active viewers)")
+	flag.StringVar(&cfg.wordList, "word-list", "", "file with extra password candidates, one per line")
+	flag.BoolVar(&cfg.noDefaultPw, "no-default-passwords", false, "do not try the built-in weak-password list")
+	flag.BoolVar(&cfg.noPasswordChk, "no-password-check", false, "do not attempt any password, report passwordless hosts only")
 	flag.BoolVar(&cfg.assumeYes, "yes", false, "skip the interactive authorization confirmation")
+
+	flag.BoolVar(&cfg.gui, "gui", false, "start the local web GUI (all features incl. live progress)")
+	flag.StringVar(&cfg.host, "gui-host", "127.0.0.1", "GUI listen address")
+	flag.IntVar(&cfg.port, "gui-port", 0, "GUI listen port (0 = pick a free port)")
+	flag.BoolVar(&cfg.noBrowser, "gui-no-browser", false, "do not open the GUI in a browser automatically")
 
 	flag.Usage = func() { printUsage(flag.CommandLine.Output()) }
 	flag.Parse()
@@ -127,14 +172,16 @@ func parseFlags() config {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintf(w, "%s %s — VNC security inventory scanner\n\n", appName, version)
+	fmt.Fprintf(w, "%s %s — VNC security inventory scanner (Linux)\n\n", appName, version)
 	fmt.Fprintf(w, "Usage:\n")
 	fmt.Fprintf(w, "  sudo %s -target <IP|CIDR|range> [flags]\n", appName)
-	fmt.Fprintf(w, "  sudo %s -file <path> [flags]\n\n", appName)
+	fmt.Fprintf(w, "  sudo %s -file <path> [flags]\n", appName)
+	fmt.Fprintf(w, "  sudo %s -gui [flags]\n\n", appName)
 	fmt.Fprintf(w, "Probes VNC/RFB endpoints, flags passwordless servers and captures\n")
 	fmt.Fprintf(w, "their framebuffers. Each scan writes JSON, HTML and PDF reports plus\n")
 	fmt.Fprintf(w, "PNG screenshots into a timestamped folder under -out-dir.\n\n")
-	fmt.Fprintf(w, "%s must run as root (directly or via sudo).\n\n", appName)
+	fmt.Fprintf(w, "-gui starts a local web interface with the same options and live\n")
+	fmt.Fprintf(w, "progress. It listens on loopback only and requires root.\n\n")
 	fmt.Fprintf(w, "Flags:\n")
 	flag.PrintDefaults()
 	fmt.Fprintf(w, "\nDeveloper: Cuma KURT <cumakurt@gmail.com>\n")
@@ -142,7 +189,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "https://www.linkedin.com/in/cuma-kurt-34414917/\n")
 }
 
-func run(cfg config) error {
+func runCLI(cfg config) error {
 	if !cfg.assumeYes {
 		ok, err := confirmAuthorization()
 		if err != nil {
@@ -153,132 +200,42 @@ func run(cfg config) error {
 		}
 	}
 
-	ports, err := scanner.ParsePorts(cfg.ports)
+	scanCfg := cfg.appConfig()
+	scanCfg.ShowProgress = true
+
+	session, err := app.Prepare(scanCfg)
 	if err != nil {
 		return err
 	}
-
-	targets, err := scanner.ParseTargets(cfg.target, cfg.file, ports)
-	if err != nil {
-		return err
-	}
-
-	runDir, err := prepareRunDir(cfg)
-	if err != nil {
-		return err
-	}
-
-	cfg.output = resolveArtifactPath(cfg.output, runDir, appName+"_report.json")
-	cfg.html = resolveArtifactPath(cfg.html, runDir, appName+"_report.html")
-	cfg.pdf = resolveArtifactPath(cfg.pdf, runDir, appName+"_report.pdf")
-	cfg.screenshotDir = resolveArtifactPath(cfg.screenshotDir, runDir, "screenshots")
-	if err := os.MkdirAll(cfg.screenshotDir, 0o755); err != nil {
-		return fmt.Errorf("create screenshot directory: %w", err)
+	if warning := session.FallbackWarning(); warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 	}
 
 	fmt.Fprintf(os.Stderr, "targets: %d host:port pairs | ports: %s | workers: %d | rate: %s\n",
-		len(targets), cfg.ports, cfg.workers, rateText(cfg.rate))
-	fmt.Fprintf(os.Stderr, "report directory: %s\n", runDir)
+		len(session.Targets), cfg.ports, cfg.workers, rateText(cfg.rate))
+	fmt.Fprintf(os.Stderr, "password candidates: %d\n", len(session.Credentials))
+	fmt.Fprintf(os.Stderr, "report directory: %s\n", session.RunDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	opts := scanner.Options{
-		ConnectTimeout: cfg.timeout,
-		VNCTimeout:     cfg.vncTimeout,
-		Workers:        cfg.workers,
-		RatePerSec:     cfg.rate,
-		ScreenshotDir:  cfg.screenshotDir,
-		Shared:         cfg.shared,
-		ShowProgress:   true,
-	}
-
-	results, scanErr := scanner.Run(ctx, targets, opts)
-
-	sum := report.Summarize(results)
-	if err := report.WriteJSON(cfg.output, results); err != nil {
-		return err
-	}
-	if err := report.WriteHTML(cfg.html, results); err != nil {
-		return err
-	}
-
-	if !cfg.noPDF && cfg.pdf != "" {
-		if err := report.WritePDF(cfg.pdf, results); err != nil {
-			// PDF is a convenience artifact; a render failure must not
-			// discard the scan itself.
-			fmt.Fprintf(os.Stderr, "warning: pdf generation skipped: %v\n", err)
-		}
-	}
+	out, scanErr := session.Scan(ctx, nil)
 
 	fmt.Fprintf(os.Stderr, "\n=== summary ===\n")
-	fmt.Fprintf(os.Stderr, "targets:      %d\n", sum.Targets)
-	fmt.Fprintf(os.Stderr, "open:         %d\n", sum.Open)
-	fmt.Fprintf(os.Stderr, "rfb services: %d\n", sum.RFB)
-	fmt.Fprintf(os.Stderr, "passwordless: %d\n", sum.Passwordless)
-	fmt.Fprintf(os.Stderr, "screenshots:  %d\n", sum.Screenshots)
-	fmt.Fprintf(os.Stderr, "errors:       %d\n", sum.Errors)
-	fmt.Fprintf(os.Stderr, "json:  %s\n", cfg.output)
-	fmt.Fprintf(os.Stderr, "html:  %s\n", cfg.html)
-	if !cfg.noPDF && cfg.pdf != "" {
-		fmt.Fprintf(os.Stderr, "pdf:   %s\n", cfg.pdf)
+	fmt.Fprintf(os.Stderr, "targets:      %d\n", out.Summary.Targets)
+	fmt.Fprintf(os.Stderr, "open:         %d\n", out.Summary.Open)
+	fmt.Fprintf(os.Stderr, "rfb services: %d\n", out.Summary.RFB)
+	fmt.Fprintf(os.Stderr, "passwordless: %d\n", out.Summary.Passwordless)
+	fmt.Fprintf(os.Stderr, "weak creds:   %d\n", out.Summary.WeakCredentials)
+	fmt.Fprintf(os.Stderr, "screenshots:  %d\n", out.Summary.Screenshots)
+	fmt.Fprintf(os.Stderr, "errors:       %d\n", out.Summary.Errors)
+	fmt.Fprintf(os.Stderr, "json:  %s\n", out.JSON)
+	fmt.Fprintf(os.Stderr, "html:  %s\n", out.HTML)
+	if out.PDF != "" {
+		fmt.Fprintf(os.Stderr, "pdf:   %s\n", out.PDF)
 	}
 
 	return scanErr
-}
-
-// prepareRunDir creates the timestamped folder that holds every artifact of
-// this scan. When the default base directory is not writable (for example
-// when running from a source checkout without install.sh), it falls back to
-// a per-user data directory so a scan is never lost to a permissions error.
-func prepareRunDir(cfg config) (string, error) {
-	runDir, err := createRunDir(cfg.outDir)
-	if err == nil {
-		return runDir, nil
-	}
-	if cfg.outDirSet {
-		return "", err
-	}
-
-	fallback := fallbackReportBase()
-	if fallback == "" {
-		return "", err
-	}
-	runDir, fallbackErr := createRunDir(fallback)
-	if fallbackErr != nil {
-		return "", err
-	}
-	fmt.Fprintf(os.Stderr, "warning: %v; writing reports to %s\n", err, fallback)
-	return runDir, nil
-}
-
-func createRunDir(base string) (string, error) {
-	runDir := filepath.Join(base, time.Now().Format(runTimestampLayout))
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return "", fmt.Errorf("create report directory %s: %w", runDir, err)
-	}
-	return runDir, nil
-}
-
-func fallbackReportBase() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share", appName)
-}
-
-// resolveArtifactPath keeps default artifacts inside the run directory while
-// honouring explicit absolute paths and treating relative overrides as
-// relative to the run directory.
-func resolveArtifactPath(value, runDir, fallback string) string {
-	if value == "" {
-		return filepath.Join(runDir, fallback)
-	}
-	if filepath.IsAbs(value) {
-		return value
-	}
-	return filepath.Join(runDir, value)
 }
 
 func rateText(rate int) string {
@@ -293,11 +250,6 @@ func rateText(rate int) string {
 // unprivileged would either fail halfway or silently write to a fallback
 // location.
 func requireRoot() error {
-	if runtime.GOOS == "windows" {
-		// Windows has no POSIX effective UID; installing and running there
-		// already requires an elevated shell.
-		return nil
-	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("root privileges required; re-run with sudo")
 	}

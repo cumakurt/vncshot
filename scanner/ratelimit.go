@@ -41,7 +41,8 @@ func (r *RateLimiter) Wait(ctx context.Context) error {
 	r.mu.Unlock()
 
 	if wait <= 0 {
-		return nil
+		// Still surface cancellation even when no timer is needed.
+		return ctx.Err()
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()

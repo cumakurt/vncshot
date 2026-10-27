@@ -32,8 +32,14 @@ type Options struct {
 	ScreenshotDir string
 	// Shared requests a shared RFB session (does not kick active viewers).
 	Shared bool
+	// Passwords are weak-password candidates. Empty disables password
+	// testing and keeps the scan to the passwordless check.
+	Passwords []vnc.Credential
 	// ShowProgress enables the terminal progress bar.
 	ShowProgress bool
+	// OnProgress, when set, is called once per completed probe. It runs on
+	// the collecting goroutine, so implementations must not block for long.
+	OnProgress func(done int, total int, r report.Result)
 }
 
 // Run probes every target and returns one Result per target, in
@@ -105,6 +111,9 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]report.Result, 
 		if bar != nil {
 			bar.Add(1)
 		}
+		if opts.OnProgress != nil {
+			opts.OnProgress(len(out), len(targets), r)
+		}
 	}
 
 	if bar != nil {
@@ -152,8 +161,9 @@ func probe(ctx context.Context, t Target, opts Options) (res report.Result) {
 	conn.Close()
 
 	vncRes, err := vnc.Probe(ctx, addr, vnc.Options{
-		Timeout: opts.VNCTimeout,
-		Shared:  opts.Shared,
+		Timeout:   opts.VNCTimeout,
+		Shared:    opts.Shared,
+		Passwords: opts.Passwords,
 	})
 	if err != nil {
 		res.Error = err.Error()
@@ -162,11 +172,17 @@ func probe(ctx context.Context, t Target, opts Options) (res report.Result) {
 
 	res.RFB = true
 	res.Passwordless = vncRes.Passwordless
+	res.Password = vncRes.Password
+	res.PasswordSource = vncRes.PasswordSource
+	res.AuthLocked = vncRes.AuthLocked
 	res.ServerName = vncRes.ServerName
 	res.ScreenWidth = vncRes.Width
 	res.ScreenHeight = vncRes.Height
 
-	if !vncRes.Passwordless || vncRes.Frame == nil {
+	// Capture whenever the session is established, whether it was open or
+	// reached with a weak password. The client closes the session right
+	// after reading this single frame.
+	if (!vncRes.Passwordless && vncRes.Password == "") || vncRes.Frame == nil {
 		return res
 	}
 

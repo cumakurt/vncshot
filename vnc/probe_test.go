@@ -242,20 +242,17 @@ func TestProbePasswordlessWithCapture(t *testing.T) {
 }
 
 func TestProbeRequiresAuth(t *testing.T) {
+	// With no credentials the probe must stop right after the security-type
+	// list: sending ClientInit without authenticating would be a protocol
+	// violation, and the desktop name is only available post-auth.
 	addr := serveRFB(t, func(s *rfbServer) {
 		s.sendBanner("RFB 003.008\n")
+		s.mustWrite([]byte{1, 2}) // only VNC authentication
 
-		// Only VNC authentication is offered; the client must not select
-		// None and must not attempt a capture.
-		s.mustWrite([]byte{1, 2})
-
-		// The client still completes ClientInit/ServerInit so the endpoint
-		// is recorded as RFB, then stops without credentials.
-		shared := s.mustRead(1)
-		if shared[0] != 1 {
-			s.t.Errorf("fake server: shared flag = %d, want 1", shared[0])
+		// Anything the client writes from here on is a bug.
+		if extra, err := io.ReadAll(io.LimitReader(s.conn, 1)); err == nil && len(extra) > 0 {
+			s.t.Errorf("fake server: client sent %d unexpected byte(s) before authenticating", len(extra))
 		}
-		s.sendServerInit(8, 6, "locked-desktop")
 	})
 
 	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
@@ -271,17 +268,20 @@ func TestProbeRequiresAuth(t *testing.T) {
 	if result.Passwordless {
 		t.Error("Passwordless = true, want false")
 	}
+	if !result.AuthRequired {
+		t.Error("AuthRequired = false, want true")
+	}
 	if len(result.AuthTypes) != 1 || result.AuthTypes[0] != 2 {
 		t.Errorf("AuthTypes = %v, want [2]", result.AuthTypes)
 	}
 	if result.Frame != nil {
 		t.Error("Frame is non-nil, want nil when auth is required")
 	}
-	if result.ServerName != "locked-desktop" {
-		t.Errorf("ServerName = %q, want %q", result.ServerName, "locked-desktop")
+	if result.Password != "" {
+		t.Errorf("Password = %q, want empty when no credentials were supplied", result.Password)
 	}
-	if result.Width != 8 || result.Height != 6 {
-		t.Errorf("geometry = %dx%d, want 8x6", result.Width, result.Height)
+	if result.ServerName != "" {
+		t.Errorf("ServerName = %q, want empty before authentication", result.ServerName)
 	}
 }
 

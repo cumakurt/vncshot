@@ -3,6 +3,7 @@ package vnc
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"net"
@@ -17,6 +18,11 @@ type Options struct {
 	// Shared requests a shared session so the probe does not disconnect
 	// an existing viewer. Inventory scans should leave this enabled.
 	Shared bool
+	// Passwords are weak-password candidates tried against servers that
+	// offer VNC authentication. Each candidate uses its own short-lived
+	// connection so a server-side lockout is never triggered by hammering
+	// one session, and the list stays under operator control.
+	Passwords []Credential
 }
 
 // Result is what a probe learned about one endpoint.
@@ -31,13 +37,40 @@ type Result struct {
 	ServerName string
 	Width      int
 	Height     int
+	// AuthRequired is true when the server did not offer the "None"
+	// security type.
+	AuthRequired bool
+	// Password is the weak password that authenticated the session, or ""
+	// when authentication was not attempted or did not succeed.
+	Password string
+	// PasswordSource records where Password came from (SourceDefault or
+	// SourceWordList).
+	PasswordSource string
+	// AuthLocked is true when the server rejected further attempts
+	// (SecurityResult status 2). The caller must stop guessing.
+	AuthLocked bool
 	// Frame is the captured framebuffer. Nil when the server requires
 	// authentication or capture failed.
 	Frame image.Image
 }
 
-// Probe dials addr, performs the RFB handshake and, when the server
-// allows unauthenticated access, captures the current framebuffer.
+// errStopProbe signals that the probe learned everything it can without a
+// valid credential. It is not a scan failure: the caller keeps the partial
+// Result (RFB, auth types, server name).
+var errStopProbe = errors.New("probe stopped before session init")
+
+// errAuthRejected means the server refused the credential for this
+// connection. It is the expected outcome for most word-list entries.
+var errAuthRejected = errors.New("authentication rejected")
+
+// errAuthLocked means the server has blocked further attempts.
+var errAuthLocked = errors.New("authentication locked out")
+
+// Probe dials addr, performs the RFB handshake and, when the server allows
+// unauthenticated access (or a weak password is discovered), captures the
+// current framebuffer. It never sends input, clipboard or power events: the
+// session is read-only by construction and is closed as soon as the frame
+// has been read.
 //
 // A server that requires authentication is reported through Result with
 // Passwordless=false and a nil Frame; that is not an error.
@@ -46,6 +79,43 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 		opts.Timeout = 5 * time.Second
 	}
 
+	// Discovery attempt: learn the security types without sending any
+	// credential. This keeps an inventory scan from looking like an attack
+	// against hosts that are not in scope for password testing.
+	discovery, err := probeOnce(ctx, addr, opts, Credential{})
+	if err != nil {
+		return nil, err
+	}
+	if discovery.Passwordless || !discovery.AuthRequired || len(opts.Passwords) == 0 {
+		return discovery, nil
+	}
+
+	for _, cred := range opts.Passwords {
+		if err := ctx.Err(); err != nil {
+			return discovery, err
+		}
+		res, err := probeOnce(ctx, addr, opts, cred)
+		if err != nil {
+			// A network-level failure ends the attempt loop; the discovery
+			// result still describes the endpoint.
+			return discovery, nil
+		}
+		if res.Password != "" {
+			return res, nil
+		}
+		if res.AuthLocked {
+			// Surface the lockout: operators need to know the server is
+			// blocking further attempts.
+			discovery.AuthLocked = true
+			break
+		}
+	}
+	return discovery, nil
+}
+
+// probeOnce runs one complete RFB session. An empty credential means the
+// caller only wants the security-type discovery step.
+func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) (*Result, error) {
 	dialer := net.Dialer{Timeout: opts.Timeout}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -60,26 +130,36 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 	defer stop()
 
 	c := &client{
-		conn:   conn,
-		r:      bufio.NewReaderSize(conn, 64*1024),
-		w:      bufio.NewWriterSize(conn, 32*1024),
-		opts:   opts,
-		result: &Result{},
+		conn:       conn,
+		r:          bufio.NewReaderSize(conn, 64*1024),
+		w:          bufio.NewWriterSize(conn, 32*1024),
+		opts:       opts,
+		credential: cred,
+		result:     &Result{},
 	}
 
 	if err := c.handshake(); err != nil {
-		return nil, err
+		switch {
+		case errors.Is(err, errStopProbe), errors.Is(err, errAuthRejected):
+			// Not a scan failure: the endpoint is RFB but the credential
+			// did not work (or none was sent).
+			return c.result, nil
+		case errors.Is(err, errAuthLocked):
+			c.result.AuthLocked = true
+			return c.result, nil
+		default:
+			return nil, err
+		}
 	}
-	// The handshake succeeded: this endpoint speaks RFB. Auth refusal is
-	// a finding, not a probe failure.
 	return c.result, nil
 }
 
 type client struct {
-	conn net.Conn
-	r    *bufio.Reader
-	w    *bufio.Writer
-	opts Options
+	conn       net.Conn
+	r          *bufio.Reader
+	w          *bufio.Writer
+	opts       Options
+	credential Credential
 
 	result      *Result
 	version     [2]int
@@ -108,24 +188,25 @@ func (c *client) handshake() error {
 		return fmt.Errorf("write protocol version: %w", err)
 	}
 
-	// 2. Security handshake.
-	passwordless, err := c.securityHandshake()
-	if err != nil {
+	// 2. Security handshake. errStopProbe means "we know the security
+	// posture but cannot continue without a valid credential"; that is a
+	// finding, not a failure.
+	if err := c.securityHandshake(); err != nil {
+		if errors.Is(err, errStopProbe) {
+			return err
+		}
 		return err
 	}
-	c.result.Passwordless = passwordless
 
 	// 3. ClientInit / ServerInit.
 	if err := c.initSession(); err != nil {
 		return err
 	}
-	if !passwordless {
-		// Authenticated servers are still inventory findings, but we have
-		// no credentials and cannot continue.
-		return nil
-	}
 
-	// 4. Capture the current framebuffer.
+	// 4. Capture the current framebuffer, then close. The only client
+	// messages ever sent are SetPixelFormat, SetEncodings and
+	// FramebufferUpdateRequest; no input, clipboard or control messages
+	// are emitted, so the remote desktop cannot be altered.
 	return c.capture()
 }
 
@@ -137,79 +218,183 @@ func (c *client) write(b []byte) error {
 	return c.w.Flush()
 }
 
-// securityHandshake selects the "None" security type when offered and
-// reports whether the session is therefore passwordless.
-func (c *client) securityHandshake() (bool, error) {
+// readSecurityTypes reads the security-type advertisement for the
+// negotiated protocol version. RFB 3.3 announces exactly one U32 type;
+// 3.7+ sends a counted list.
+func (c *client) readSecurityTypes() ([]uint8, error) {
 	major, minor := c.version[0], c.version[1]
 
-	// RFB 3.3 announces a single security type as U32.
+	c.setDeadline()
 	if major == 3 && minor <= 3 {
-		c.setDeadline()
 		raw, err := readU32(c.r)
 		if err != nil {
-			return false, fmt.Errorf("read security type: %w", err)
+			return nil, fmt.Errorf("read security type: %w", err)
 		}
 		if raw == uint32(secTypeInvalid) {
-			return false, c.readFailure("security negotiation")
+			return nil, c.readFailure("security negotiation")
 		}
-		// 3.3 only uses the low byte of the type in practice, but the
-		// field is a full U32; reject anything outside the known range.
-		secType := uint8(raw)
 		if raw > 0xFF {
-			return false, fmt.Errorf("unsupported security type %d", raw)
+			return nil, fmt.Errorf("unsupported security type %d", raw)
 		}
-		c.result.AuthTypes = []uint8{secType}
-		if secType != secTypeNone {
-			return false, nil
-		}
-		// 3.3 + None: no SecurityResult, proceed to ClientInit.
-		return true, nil
+		return []uint8{uint8(raw)}, nil
 	}
 
-	// RFB 3.7/3.8: a list of security types.
-	c.setDeadline()
 	n, err := readU8(c.r)
 	if err != nil {
-		return false, fmt.Errorf("read security types: %w", err)
+		return nil, fmt.Errorf("read security types: %w", err)
 	}
 	if n == 0 {
-		return false, c.readFailure("security negotiation")
+		return nil, c.readFailure("security negotiation")
 	}
 	types, err := readN(c.r, int(n))
 	if err != nil {
-		return false, fmt.Errorf("read security type list: %w", err)
+		return nil, fmt.Errorf("read security type list: %w", err)
+	}
+	return types, nil
+}
+
+// securityHandshake selects a security type. It prefers "None" (the
+// passwordless finding) and otherwise performs VNC authentication with the
+// credential supplied for this connection.
+func (c *client) securityHandshake() error {
+	types, err := c.readSecurityTypes()
+	if err != nil {
+		return err
 	}
 	c.result.AuthTypes = append([]uint8(nil), types...)
 
-	hasNone := false
+	hasNone, hasVNC, hasOther := false, false, false
 	for _, t := range types {
-		if t == secTypeNone {
+		switch t {
+		case secTypeNone:
 			hasNone = true
-			break
+		case secTypeVNCAuth:
+			hasVNC = true
+		default:
+			hasOther = true
 		}
-	}
-	if !hasNone {
-		return false, nil
 	}
 
-	if err := c.write([]byte{secTypeNone}); err != nil {
-		return false, fmt.Errorf("select security type: %w", err)
+	// A server that offers both None and auth is treated as passwordless:
+	// that is the weaker configuration and the one worth reporting.
+	if hasNone {
+		if err := c.selectSecurityType(secTypeNone); err != nil {
+			return err
+		}
+		c.result.Passwordless = true
+		return nil
 	}
 
-	// 3.8 sends SecurityResult for every security type, including None.
-	if minor >= 8 {
-		c.setDeadline()
-		status, err := readU32(c.r)
-		if err != nil {
-			return false, fmt.Errorf("read security result: %w", err)
+	c.result.AuthRequired = true
+
+	switch {
+	case hasVNC:
+		// Discovery connection: report the posture without sending a
+		// password guess.
+		if c.credential.Password == "" && c.credential.Source == "" {
+			return errStopProbe
 		}
-		if status != 0 {
-			return false, c.readFailure("security result")
+		if err := c.selectSecurityType(secTypeVNCAuth); err != nil {
+			return err
 		}
+		if err := c.vncAuthenticate(); err != nil {
+			return err
+		}
+		return nil
+
+	case hasOther:
+		return errStopProbe
+	default:
+		return errStopProbe
 	}
-	return true, nil
 }
 
+// selectSecurityType sends the chosen type, which only RFB 3.7+ expects,
+// and consumes the SecurityResult that 3.8 always sends.
+func (c *client) selectSecurityType(secType uint8) error {
+	major, minor := c.version[0], c.version[1]
+	legacy := major == 3 && minor <= 3
+
+	if !legacy {
+		if err := c.write([]byte{secType}); err != nil {
+			return fmt.Errorf("select security type: %w", err)
+		}
+	}
+
+	// "None": 3.3 has no SecurityResult at all, 3.7+ sends it immediately.
+	// VNC authentication instead receives a challenge next, and its
+	// SecurityResult is consumed by vncAuthenticate after the response.
+	if secType != secTypeNone {
+		return nil
+	}
+	if legacy {
+		return nil
+	}
+	return c.readSecurityResult()
+}
+
+// readSecurityResult consumes the U32 status. Status 1 is a wrong password
+// (normal during a word-list run); status 2 means the server has locked the
+// account out and the caller must stop guessing.
+func (c *client) readSecurityResult() error {
+	c.setDeadline()
+	status, err := readU32(c.r)
+	if err != nil {
+		return fmt.Errorf("read security result: %w", err)
+	}
+	switch status {
+	case 0:
+		return nil
+	case 1:
+		// 3.8 may send a reason string after a failure; drain it so the
+		// connection stays usable for a follow-up attempt on this socket.
+		if c.version[1] >= 8 {
+			c.drainFailureReason()
+		}
+		return errAuthRejected
+	case 2:
+		return errAuthLocked
+	default:
+		return fmt.Errorf("security result returned unknown status %d", status)
+	}
+}
+
+// drainFailureReason reads and discards an optional failure reason. Errors
+// are ignored on purpose: the rejection itself is the outcome we report.
+func (c *client) drainFailureReason() {
+	c.setDeadline()
+	length, err := readU32(c.r)
+	if err != nil || length > 4096 {
+		return
+	}
+	_, _ = readN(c.r, int(length))
+}
+
+// vncAuthenticate performs the DES challenge-response exchange with the
+// password bound to this connection.
+func (c *client) vncAuthenticate() error {
+	c.setDeadline()
+	challenge, err := readN(c.r, 16)
+	if err != nil {
+		return fmt.Errorf("read authentication challenge: %w", err)
+	}
+	response, err := vncResponse(c.credential.Password, challenge)
+	if err != nil {
+		return err
+	}
+	if err := c.write(response); err != nil {
+		return fmt.Errorf("write authentication response: %w", err)
+	}
+	if err := c.readSecurityResult(); err != nil {
+		return err
+	}
+	c.result.Password = c.credential.Password
+	c.result.PasswordSource = c.credential.Source
+	return nil
+}
+
+// readFailure reads the server's failure reason (a U32 length followed by
+// that many bytes) and turns it into an error.
 func (c *client) readFailure(stage string) error {
 	c.setDeadline()
 	length, err := readU32(c.r)

@@ -16,14 +16,15 @@ func Save(img image.Image, dir, ip string, port int, ts time.Time) (string, erro
 	if img == nil {
 		return "", fmt.Errorf("no image to save")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create screenshot directory: %w", err)
 	}
 
 	name := fmt.Sprintf("%s_%d_%s.png", sanitize(ip), port, ts.Format("20060102-150405"))
 	path := filepath.Join(dir, name)
 
-	f, err := os.Create(path)
+	// Captures show the live desktop and are sensitive evidence.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create screenshot: %w", err)
 	}

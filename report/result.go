@@ -4,11 +4,18 @@ import "time"
 
 // Result is the outcome of probing a single host:port pair.
 type Result struct {
-	IP           string    `json:"ip"`
-	Port         int       `json:"port"`
-	Open         bool      `json:"open"`
-	RFB          bool      `json:"rfb"`
-	Passwordless bool      `json:"passwordless"`
+	IP           string `json:"ip"`
+	Port         int    `json:"port"`
+	Open         bool   `json:"open"`
+	RFB          bool   `json:"rfb"`
+	Passwordless bool   `json:"passwordless"`
+	// Password is the weak credential that granted access, if any. Reports
+	// containing it are sensitive and are written with owner-only permissions.
+	Password       string `json:"password,omitempty"`
+	PasswordSource string `json:"password_source,omitempty"`
+	// AuthLocked records that the server refused further authentication
+	// attempts, so the operator knows the word list was cut short.
+	AuthLocked   bool      `json:"auth_locked,omitempty"`
 	ServerName   string    `json:"server_name,omitempty"`
 	ScreenWidth  int       `json:"screen_width,omitempty"`
 	ScreenHeight int       `json:"screen_height,omitempty"`
@@ -24,8 +31,10 @@ type Summary struct {
 	Open         int `json:"open"`
 	RFB          int `json:"rfb"`
 	Passwordless int `json:"passwordless"`
-	Screenshots  int `json:"screenshots"`
-	Errors       int `json:"errors"`
+	// WeakCredentials counts hosts reached with a weak password.
+	WeakCredentials int `json:"weak_credentials"`
+	Screenshots     int `json:"screenshots"`
+	Errors          int `json:"errors"`
 }
 
 // Summarize counts the outcomes in results.
@@ -40,6 +49,9 @@ func Summarize(results []Result) Summary {
 		}
 		if r.Passwordless {
 			s.Passwordless++
+		}
+		if r.Password != "" {
+			s.WeakCredentials++
 		}
 		if r.Screenshot != "" {
 			s.Screenshots++

@@ -3,6 +3,7 @@ package scanner_test
 import (
 	"bytes"
 	"context"
+	"crypto/des"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"vncshot/report"
 	"vncshot/scanner"
+	"vncshot/vnc"
 )
 
 // fakeRFB is a minimal in-process RFB 3.8 server used to exercise the
@@ -458,4 +460,358 @@ func TestScanPipelineEndToEnd(t *testing.T) {
 			}
 		}
 	})
+}
+
+// fakeAuthRFB is a multi-connection RFB 3.8 server that only offers VNC
+// authentication, so the scanner's weak-password path can be exercised
+// without any external software.
+type fakeAuthRFB struct {
+	ln       net.Listener
+	password string
+	name     string
+	fill     color.RGBA
+	// lockOnReject answers SecurityResult 2 instead of 1, simulating a
+	// server that blocks further attempts.
+	lockOnReject bool
+	wg           sync.WaitGroup
+}
+
+func startFakeAuthRFB(t *testing.T, password, name string) *fakeAuthRFB {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &fakeAuthRFB{ln: ln, password: password, name: name, fill: color.RGBA{R: 0x10, G: 0x70, B: 0x30, A: 0xff}}
+	t.Cleanup(func() {
+		ln.Close()
+		s.wg.Wait()
+	})
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.serve(conn)
+			}()
+		}
+	}()
+	return s
+}
+
+func (s *fakeAuthRFB) port() int { return s.ln.Addr().(*net.TCPAddr).Port }
+
+func (s *fakeAuthRFB) serve(conn net.Conn) {
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write([]byte("RFB 003.008\n")); err != nil {
+		return
+	}
+	if _, err := io.ReadFull(conn, make([]byte, 12)); err != nil {
+		return
+	}
+	if _, err := conn.Write([]byte{1, 2}); err != nil { // VNC auth only
+		return
+	}
+	sel := make([]byte, 1)
+	if _, err := io.ReadFull(conn, sel); err != nil || sel[0] != 2 {
+		return
+	}
+
+	challenge := bytes.Repeat([]byte{0x42}, 16)
+	if _, err := conn.Write(challenge); err != nil {
+		return
+	}
+	got := make([]byte, 16)
+	if _, err := io.ReadFull(conn, got); err != nil {
+		return
+	}
+
+	if !bytes.Equal(got, fakeVNCResponse(s.password, challenge)) {
+		if s.lockOnReject {
+			_ = writeU32(conn, 2)
+			return
+		}
+		_ = writeU32(conn, 1)
+		reason := []byte("invalid password")
+		_ = writeU32(conn, uint32(len(reason)))
+		_, _ = conn.Write(reason)
+		return
+	}
+	if err := writeU32(conn, 0); err != nil {
+		return
+	}
+
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil { // ClientInit
+		return
+	}
+	if err := s.writeServerInit(conn); err != nil {
+		return
+	}
+	if !s.awaitFramebufferUpdateRequest(conn) {
+		return
+	}
+	s.writeSolidUpdate(conn)
+}
+
+func (s *fakeAuthRFB) writeServerInit(conn net.Conn) error {
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.BigEndian, uint16(6))
+	_ = binary.Write(&buf, binary.BigEndian, uint16(5))
+	buf.Write([]byte{
+		32, 24, 0, 1,
+		0, 255, 0, 255, 0, 255,
+		16, 8, 0,
+		0, 0, 0,
+	})
+	_ = binary.Write(&buf, binary.BigEndian, uint32(len(s.name)))
+	buf.WriteString(s.name)
+	_, err := conn.Write(buf.Bytes())
+	return err
+}
+
+func (s *fakeAuthRFB) awaitFramebufferUpdateRequest(conn net.Conn) bool {
+	for {
+		var typ [1]byte
+		if _, err := io.ReadFull(conn, typ[:]); err != nil {
+			return false
+		}
+		switch typ[0] {
+		case 0:
+			if _, err := io.ReadFull(conn, make([]byte, 19)); err != nil {
+				return false
+			}
+		case 2:
+			var hdr [3]byte
+			if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+				return false
+			}
+			count := binary.BigEndian.Uint16(hdr[1:3])
+			if _, err := io.ReadFull(conn, make([]byte, int(count)*4)); err != nil {
+				return false
+			}
+		case 3:
+			if _, err := io.ReadFull(conn, make([]byte, 9)); err != nil {
+				return false
+			}
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+func (s *fakeAuthRFB) writeSolidUpdate(conn net.Conn) {
+	const w, h = 6, 5
+	pixels := make([]byte, 0, w*h*4)
+	for i := 0; i < w*h; i++ {
+		pixels = append(pixels, s.fill.B, s.fill.G, s.fill.R, 0)
+	}
+	var buf bytes.Buffer
+	buf.WriteByte(0)
+	buf.WriteByte(0)
+	_ = binary.Write(&buf, binary.BigEndian, uint16(1))
+	_ = binary.Write(&buf, binary.BigEndian, uint16(0))
+	_ = binary.Write(&buf, binary.BigEndian, uint16(0))
+	_ = binary.Write(&buf, binary.BigEndian, uint16(w))
+	_ = binary.Write(&buf, binary.BigEndian, uint16(h))
+	_ = binary.Write(&buf, binary.BigEndian, int32(0))
+	buf.Write(pixels)
+	_, _ = conn.Write(buf.Bytes())
+}
+
+// fakeVNCResponse computes the DES response independently of the client
+// implementation under test.
+func fakeVNCResponse(password string, challenge []byte) []byte {
+	var key [8]byte
+	for i := 0; i < 8 && i < len(password); i++ {
+		b := password[i]
+		var rev byte
+		for bit := 0; bit < 8; bit++ {
+			rev <<= 1
+			rev |= b & 1
+			b >>= 1
+		}
+		key[i] = rev
+	}
+	block, err := des.NewCipher(key[:])
+	if err != nil {
+		panic(err)
+	}
+	out := make([]byte, 16)
+	block.Encrypt(out[0:8], challenge[0:8])
+	block.Encrypt(out[8:16], challenge[8:16])
+	return out
+}
+
+func TestScanWeakPasswordCaptureAndReport(t *testing.T) {
+	server := startFakeAuthRFB(t, "hunter2", "finance-desktop")
+	screenshotDir := t.TempDir()
+
+	results, err := scanner.Run(context.Background(),
+		[]scanner.Target{{IP: "127.0.0.1", Port: server.port()}},
+		scanner.Options{
+			ConnectTimeout: 2 * time.Second,
+			VNCTimeout:     2 * time.Second,
+			Workers:        2,
+			RatePerSec:     0,
+			ScreenshotDir:  screenshotDir,
+			Shared:         true,
+			Passwords: []vnc.Credential{
+				{Password: "nope", Source: vnc.SourceWordList},
+				{Password: "hunter2", Source: vnc.SourceWordList},
+			},
+		})
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Run returned %d results, want 1", len(results))
+	}
+
+	r := results[0]
+	if !r.Open || !r.RFB {
+		t.Errorf("Open=%v RFB=%v, want both true", r.Open, r.RFB)
+	}
+	if r.Passwordless {
+		t.Error("Passwordless = true, want false for an authenticated server")
+	}
+	if r.Password != "hunter2" {
+		t.Errorf("Password = %q, want %q", r.Password, "hunter2")
+	}
+	if r.PasswordSource != vnc.SourceWordList {
+		t.Errorf("PasswordSource = %q, want %q", r.PasswordSource, vnc.SourceWordList)
+	}
+	if r.ServerName != "finance-desktop" {
+		t.Errorf("ServerName = %q, want %q", r.ServerName, "finance-desktop")
+	}
+	if r.ScreenWidth != 6 || r.ScreenHeight != 5 {
+		t.Errorf("screen = %dx%d, want 6x5", r.ScreenWidth, r.ScreenHeight)
+	}
+	if r.Screenshot == "" {
+		t.Fatal("Screenshot is empty, want a capture after authenticated login")
+	}
+	info, err := os.Stat(r.Screenshot)
+	if err != nil {
+		t.Fatalf("screenshot file missing: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Error("screenshot file is empty")
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("screenshot permissions = %o, want owner-only", mode)
+	}
+
+	sum := report.Summarize(results)
+	if sum.WeakCredentials != 1 {
+		t.Errorf("WeakCredentials = %d, want 1", sum.WeakCredentials)
+	}
+	if sum.Passwordless != 0 {
+		t.Errorf("Passwordless = %d, want 0", sum.Passwordless)
+	}
+	if sum.Screenshots != 1 {
+		t.Errorf("Screenshots = %d, want 1", sum.Screenshots)
+	}
+
+	// Reports must carry the credential so the operator can act on it.
+	jsonPath := filepath.Join(t.TempDir(), "report.json")
+	if err := report.WriteJSON(jsonPath, results); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	body, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatalf("read JSON: %v", err)
+	}
+	var doc report.Document
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("JSON does not parse: %v", err)
+	}
+	if len(doc.Results) != 1 || doc.Results[0].Password != "hunter2" {
+		t.Errorf("JSON report password = %q, want %q", doc.Results[0].Password, "hunter2")
+	}
+	if doc.Summary.WeakCredentials != 1 {
+		t.Errorf("JSON summary weak_credentials = %d, want 1", doc.Summary.WeakCredentials)
+	}
+
+	htmlPath := filepath.Join(t.TempDir(), "report.html")
+	if err := report.WriteHTML(htmlPath, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html, err := os.ReadFile(htmlPath)
+	if err != nil {
+		t.Fatalf("read HTML: %v", err)
+	}
+	if !bytes.Contains(html, []byte("hunter2")) {
+		t.Error("HTML report does not contain the discovered password")
+	}
+
+	pdfPath := filepath.Join(t.TempDir(), "report.pdf")
+	if err := report.WritePDF(pdfPath, results); err != nil {
+		t.Fatalf("WritePDF: %v", err)
+	}
+	pdfInfo, err := os.Stat(pdfPath)
+	if err != nil {
+		t.Fatalf("PDF report missing: %v", err)
+	}
+	if pdfInfo.Size() == 0 {
+		t.Error("PDF report is empty")
+	}
+}
+
+func TestScanRecordsAuthenticationLockout(t *testing.T) {
+	server := startFakeAuthRFB(t, "s3cret", "guarded-desktop")
+	server.lockOnReject = true
+
+	results, err := scanner.Run(context.Background(),
+		[]scanner.Target{{IP: "127.0.0.1", Port: server.port()}},
+		scanner.Options{
+			ConnectTimeout: 2 * time.Second,
+			VNCTimeout:     2 * time.Second,
+			Workers:        1,
+			ScreenshotDir:  t.TempDir(),
+			Shared:         true,
+			Passwords: []vnc.Credential{
+				{Password: "wrong", Source: vnc.SourceDefault},
+				{Password: "s3cret", Source: vnc.SourceDefault},
+			},
+		})
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Run returned %d results, want 1", len(results))
+	}
+
+	r := results[0]
+	if !r.AuthLocked {
+		t.Error("AuthLocked = false, want true when the server blocks attempts")
+	}
+	if r.Password != "" {
+		t.Errorf("Password = %q, want empty after a lockout", r.Password)
+	}
+	if r.Screenshot != "" {
+		t.Errorf("Screenshot = %q, want empty after a lockout", r.Screenshot)
+	}
+	if !r.RFB || !r.Open {
+		t.Errorf("Open=%v RFB=%v, want both true", r.Open, r.RFB)
+	}
+
+	jsonPath := filepath.Join(t.TempDir(), "report.json")
+	if err := report.WriteJSON(jsonPath, results); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	body, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatalf("read JSON: %v", err)
+	}
+	if !bytes.Contains(body, []byte(`"auth_locked": true`)) {
+		t.Errorf("JSON report does not record the lockout:\n%s", body)
+	}
 }

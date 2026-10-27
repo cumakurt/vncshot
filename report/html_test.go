@@ -173,6 +173,108 @@ func TestWriteHTMLMissingScreenshotStillRendersCard(t *testing.T) {
 	mustNotContain(t, html, "data:image/png;base64,", "base64 image when capture is missing")
 }
 
+func TestWriteHTMLShowsWeakPassword(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "frame.png")
+	writeTestPNG(t, pngPath, 8, 8)
+
+	results := []Result{
+		{
+			IP:             "192.0.2.20",
+			Port:           5900,
+			Open:           true,
+			RFB:            true,
+			Password:       "hunter2",
+			PasswordSource: "default",
+			ScreenWidth:    8,
+			ScreenHeight:   8,
+			Screenshot:     pngPath,
+		},
+	}
+
+	path := filepath.Join(dir, "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	mustContain(t, html, "hunter2", "weak password in report")
+	mustContain(t, html, `<div class="label">Weak creds</div>`, "weak credentials summary stat")
+	mustContain(t, html, "default list", "human-readable credential source")
+}
+
+func TestWriteHTMLWeakPasswordCard(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "frame.png")
+	writeTestPNG(t, pngPath, 8, 8)
+
+	results := []Result{
+		{
+			IP:             "192.0.2.21",
+			Port:           5900,
+			Open:           true,
+			RFB:            true,
+			Password:       "hunter2",
+			PasswordSource: "default",
+			ScreenWidth:    8,
+			ScreenHeight:   8,
+			Screenshot:     pngPath,
+		},
+	}
+
+	path := filepath.Join(dir, "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	start := strings.Index(html, `<figure class="card"`)
+	if start < 0 {
+		t.Fatalf("html report has no weak-password capture card")
+	}
+	end := strings.Index(html[start:], "</figure>")
+	if end < 0 {
+		t.Fatalf("weak-password capture card is not closed")
+	}
+	card := html[start : start+end]
+
+	mustContain(t, card, "hunter2", "weak password inside the card")
+	mustContain(t, card, `class="badge"`, "credential badge inside the card")
+	mustContain(t, card, "default list", "credential source inside the card")
+	mustNotContain(t, card, "no authentication", "passwordless badge on a weak-password card")
+}
+
+func TestWriteHTMLPasswordColumn(t *testing.T) {
+	results := []Result{
+		{
+			IP:             "192.0.2.22",
+			Port:           5900,
+			Open:           true,
+			RFB:            true,
+			Password:       "hunter2",
+			PasswordSource: "default",
+		},
+	}
+
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	tbodyStart := strings.Index(html, "<tbody>")
+	tbodyEnd := strings.Index(html, "</tbody>")
+	if tbodyStart < 0 || tbodyEnd < 0 || tbodyEnd < tbodyStart {
+		t.Fatalf("html report has no well-formed <tbody> section")
+	}
+	tbody := html[tbodyStart:tbodyEnd]
+
+	mustContain(t, tbody, "hunter2", "weak password in the endpoint table")
+	mustContain(t, tbody, "default list", "credential source in the endpoint table")
+	mustContain(t, tbody, `class="tag hot"`, "cracked-row tag in the endpoint table")
+	mustContain(t, tbody, "weakpassword", "weak-password filter term in the row search index")
+}
+
 func TestWriteHTMLClosedPortsOmittedFromTable(t *testing.T) {
 	results := []Result{
 		{IP: "203.0.113.10", Port: 5900, Open: true, RFB: true},
@@ -221,6 +323,39 @@ func TestWriteHTMLEscapesServerName(t *testing.T) {
 
 	mustContain(t, html, "&lt;script&gt;alert(1)&lt;/script&gt;", "escaped server name")
 	mustNotContain(t, html, payload, "raw script payload")
+}
+
+func TestWriteHTMLUsesLightTheme(t *testing.T) {
+	results := []Result{
+		{IP: "192.0.2.70", Port: 5900, Open: true, RFB: true},
+	}
+
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := strings.ToLower(readHTML(t, path))
+
+	for _, token := range []string{"#0f1419", "#1a2332", "prefers-color-scheme: dark"} {
+		mustNotContain(t, html, token, "dark theme token")
+	}
+	mustContain(t, html, "#fbfaf7", "light paper background token")
+}
+
+func TestWriteHTMLLegalNoticeKeepsTurkishCharacters(t *testing.T) {
+	results := []Result{
+		{IP: "192.0.2.71", Port: 5900, Open: true, RFB: true},
+	}
+
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	for _, want := range []string{"Yasal uyarı", "yalnızca", "sorumluluk"} {
+		mustContain(t, html, want, "Turkish legal notice text")
+	}
 }
 
 func TestResizeNearestCapsWidth(t *testing.T) {
