@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"vncshot/report"
+	"vncshot/scanner"
 	"vncshot/vnc"
 )
 
@@ -398,5 +399,109 @@ func TestScanCancelledReturnsPartialResults(t *testing.T) {
 	}
 	if out.RunDir != session.RunDir {
 		t.Errorf("outcome run dir = %q, want %q", out.RunDir, session.RunDir)
+	}
+}
+
+// TestCreateRunDirNeverCollides guards the data-loss path: two scans that
+// start within the same second must not share a run folder, otherwise the
+// second scan overwrites the first one's reports and screenshots.
+func TestCreateRunDirNeverCollides(t *testing.T) {
+	base := t.TempDir()
+
+	first, err := createRunDir(base)
+	if err != nil {
+		t.Fatalf("createRunDir: %v", err)
+	}
+	// Mark the first run so an overwrite would be observable.
+	if err := os.WriteFile(filepath.Join(first, "vncshot_report.json"), []byte("first"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	second, err := createRunDir(base)
+	if err != nil {
+		t.Fatalf("createRunDir: %v", err)
+	}
+	if first == second {
+		t.Fatalf("second scan reused %q; reports would be overwritten", first)
+	}
+
+	// The first run must be untouched, and both must keep the documented
+	// timestamp layout so the GUI history and baseline comparison find them.
+	data, err := os.ReadFile(filepath.Join(first, "vncshot_report.json"))
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if string(data) != "first" {
+		t.Errorf("first run marker = %q, want it unchanged", data)
+	}
+	for _, dir := range []string{first, second} {
+		name := filepath.Base(dir)
+		if _, err := time.ParseInLocation(RunTimestampLayout, name, time.Local); err != nil {
+			t.Errorf("run folder %q does not match the timestamp layout: %v", name, err)
+		}
+	}
+}
+
+// TestCreateRunDirCreatesMissingBase covers a report root that does not exist
+// yet: os.Mkdir on the run folder alone would fail with ENOENT.
+func TestCreateRunDirCreatesMissingBase(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "nested", "reports")
+
+	dir, err := createRunDir(base)
+	if err != nil {
+		t.Fatalf("createRunDir: %v", err)
+	}
+	if filepath.Dir(dir) != base {
+		t.Errorf("run dir %q is not inside %q", dir, base)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat run dir: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("run dir permissions = %o, want owner-only", mode)
+	}
+}
+
+// TestPrepareRejectsResourceExhaustionValues guards the shared validation:
+// the GUI posts these values straight from a form, so an unbounded worker
+// count used to spawn goroutines until the process ran out of sockets.
+func TestPrepareRejectsResourceExhaustionValues(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"negative workers", Config{Workers: -1}},
+		{"huge workers", Config{Workers: 1_000_000}},
+		{"huge rate", Config{RatePerSec: 50_000_000}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			cfg.Target = "192.0.2.1"
+			cfg.Ports = "5900"
+			cfg.OutDir = t.TempDir()
+			cfg.OutDirExplicit = true
+
+			if _, err := Prepare(cfg); err == nil {
+				t.Fatal("Prepare accepted an out-of-range value, want an error")
+			}
+		})
+	}
+}
+
+// TestPrepareAllowsUpperBounds pins the accepted edge so the guard cannot
+// drift into rejecting legitimate values.
+func TestPrepareAllowsUpperBounds(t *testing.T) {
+	cfg := Config{
+		Target:         "192.0.2.1",
+		Ports:          "5900",
+		Workers:        scanner.MaxWorkers,
+		RatePerSec:     scanner.MaxRate,
+		OutDir:         t.TempDir(),
+		OutDirExplicit: true,
+	}
+	if _, err := Prepare(cfg); err != nil {
+		t.Fatalf("Prepare rejected the documented maximum: %v", err)
 	}
 }

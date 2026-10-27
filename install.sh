@@ -318,7 +318,10 @@ human_size() {
 }
 
 build_static() {
-  local ldflags="-s -w -X main.version=${VERSION:-dev} -X main.reportBaseDir=${REPORT_DIR}"
+  # The values are single-quoted inside the ldflags string: without quoting,
+  # a path containing a space splits the -X assignment and `go build` fails
+  # with a linker usage dump. Values must not contain a single quote.
+  local ldflags="-s -w -X 'main.version=${VERSION:-dev}' -X 'main.reportBaseDir=${REPORT_DIR}'"
   # CGO off + explicit GOOS + -trimpath yields a portable static Linux binary.
   if ! CGO_ENABLED=0 GOOS=linux "$GO_BIN" build \
       -trimpath \
@@ -368,9 +371,11 @@ install_binary() {
   local prefix="${INSTALL_PREFIX:-/usr/local/bin}"
   local target="$prefix/vncshot"
 
-  if [[ -w "$prefix" || ( ! -e "$prefix" && -w "$(dirname -- "$prefix")" ) ]]; then
-    mkdir -p "$prefix"
-    install -m 0755 "$BINARY_PATH" "$target"
+  # Try the unprivileged path first and let the OS decide: probing only the
+  # immediate parent wrongly rejects nested prefixes such as
+  # /opt/tools/bin/vnc when /opt/tools does not exist yet but is writable.
+  if mkdir -p "$prefix" 2>/dev/null && install -m 0755 "$BINARY_PATH" "$target" 2>/dev/null; then
+    :
   elif run_privileged mkdir -p "$prefix" && run_privileged install -m 0755 "$BINARY_PATH" "$target"; then
     detail "installed with elevated permissions"
   else
@@ -398,14 +403,14 @@ prepare_report_dir() {
     ok "report directory $REPORT_DIR"
     return 0
   fi
-  local parent
-  parent="$(dirname -- "$REPORT_DIR")"
-  if [[ "$(id -u)" -eq 0 || ( -d "$parent" && -w "$parent" ) ]]; then
-    if mkdir -p "$REPORT_DIR" && chmod 0755 "$REPORT_DIR"; then
-      ok "created report directory $REPORT_DIR"
-      return 0
-    fi
-  elif run_privileged mkdir -p "$REPORT_DIR" && run_privileged chmod 0755 "$REPORT_DIR"; then
+  # Attempt the unprivileged path first so a multi-level REPORT_DIR under a
+  # writable ancestor works without sudo; only then fall back to privilege.
+  if mkdir -p "$REPORT_DIR" 2>/dev/null; then
+    chmod 0755 "$REPORT_DIR" 2>/dev/null || true
+    ok "created report directory $REPORT_DIR"
+    return 0
+  fi
+  if run_privileged mkdir -p "$REPORT_DIR" && run_privileged chmod 0755 "$REPORT_DIR"; then
     ok "created report directory $REPORT_DIR"
     return 0
   fi

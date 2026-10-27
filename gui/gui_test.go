@@ -765,3 +765,171 @@ func TestDashboardElementIDsExist(t *testing.T) {
 		}
 	}
 }
+
+// TestFindingsAreSortedDeterministically guards parity with the report
+// artifacts: the dashboard must not show a different order than the JSON.
+func TestFindingsAreSortedDeterministically(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	srv.run.findings = []finding{
+		{IP: "10.0.0.10", Port: 5900},
+		{IP: "10.0.0.9", Port: 5902},
+		{IP: "10.0.0.9", Port: 5900},
+		{IP: "host.example", Port: 5900},
+	}
+
+	got := srv.snapshot().Findings
+	want := []struct {
+		ip   string
+		port int
+	}{
+		{"10.0.0.9", 5900},
+		{"10.0.0.9", 5902},
+		{"10.0.0.10", 5900},
+		{"host.example", 5900},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("findings = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].IP != want[i].ip || got[i].Port != want[i].port {
+			t.Errorf("finding[%d] = %s:%d, want %s:%d", i, got[i].IP, got[i].Port, want[i].ip, want[i].port)
+		}
+	}
+}
+
+// TestReportLinksHiddenWhileRunning guards the dashboard: artifact paths are
+// known when a scan starts, but the files do not exist yet, so showing the
+// links would produce 404s for the operator.
+func TestReportLinksHiddenWhileRunning(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	runDir := t.TempDir()
+	srv.run.runDir = runDir
+	srv.run.jsonPath = filepath.Join(runDir, "vncshot_report.json")
+	srv.run.htmlPath = filepath.Join(runDir, "vncshot_report.html")
+
+	srv.run.status = statusRunning
+	if links := srv.snapshot().ReportLinks; len(links) != 0 {
+		t.Errorf("links while running = %v, want none", links)
+	}
+
+	srv.run.status = statusCompleted
+	if links := srv.snapshot().ReportLinks; links["json"] == "" || links["html"] == "" {
+		t.Errorf("links after completion = %v, want json and html entries", links)
+	}
+}
+
+// TestManifestIsNotTreatedAsTheReport guards the history listing: a run
+// folder that only holds manifest.json has no report to open.
+func TestManifestIsNotTreatedAsTheReport(t *testing.T) {
+	root := t.TempDir()
+	runName := "20261027-120000"
+	dir := filepath.Join(root, runName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"files":[]}`), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	started, err := time.ParseInLocation(app.RunTimestampLayout, runName, time.Local)
+	if err != nil {
+		t.Fatalf("parse run name: %v", err)
+	}
+	info := describeRun(dir, runName, started)
+	if info.HasJSON {
+		t.Error("HasJSON = true for a folder that only holds a manifest")
+	}
+	if info.Summary != nil {
+		t.Errorf("Summary = %+v, want nil when there is no report", info.Summary)
+	}
+}
+
+// TestFilesEndpointRejectsSymlinkEscape guards the artifact route: a symlink
+// planted inside the run folder must not serve an arbitrary host file.
+func TestFilesEndpointRejectsSymlinkEscape(t *testing.T) {
+	srv, ts := newTestServer(t, Config{})
+	runDir := t.TempDir()
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("host secret"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	if err := os.Symlink(secret, filepath.Join(runDir, "leak.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	srv.run.runDir = runDir
+
+	client := newClient(t)
+	doJSON(t, client, http.MethodGet, ts.URL+"/?t="+testToken, nil, nil)
+
+	resp, body := doJSON(t, client, http.MethodGet, ts.URL+"/files/leak.txt", nil, nil)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("symlink served host content: %s", body)
+	}
+	if strings.Contains(string(body), "host secret") {
+		t.Fatal("symlink escape leaked file content")
+	}
+}
+
+// TestIndexSetsReferrerPolicy guards token hygiene: the session token is in
+// the URL, so the page must not leak it through Referer.
+func TestIndexSetsReferrerPolicy(t *testing.T) {
+	_, ts := newTestServer(t, Config{})
+	resp, err := http.Get(ts.URL + "/?t=" + testToken)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if got := resp.Header.Get("Referrer-Policy"); got != "no-referrer" {
+		t.Errorf("Referrer-Policy = %q, want no-referrer", got)
+	}
+}
+
+// TestDashboardRendersFindingsInReportOrder guards UI/artifact parity: the
+// findings table must not reverse the server order, otherwise the dashboard
+// and the JSON report of the same run disagree.
+func TestDashboardRendersFindingsInReportOrder(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded page: %v", err)
+	}
+	body := string(page)
+	if strings.Contains(body, "rows.slice().reverse()") {
+		t.Error("findings are reversed before rendering; they must follow the report order")
+	}
+	if !strings.Contains(body, "rows.forEach(function (f)") {
+		t.Error("findings renderer no longer iterates rows in server order")
+	}
+}
+
+// TestSnapshotExposesWarningAndDiff guards the GUI parity with the CLI: a
+// failing webhook and a requested baseline comparison must not disappear just
+// because the scan was started from the dashboard.
+func TestSnapshotExposesWarningAndDiff(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	srv.run.warning = "webhook notification failed: connection refused"
+	srv.run.diff = &diffSummary{Baseline: "20261020-090000", New: 2, Resolved: 1, Changed: 3}
+
+	snap := srv.snapshot()
+	if snap.Warning == "" {
+		t.Error("Warning is empty, want the webhook failure surfaced")
+	}
+	if snap.Diff == nil {
+		t.Fatal("Diff is nil, want the baseline comparison exposed")
+	}
+	if snap.Diff.New != 2 || snap.Diff.Resolved != 1 || snap.Diff.Changed != 3 {
+		t.Errorf("Diff = %+v, want 2 new / 1 resolved / 3 changed", snap.Diff)
+	}
+	if snap.Diff.Baseline != "20261020-090000" {
+		t.Errorf("Diff.Baseline = %q, want the run folder name", snap.Diff.Baseline)
+	}
+
+	body, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if !strings.Contains(string(body), `"diff":`) {
+		t.Error("snapshot JSON does not contain the diff object")
+	}
+}

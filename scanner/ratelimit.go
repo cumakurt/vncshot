@@ -15,9 +15,14 @@ type RateLimiter struct {
 }
 
 // NewRateLimiter returns a limiter allowing ratePerSec attempts per second.
+// Rates above MaxRate are capped: the pacing interval would otherwise round
+// down to zero and silently disable limiting altogether.
 func NewRateLimiter(ratePerSec int) *RateLimiter {
 	if ratePerSec <= 0 {
 		return &RateLimiter{}
+	}
+	if ratePerSec > MaxRate {
+		ratePerSec = MaxRate
 	}
 	return &RateLimiter{
 		interval: time.Second / time.Duration(ratePerSec),

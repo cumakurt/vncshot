@@ -612,3 +612,57 @@ func TestResizeNearestMinimumHeight(t *testing.T) {
 		t.Errorf("resized height = %d, want at least 1", b.Dy())
 	}
 }
+
+// TestWriteHTMLTimestampsAreLabelledUTC guards the report against ambiguous
+// times: the JSON and PDF use UTC, the screenshot file names use the local
+// clock, so the HTML must say which clock it shows.
+func TestWriteHTMLTimestampsAreLabelledUTC(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "frame.png")
+	writeTestPNG(t, pngPath, 8, 8)
+
+	ts := time.Date(2026, 10, 26, 15, 4, 5, 0, time.UTC)
+	results := []Result{{
+		IP:           "192.0.2.10",
+		Port:         5900,
+		Open:         true,
+		RFB:          true,
+		Passwordless: true,
+		Screenshot:   pngPath,
+		Timestamp:    ts,
+	}}
+
+	path := filepath.Join(dir, "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	mustContain(t, html, "2026-10-26 15:04:05 UTC", "UTC-labelled capture time")
+}
+
+// TestWriteHTMLHidesHostPaths guards the shareable report: it must not embed
+// absolute local filesystem paths, which leak the operator's directory
+// layout when the file is sent to a client.
+func TestWriteHTMLHidesHostPaths(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "frame.png")
+	writeTestPNG(t, pngPath, 8, 8)
+
+	results := []Result{{
+		IP:         "192.0.2.10",
+		Port:       5900,
+		Open:       true,
+		RFB:        true,
+		Screenshot: pngPath,
+	}}
+
+	path := filepath.Join(dir, "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	mustNotContain(t, html, dir, "absolute run directory in the HTML report")
+	mustContain(t, html, "frame.png", "capture file name")
+}

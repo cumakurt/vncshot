@@ -519,3 +519,77 @@ func TestProbeContextCancel(t *testing.T) {
 		t.Fatal("Probe = (nil, nil), want error after context cancellation")
 	}
 }
+
+// TestProbeRFB37Passwordless covers the RFB 3.7 wire flow: the server
+// announces a security-type list and, unlike 3.8, sends no SecurityResult
+// after the None type. Reading one there would block until the deadline and
+// hide every 3.7 passwordless host behind a probe error.
+func TestProbeRFB37Passwordless(t *testing.T) {
+	addr := serveRFB(t, func(s *rfbServer) {
+		s.sendBanner("RFB 003.007\n")
+
+		s.mustWrite([]byte{1, 1}) // one type: None
+		if sel := s.mustRead(1); sel[0] != 1 {
+			s.t.Errorf("fake server: security selection = %d, want 1 (None)", sel[0])
+		}
+
+		// No SecurityResult for None in 3.7: the next client byte is
+		// ClientInit.
+		shared := s.mustRead(1)
+		if shared[0] != 1 {
+			s.t.Errorf("fake server: shared flag = %d, want 1", shared[0])
+		}
+		s.sendServerInit(4, 3, "legacy-37")
+		s.readCaptureMessages()
+		s.sendSolidRawRect(4, 3, 255, 0, 0)
+	})
+
+	start := time.Now()
+	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+	})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > probeTimeout {
+		t.Errorf("probe took %v, want well under the %v deadline", elapsed, probeTimeout)
+	}
+	if !result.Passwordless {
+		t.Error("Passwordless = false, want true")
+	}
+	if result.ServerName != "legacy-37" {
+		t.Errorf("ServerName = %q, want %q", result.ServerName, "legacy-37")
+	}
+	if result.Frame == nil {
+		t.Fatal("Frame is nil, want a capture for a 3.7 passwordless host")
+	}
+	assertRedPixel(t, result.Frame)
+}
+
+// TestProbeRFB38NoneReadsSecurityResult is the counterpart guard: 3.8 does
+// send SecurityResult for None, so the client must consume it. A server that
+// sends it and then the frame must be handled without desync.
+func TestProbeRFB38NoneReadsSecurityResult(t *testing.T) {
+	addr := serveRFB(t, func(s *rfbServer) {
+		s.sendBanner("RFB 003.008\n")
+		s.mustWrite([]byte{1, 1})
+		if sel := s.mustRead(1); sel[0] != 1 {
+			s.t.Errorf("fake server: security selection = %d, want 1", sel[0])
+		}
+		s.mustWriteU32(0) // SecurityResult OK, required in 3.8
+		_ = s.mustRead(1) // ClientInit
+		s.sendServerInit(4, 3, "modern-38")
+		s.readCaptureMessages()
+		s.sendSolidRawRect(4, 3, 255, 0, 0)
+	})
+
+	result, err := vnc.Probe(t.Context(), addr, vnc.Options{Timeout: probeTimeout, Shared: true})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if !result.Passwordless || result.ServerName != "modern-38" {
+		t.Errorf("result = %+v, want a passwordless modern-38 capture", result)
+	}
+	assertRedPixel(t, result.Frame)
+}

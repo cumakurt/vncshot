@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -993,5 +994,83 @@ func TestHostConcurrencyCap(t *testing.T) {
 	}
 	if observed < hostConcurrency {
 		t.Errorf("max probes in flight = %d, want the cap of %d to be used", observed, hostConcurrency)
+	}
+}
+
+// TestCancelledProbeReportsCancellationNotTimeout guards the diagnostic path:
+// aborting a handshake must not be reported as a network timeout, otherwise
+// an operator chases a phantom connectivity problem while the port is simply
+// an unverified open service.
+func TestCancelledProbeReportsCancellationNotTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+				// Announce RFB, then stall forever so the probe is still in
+				// flight when the context is cancelled.
+				_, _ = io.ReadFull(conn, make([]byte, 12))
+				_, _ = conn.Write([]byte("RFB 003.008\n"))
+				buf := make([]byte, 1)
+				_, _ = io.ReadFull(conn, buf)
+				time.Sleep(10 * time.Second)
+			}()
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	results, err := scanner.Run(ctx,
+		[]scanner.Target{{IP: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port}},
+		scanner.Options{
+			ConnectTimeout: 2 * time.Second,
+			VNCTimeout:     5 * time.Second,
+			Workers:        1,
+			ScreenshotDir:  t.TempDir(),
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Run returned %d results, want 1", len(results))
+	}
+	if got := results[0].Error; !strings.Contains(got, "context canceled") {
+		t.Errorf("Error = %q, want it to name the cancellation", got)
+	}
+	if strings.Contains(results[0].Error, "i/o timeout") {
+		t.Error("Error still reports a misleading i/o timeout for a cancelled probe")
+	}
+}
+
+// TestRunClampsWorkerPool pins the hard ceiling so a mistyped or hostile
+// worker count cannot spawn unbounded goroutines and sockets.
+func TestRunClampsWorkerPool(t *testing.T) {
+	results, err := scanner.Run(context.Background(),
+		[]scanner.Target{{IP: "127.0.0.1", Port: closedPort(t)}},
+		scanner.Options{
+			ConnectTimeout: 200 * time.Millisecond,
+			VNCTimeout:     200 * time.Millisecond,
+			Workers:        1_000_000,
+			ScreenshotDir:  t.TempDir(),
+		})
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Run returned %d results, want 1", len(results))
 	}
 }

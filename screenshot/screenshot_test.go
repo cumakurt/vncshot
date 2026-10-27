@@ -32,7 +32,10 @@ func TestSaveWritesNamedPNG(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	wantName := "192.0.2.10_5900_20261026-150405.png"
+	// The name uses the local clock, matching the run folder. Deriving the
+	// expectation from the same timestamp keeps the test independent of the
+	// machine's time zone.
+	wantName := "192.0.2.10_5900_" + testTS.Local().Format("20060102-150405") + ".png"
 	if got := filepath.Base(path); got != wantName {
 		t.Errorf("file name = %q, want %q", got, wantName)
 	}
@@ -72,7 +75,7 @@ func TestSaveSanitizesIPv6(t *testing.T) {
 	if strings.Contains(name, ":") {
 		t.Errorf("file name %q contains ':' (filesystem-unsafe)", name)
 	}
-	wantName := "2001_db8__1_5900_20261026-150405.png"
+	wantName := "2001_db8__1_5900_" + testTS.Local().Format("20060102-150405") + ".png"
 	if name != wantName {
 		t.Errorf("file name = %q, want %q", name, wantName)
 	}

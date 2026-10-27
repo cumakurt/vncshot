@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -124,6 +125,19 @@ func Prepare(cfg Config) (*Session, error) {
 	targets, err := scanner.ParseTargets(cfg.Target, cfg.File, ports)
 	if err != nil {
 		return nil, err
+	}
+
+	// Bound the resource knobs here so the CLI and the GUI reject the same
+	// values with the same message. A negative worker count would silently
+	// fall back to the default and a huge one would exhaust sockets.
+	if cfg.Workers < 0 {
+		return nil, fmt.Errorf("workers must not be negative")
+	}
+	if cfg.Workers > scanner.MaxWorkers {
+		return nil, fmt.Errorf("workers must be at most %d", scanner.MaxWorkers)
+	}
+	if cfg.RatePerSec > scanner.MaxRate {
+		return nil, fmt.Errorf("rate must be at most %d connections per second", scanner.MaxRate)
 	}
 
 	creds, err := Credentials(cfg)
@@ -294,12 +308,30 @@ func prepareRunDir(cfg Config) (runDir string, fallbacked bool, err error) {
 }
 
 func createRunDir(base string) (string, error) {
-	runDir := filepath.Join(base, time.Now().Format(RunTimestampLayout))
-	// Runs hold captured desktops and credentials: keep them owner-only.
-	if err := os.MkdirAll(runDir, 0o700); err != nil {
-		return "", fmt.Errorf("create report directory %s: %w", runDir, err)
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", fmt.Errorf("create report root %s: %w", base, err)
 	}
-	return runDir, nil
+
+	// os.Mkdir on the timestamp folder is atomic, so two scans that start in
+	// the same second (two CLI runs, or a CLI run next to a GUI run) cannot
+	// share a folder and silently overwrite each other's reports and
+	// screenshots. The loser waits for the next second and retries with a
+	// fresh timestamp, keeping the documented YYYYMMDD-HHMMSS layout that the
+	// GUI history and the baseline comparison parse.
+	for attempt := 0; attempt < 5; attempt++ {
+		runDir := filepath.Join(base, time.Now().Format(RunTimestampLayout))
+		// Runs hold captured desktops and credentials: keep them owner-only.
+		err := os.Mkdir(runDir, 0o700)
+		switch {
+		case err == nil:
+			return runDir, nil
+		case errors.Is(err, fs.ErrExist):
+			time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
+		default:
+			return "", fmt.Errorf("create report directory %s: %w", runDir, err)
+		}
+	}
+	return "", fmt.Errorf("create report directory under %s: no unique timestamp available", base)
 }
 
 func fallbackReportBase() string {

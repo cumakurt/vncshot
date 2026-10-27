@@ -35,5 +35,11 @@ func WriteJSON(path string, results []Result) error {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write json report: %w", err)
 	}
+	// WriteFile keeps the mode of an existing file, so an explicit -output
+	// pointing at a world-readable path would leak the credentials. The
+	// documented contract is owner-only, so enforce it.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("restrict json report permissions: %w", err)
+	}
 	return nil
 }

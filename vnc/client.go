@@ -417,13 +417,16 @@ func (c *client) selectSecurityType(secType uint8) error {
 		}
 	}
 
-	// "None": 3.3 has no SecurityResult at all, 3.7+ sends it immediately.
-	// VNC authentication instead receives a challenge next, and its
+	// Only RFB 3.8 sends SecurityResult for the None type. In 3.3 and 3.7
+	// the server goes straight from the type selection to ClientInit, so
+	// reading a result there blocks until the deadline expires and a
+	// passwordless 3.7 server would be reported as a probe error.
+	// VNC authentication always receives a challenge next, and its
 	// SecurityResult is consumed by vncAuthenticate after the response.
 	if secType != secTypeNone {
 		return nil
 	}
-	if legacy {
+	if major == 3 && minor < 8 {
 		return nil
 	}
 	return c.readSecurityResult()

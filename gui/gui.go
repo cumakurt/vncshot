@@ -7,6 +7,7 @@
 package gui
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -132,6 +133,18 @@ type snapshot struct {
 	StartedScan  bool              `json:"started_scan"`
 	ProgressRate float64           `json:"progress_rate"`
 	ReportLinks  map[string]string `json:"report_links"`
+	// Diff summarises the baseline comparison; nil without -baseline.
+	Diff *diffSummary `json:"diff,omitempty"`
+}
+
+// diffSummary is the dashboard view of a baseline comparison. The full
+// per-host lists live in the reports; the dashboard needs the counts and the
+// compared run.
+type diffSummary struct {
+	Baseline string `json:"baseline"`
+	New      int    `json:"new"`
+	Resolved int    `json:"resolved"`
+	Changed  int    `json:"changed"`
 }
 
 type runState struct {
@@ -153,6 +166,7 @@ type runState struct {
 	findings    []finding
 	events      []event
 	warning     string
+	diff        *diffSummary
 	session     *app.Session
 	cancel      context.CancelFunc
 	subscribers map[chan snapshot]struct{}
@@ -329,6 +343,9 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
+	// The session token is delivered in the URL query string, so it must not
+	// reach any other origin through the Referer header.
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	_, _ = w.Write(page)
 }
 
@@ -392,6 +409,7 @@ func (s *server) handleScan(w http.ResponseWriter, r *http.Request) {
 	s.run.findings = nil
 	s.run.events = nil
 	s.run.warning = session.FallbackWarning()
+	s.run.diff = nil
 	s.run.session = session
 	s.run.cancel = cancel
 	s.run.mu.Unlock()
@@ -431,6 +449,24 @@ func (s *server) execute(ctx context.Context, session *app.Session, cancel conte
 	s.run.htmlPath = out.HTML
 	s.run.pdfPath = out.PDF
 	s.run.finished = time.Now()
+	// A webhook failure must not look like a clean run, and a baseline
+	// comparison requested on the launch command line must be visible:
+	// both were previously dropped on the floor by the GUI.
+	if out.Warning != "" {
+		if s.run.warning != "" {
+			s.run.warning += "; " + out.Warning
+		} else {
+			s.run.warning = out.Warning
+		}
+	}
+	if out.Diff != nil {
+		s.run.diff = &diffSummary{
+			Baseline: filepath.Base(out.Diff.Baseline),
+			New:      len(out.Diff.New),
+			Resolved: len(out.Diff.Resolved),
+			Changed:  len(out.Diff.Changed),
+		}
+	}
 	switch {
 	case errors.Is(err, context.Canceled):
 		s.run.status = statusCancelled
@@ -533,7 +569,7 @@ func describeRun(dir, name string, started time.Time) runInfo {
 	if err != nil {
 		return info
 	}
-	jsonPath := ""
+	var preferredJSON, fallbackJSON string
 	for _, entry := range entries {
 		if entry.Type()&fs.ModeSymlink != 0 || entry.IsDir() {
 			continue
@@ -549,12 +585,21 @@ func describeRun(dir, name string, started time.Time) runInfo {
 			info.HasPDF = true
 		}
 		if strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
-			info.HasJSON = true
-			if jsonPath == "" || entry.Name() == defaultJSONReport {
-				jsonPath = filepath.Join(dir, entry.Name())
+			switch {
+			case entry.Name() == defaultJSONReport:
+				preferredJSON = filepath.Join(dir, entry.Name())
+			case !strings.EqualFold(entry.Name(), manifestFilename) && fallbackJSON == "":
+				// A run written with -output may use another name, but the
+				// evidence manifest is never the report.
+				fallbackJSON = filepath.Join(dir, entry.Name())
 			}
 		}
 	}
+	jsonPath := preferredJSON
+	if jsonPath == "" {
+		jsonPath = fallbackJSON
+	}
+	info.HasJSON = jsonPath != ""
 	if jsonPath == "" {
 		return info
 	}
@@ -567,7 +612,10 @@ func describeRun(dir, name string, started time.Time) runInfo {
 	return info
 }
 
-const defaultJSONReport = "vncshot_report.json"
+const (
+	defaultJSONReport = "vncshot_report.json"
+	manifestFilename  = "manifest.json"
+)
 
 // readRunDocument parses a finished run's JSON report. Reports written by
 // this tool wrap the results in Document; a bare result array is accepted so
@@ -813,14 +861,28 @@ func (s *server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/files/")
 	clean := filepath.Clean(filepath.FromSlash(rel))
 	full := filepath.Join(runDir, clean)
-	if !strings.HasPrefix(full, filepath.Clean(runDir)+string(os.PathSeparator)) {
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-	if info, err := os.Stat(full); err != nil || info.IsDir() {
+
+	// Compare resolved paths: a symlink inside the run folder must not be
+	// able to serve a file from elsewhere on the host.
+	rootReal, err := filepath.EvalSymlinks(runDir)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
+	fullReal, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !strings.HasPrefix(fullReal, rootReal+string(os.PathSeparator)) {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if info, err := os.Stat(fullReal); err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	full = fullReal
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, full)
@@ -865,17 +927,17 @@ func (s *server) snapshotLocked() snapshot {
 		HTML:        s.run.htmlPath,
 		PDF:         s.run.pdfPath,
 		Files:       append([]string(nil), s.run.files...),
-		Findings:    append([]finding(nil), s.run.findings...),
+		Findings:    s.sortedFindingsLocked(),
 		Events:      append([]event(nil), s.run.events...),
 		Warning:     s.run.warning,
 		Version:     s.version,
 		Running:     s.run.status == statusRunning,
 		StartedScan: s.run.status != statusIdle,
-		ReportLinks: map[string]string{
-			"json": s.artifactLink(s.run.jsonPath),
-			"html": s.artifactLink(s.run.htmlPath),
-			"pdf":  s.artifactLink(s.run.pdfPath),
-		},
+		// Artifact paths are assigned when the scan starts, but the files
+		// only exist once it settles. Linking them mid-scan would render
+		// "Reports" buttons that answer 404.
+		ReportLinks: s.reportLinksLocked(),
+		Diff:        s.run.diff,
 	}
 	if !s.run.started.IsZero() {
 		snap.Started = s.run.started.Format("2006-01-02 15:04:05")
@@ -901,6 +963,19 @@ func (s *server) snapshotLocked() snapshot {
 	return snap
 }
 
+// reportLinksLocked returns the artifact URLs for the dashboard, or an empty
+// map while a scan is still writing them.
+func (s *server) reportLinksLocked() map[string]string {
+	links := map[string]string{}
+	if s.run.status == statusRunning {
+		return links
+	}
+	links["json"] = s.artifactLink(s.run.jsonPath)
+	links["html"] = s.artifactLink(s.run.htmlPath)
+	links["pdf"] = s.artifactLink(s.run.pdfPath)
+	return links
+}
+
 // artifactLink maps an on-disk artifact to its /files URL, returning "" when
 // the file is outside the current run folder.
 func (s *server) artifactLink(path string) string {
@@ -912,6 +987,37 @@ func (s *server) artifactLink(path string) string {
 		return ""
 	}
 	return "/files/" + filepath.ToSlash(rel)
+}
+
+// sortedFindingsLocked returns the findings in the same deterministic order
+// the reports use (numeric IP, then port), so the dashboard never disagrees
+// with the artifacts of the same run.
+func (s *server) sortedFindingsLocked() []finding {
+	out := append([]finding(nil), s.run.findings...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if cmp := compareNumericIP(a.IP, b.IP); cmp != 0 {
+			return cmp < 0
+		}
+		return a.Port < b.Port
+	})
+	return out
+}
+
+// compareNumericIP orders addresses numerically, keeping non-IP entries
+// last in lexical order.
+func compareNumericIP(a, b string) int {
+	ipA, ipB := net.ParseIP(a), net.ParseIP(b)
+	switch {
+	case ipA != nil && ipB != nil:
+		return bytes.Compare(ipA.To16(), ipB.To16())
+	case ipA != nil:
+		return -1
+	case ipB != nil:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
 }
 
 func (s *server) pushEvent(kind, message string) {

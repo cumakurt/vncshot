@@ -60,7 +60,13 @@ type Options struct {
 // finish or abort and partial results are still returned.
 func Run(ctx context.Context, targets []Target, opts Options) ([]report.Result, error) {
 	if opts.Workers <= 0 {
-		opts.Workers = 150
+		opts.Workers = DefaultWorkers
+	}
+	// Hard ceiling: every worker is a goroutine plus at least one socket, so
+	// an accidentally huge value would exhaust file descriptors or memory
+	// before the first probe completes.
+	if opts.Workers > MaxWorkers {
+		opts.Workers = MaxWorkers
 	}
 	if opts.ConnectTimeout <= 0 {
 		opts.ConnectTimeout = time.Second
@@ -208,7 +214,15 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 			// just did not speak usable RFB.
 			res.Open = true
 			res.Attempts = attempt
-			res.Error = err.Error()
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				// The probe was aborted mid-handshake by a cancellation.
+				// Reporting the resulting socket deadline error ("i/o
+				// timeout") would make an operator chase a phantom network
+				// problem, so the real cause is recorded instead.
+				res.Error = ctxErr.Error()
+			} else {
+				res.Error = err.Error()
+			}
 			return res
 		}
 
@@ -278,6 +292,15 @@ func saveScreenshot(img image.Image, dir string, t Target, ts time.Time) (string
 }
 
 const (
+	// DefaultWorkers is the worker pool size when the caller leaves it at 0.
+	DefaultWorkers = 150
+	// MaxWorkers caps the pool so a mistyped or hostile value cannot spawn
+	// an unbounded number of goroutines and sockets.
+	MaxWorkers = 4096
+	// MaxRate caps new connections per second. Above this the computed
+	// pacing interval rounds down to zero, which would silently disable the
+	// limiter instead of honouring the requested rate.
+	MaxRate = 100000
 	// defaultHostConcurrency bounds simultaneous probes against one IP.
 	defaultHostConcurrency = 2
 	// defaultRetryBackoff is the base delay before a transient retry.

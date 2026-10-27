@@ -12,6 +12,48 @@ framebuffer as PNG evidence for authorized security assessments.
 Use only on networks you own or have explicit written permission to test.
 ```
 
+![vncshot GUI dashboard](docs/screenshots/gui-dashboard.png)
+
+*The local GUI: live counters, transport column, captured frames and the
+previous-run history, all on loopback.*
+
+## Table of contents
+
+- [Developer](#developer)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Build and install](#build-and-install)
+- [Privileges](#privileges)
+- [Usage](#usage)
+  - [Configuration and precedence](#configuration-and-precedence)
+- [Password testing](#password-testing)
+  - [Read-only by design](#read-only-by-design)
+  - [Candidate limits](#candidate-limits)
+  - [Handling sensitive output](#handling-sensitive-output)
+- [Connection and transport](#connection-and-transport)
+  - [Security types and TLS](#security-types-and-tls)
+  - [Retry and per-host limits](#retry-and-per-host-limits)
+- [How a scan works](#how-a-scan-works)
+  - [Target expansion](#target-expansion)
+  - [Probe pipeline](#probe-pipeline)
+- [GUI](#gui)
+  - [GUI HTTP API](#gui-http-api)
+- [Output](#output)
+  - [JSON schema](#json-schema)
+  - [CSV format](#csv-format)
+  - [Manifest](#manifest)
+  - [Baseline comparison](#baseline-comparison)
+  - [Webhook notifications](#webhook-notifications)
+- [Exit codes](#exit-codes)
+- [Performance tuning](#performance-tuning)
+- [Troubleshooting](#troubleshooting)
+- [Package layout](#package-layout)
+- [Dependencies](#dependencies)
+- [Development](#development)
+- [Legal Disclaimer / Terms of Use](#legal-disclaimer--terms-of-use)
+- [License](#license)
+
 ## Developer
 
 **Cuma KURT**
@@ -23,7 +65,7 @@ Use only on networks you own or have explicit written permission to test.
 
 - Linux only; both the CLI and the GUI must run as root
 - Scan single IPs, CIDR blocks, IPv4 ranges, or a file of targets
-- Concurrent worker pool with configurable rate limiting
+- Concurrent worker pool with configurable rate limiting and per-host caps
 - RFB 3.3 / 3.7 / 3.8 handshake, passwordless (`None`) detection and
   weak-password detection
 - Framebuffer capture to PNG for passwordless and weak-password endpoints
@@ -43,7 +85,43 @@ Use only on networks you own or have explicit written permission to test.
 - `-version` prints build information without requiring root
 - Graceful Ctrl+C shutdown with partial results
 
-## Build
+## Requirements
+
+| Area | Requirement |
+|------|-------------|
+| Operating system | Linux (the binary and `install.sh` refuse other systems) |
+| Privileges | root, directly or via `sudo`, for CLI and GUI scans |
+| Build toolchain | Go 1.22 or newer, only when building from source |
+| Runtime | none; the binary is statically linked |
+| Network | TCP reachability to the scanned VNC ports |
+
+The tool has no runtime dependency on a desktop environment, X11, a browser or
+external utilities. The GUI is a local web page, and `xdg-open` is used only to
+open a browser automatically (`-gui-no-browser` disables it).
+
+## Quick start
+
+```bash
+# 1. Build and install (creates /usr/local/vncshot for scan output)
+git clone https://github.com/cumakurt/vncshot.git
+cd vncshot
+./install.sh
+
+# 2. Verify the binary and review the options
+vncshot -version
+vncshot -h
+
+# 3. Scan an authorized range and capture evidence
+sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+
+# 4. Open the generated report
+sudo find /usr/local/vncshot -name vncshot_report.html
+```
+
+Every run lands in its own timestamped folder, so consecutive scans never
+overwrite each other. The terminal summary ends with the exact paths.
+
+## Build and install
 
 ```bash
 # one-shot bootstrap + static build + install to /usr/local/bin
@@ -73,9 +151,21 @@ Both locations can be changed with `INSTALL_PREFIX` and `REPORT_DIR`:
 INSTALL_PREFIX="$HOME/.local/bin" REPORT_DIR="$HOME/vncshot" ./install.sh -y
 ```
 
-The report root is compiled into the binary, so the installed binary and the
-installed directory always agree. There are no runtime external dependencies
-beyond the Go toolchain used for building.
+`GO_VERSION` pins the Go release downloaded when no suitable toolchain is
+present, and `VERSION` sets the version string embedded in the binary and
+printed by `-version`. The report root is compiled into the binary, so the
+installed binary and the installed directory always agree. There are no
+runtime external dependencies beyond the Go toolchain used for building.
+
+### Uninstall
+
+```bash
+sudo rm -f /usr/local/bin/vncshot
+sudo rm -rf /usr/local/vncshot     # deletes every captured report and screenshot
+```
+
+Remove `~/.cache/vncshot-install` as well if you want to drop the cached Go
+tarball downloaded by `install.sh`.
 
 ## Privileges
 
@@ -116,8 +206,8 @@ injects the release version at build time.
 | `-ports` | `5900` | Port list/ranges (`5900,5901-5910`) |
 | `-timeout` | `1s` | TCP connect timeout |
 | `-vnc-timeout` | `15s` | RFB handshake/capture timeout |
-| `-workers` | `150` | Concurrent scan workers |
-| `-rate` | `200` | Max new connections per second (`0` = unlimited) |
+| `-workers` | `150` | Concurrent scan workers (maximum 4096) |
+| `-rate` | `200` | Max new connections per second (`0` = unlimited, maximum 100000) |
 | `-retries` | `1` | Extra connect attempts for transient failures (`0` = none) |
 | `-out-dir` | `/usr/local/vncshot` | Root directory for timestamped scan folders |
 | `-output` | `<run-dir>/vncshot_report.json` | JSON report path |
@@ -141,6 +231,9 @@ injects the release version at build time.
 | `-gui-no-browser` | `false` | Do not open the GUI in a browser automatically |
 
 The `-gui-*` flags only apply together with `-gui`.
+
+`-h` prints the same flag reference and exits `0`. An unknown flag prints
+`flag provided but not defined: <name>` followed by the usage text and exits `2`.
 
 ### Configuration and precedence
 
@@ -221,6 +314,10 @@ keyboard or mouse input, clipboard data or control messages, never requests
 continuous updates, and never modifies the remote desktop. A capture is a
 snapshot of the current screen, nothing more.
 
+The whole RFB client is about 1,100 lines and can be audited in one sitting:
+`vnc/protocol.go` holds the wire constants and encoders, `vnc/auth.go` the
+authentication, and `vnc/client.go` the handshake and capture flow.
+
 ### Candidate limits
 
 * Every candidate uses a new connection; a session is never reused to hammer
@@ -232,6 +329,8 @@ snapshot of the current screen, nothing more.
   unobtrusive.
 * `-word-list` accepts at most 500 entries and is rejected when the path is
   missing or points to a directory.
+* Candidates longer than eight bytes are truncated to eight by the RFB
+  authentication scheme itself; the report records what was accepted.
 
 ### Handling sensitive output
 
@@ -290,6 +389,57 @@ empty or false.
 * Per-host concurrency is capped at 2 simultaneous probes per target IP, so a
   server with many scanned ports is not hit by every worker at once. The
   global `-workers` and `-rate` limits still apply.
+* `-workers` and `-rate` have hard upper bounds (4096 and 100000). A worker is
+  a goroutine plus at least one socket, and beyond 100000 connections per
+  second the pacing interval would round to zero, so both limits are rejected
+  instead of being silently ignored.
+
+A cancelled probe is recorded with the cancellation reason, not with the
+socket deadline error it triggers: an operator reading `i/o timeout` would
+otherwise look for a nonexistent network fault.
+
+## How a scan works
+
+### Target expansion
+
+`-target` accepts a single address, a CIDR block, an inclusive last-octet
+range (`10.0.0.10-20`) or an IPv6 address/CIDR. `-file` reads the same syntax
+one entry per line, with `#` comments and blank lines ignored. Both sources can
+be combined and duplicates are removed. `-ports` accepts a comma-separated
+list of ports and inclusive ranges.
+
+Expansion is bounded so a typo cannot start a massive scan:
+
+| Limit | Value | Behaviour |
+|-------|-------|-----------|
+| Host:port pairs per run | 1,048,576 (2^20) | Rejected with a message to narrow the target or port list |
+| Hosts per single CIDR spec | 65,536 (2^16, i.e. `/16` or longer) | Rejected; split larger blocks into several specs |
+| Word-list entries | 500 | Rejected |
+
+Targets are expanded before any packet is sent, so an invalid input fails
+immediately with no partial scan.
+
+### Probe pipeline
+
+For every `host:port` pair the worker performs:
+
+1. **Dial** with `-timeout`. A refused or timed-out connect marks the port as
+   closed (or retries once when the failure is transient).
+2. **Protocol banner** — read `RFB xxx.yyy`, reply with the best version both
+   sides support (3.3, 3.7 or 3.8).
+3. **Security negotiation** — read the advertised types. `None` continues
+   immediately; VNC authentication triggers the candidate loop; anything else
+   stops after recording the posture.
+4. **Session init** — `ClientInit`/`ServerInit` yields the desktop name and
+   framebuffer geometry (capped at 8192x8192 per side).
+5. **Capture** — request the 32-bit true-colour pixel format, raw encoding,
+   one full-frame update, then close the connection.
+6. **Persist** — write the PNG for passwordless/weak-password hosts and add
+   the result to the in-memory set.
+
+Results stream back to the collector, which drives the progress bar, the GUI
+event stream and the final sorted artifact set. Ctrl+C cancels the context;
+in-flight probes abort and the partial results are still written.
 
 ## GUI
 
@@ -348,6 +498,33 @@ Security properties:
 Use `-gui-port` to pin the port and `-gui-no-browser` to suppress the
 automatic `xdg-open` call.
 
+![Findings table and run history](docs/screenshots/gui-findings.png)
+
+*Findings carry the transport, the credential source and a thumbnail of the
+captured frame; the left rail keeps the previous runs one click away.*
+
+### GUI HTTP API
+
+The dashboard is a thin client over a small JSON API. Every endpoint except
+the HTML page itself is protected by the session cookie and, for
+state-changing requests, the `X-Vncshot-Token` header.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/` | Dashboard page (accepts `?t=<token>` to establish the session) |
+| `GET` | `/api/state` | Current run snapshot: status, counters, findings, artifact links |
+| `GET` | `/api/events` | Server-Sent Events stream of the same snapshot |
+| `POST` | `/api/scan` | Start a scan (requires `authorized: true`) |
+| `POST` | `/api/cancel` | Cancel the running scan |
+| `GET` | `/api/runs` | Previous runs under the report root, newest first |
+| `POST` | `/api/runs/open` | Load a previous run into the dashboard |
+| `GET` | `/files/<path>` | Serve an artifact of the current run folder |
+
+Error responses use the standard HTTP status codes: `400` for invalid input,
+`401` without a session, `403` without the token header or authorization,
+`404` for a missing run or artifact, `409` when a scan is already running, and
+`405` for a wrong method.
+
 ## Output
 
 Every scan writes into its own timestamped folder under `-out-dir`, so runs
@@ -370,6 +547,10 @@ into the binary by `install.sh`, which also creates the directory:
 * `vncshot_report.pdf` — PDF report generated in-process from scan results
 * `vncshot_report.csv` — flat export of the same result set
 * `manifest.json` — SHA-256 digests of the run artifacts, written only with `-manifest`
+
+The folder name is the local scan start time in `YYYYMMDD-HHMMSS` form (the
+GUI and the baseline comparison rely on this layout). Screenshot names use the
+capture timestamp in the same form, so a run folder is self-describing.
 
 Results are sorted once before any artifact is written: numerically by IP
 address, then by port. JSON, HTML, PDF, CSV and the terminal summary therefore
@@ -395,6 +576,82 @@ The HTML and PDF reports use a light "technical dossier" theme. The PDF embeds
 the Liberation Sans font (SIL Open Font License), so Turkish and other
 non-ASCII characters render correctly.
 
+![HTML report](docs/screenshots/html-report.png)
+
+*The self-contained HTML report: stat strip, captured frames with the
+authentication badge, the baseline diff and the open-endpoint table.*
+
+![PDF report cover](docs/screenshots/pdf-report.png)
+
+*The PDF report is generated in-process; no browser or external tool is used.*
+
+![Captured framebuffer](docs/screenshots/framebuffer-capture.png)
+
+*A saved capture. The tool requests exactly one frame and disconnects, so the
+evidence is a snapshot and never a live session.*
+
+### JSON schema
+
+`vncshot_report.json` is a single object:
+
+```json
+{
+  "generated_at": "2026-10-26T20:53:04.512Z",
+  "tool": "vncshot",
+  "summary": {
+    "targets": 254,
+    "open": 3,
+    "rfb": 2,
+    "passwordless": 1,
+    "weak_credentials": 1,
+    "tls_services": 1,
+    "screenshots": 2,
+    "errors": 0
+  },
+  "results": [
+    {
+      "ip": "192.0.2.10",
+      "port": 5900,
+      "open": true,
+      "rfb": true,
+      "passwordless": false,
+      "password": "hunter2",
+      "password_source": "word-list",
+      "security_types": ["VNC authentication", "VeNCrypt"],
+      "tls": true,
+      "attempts": 1,
+      "server_name": "lab-pc",
+      "screen_width": 1920,
+      "screen_height": 1080,
+      "screenshot": "/usr/local/vncshot/20261026-205304/screenshots/192.0.2.10_5900_20261026-205304.png",
+      "duration_ms": 84,
+      "timestamp": "2026-10-26T20:53:04.428Z"
+    }
+  ]
+}
+```
+
+Result fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `ip`, `port` | string, int | Target endpoint |
+| `open` | bool | TCP connect succeeded |
+| `rfb` | bool | RFB handshake and session init succeeded |
+| `passwordless` | bool | Server offered `None` and accepted it |
+| `password` | string | Omitted unless a weak credential was accepted; sensitive |
+| `password_source` | string | `default` (built-in list) or `word-list` |
+| `auth_locked` | bool | Omitted unless the server blocked further attempts |
+| `security_types` | []string | Advertised type names, omitted when empty |
+| `tls` | bool | Omitted when false |
+| `attempts` | int | TCP attempts used, omitted when zero |
+| `server_name` | string | Desktop name from `ServerInit`, omitted when empty |
+| `screen_width`, `screen_height` | int | Framebuffer geometry, omitted when unknown |
+| `screenshot` | string | Absolute path of the PNG, omitted when no capture |
+| `error` | string | Omitted for closed ports; present for partial failures |
+| `duration_ms` | int | Probe duration in milliseconds |
+| `timestamp` | string | RFC 3339 in UTC |
+
 ### CSV format
 
 The CSV report is always written, uses standard CSV quoting with
@@ -407,7 +664,7 @@ ip,port,open,rfb,passwordless,weak_password,password_source,tls,security_types,s
 Booleans are written as `yes` or `no`. `security_types` joins the advertised
 type names with `;` so the whole list stays inside one field. `timestamp` is
 RFC 3339 in UTC. Rows are sorted by IP and port, exactly like the other
-artifacts.
+artifacts. The file is written `0600` because it can contain credentials.
 
 ### Manifest
 
@@ -434,6 +691,10 @@ so re-running it produces the same file list, and it is written
 `0600` because the run folder holds credentials and captured desktops. It is
 intended for evidence integrity: a reviewer can re-hash the folder and compare
 each size and digest against this file.
+
+A verification helper exists in the code (`app.VerifyManifest`) for tooling
+that re-hashes a run folder and reports the first missing, extra or modified
+file; it is not exposed as a CLI flag.
 
 ### Baseline comparison
 
@@ -507,6 +768,79 @@ A delivery failure is a warning, not a failed scan: the CLI prints
 `warning: webhook notification failed: ...` on stderr after the summary, the
 artifacts remain intact, and the exit status still reflects the scan itself.
 
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Scan completed, help printed, or `-version` printed |
+| `1` | Configuration, authorization, target, I/O or report error |
+| `2` | Unknown command-line flag (flag package usage error) |
+| `130` | Interrupted with Ctrl+C or SIGTERM; partial results were written |
+
+A completed scan that found exposed hosts still exits `0`: findings are data,
+not a tool failure. Use the JSON summary or the webhook if a pipeline needs to
+fail on findings.
+
+## Performance tuning
+
+The defaults target a `/24` with one port in a few seconds. For other shapes:
+
+| Situation | Adjustment |
+|-----------|------------|
+| Many ports per host | Lower `-workers`; per-host concurrency stays at 2 |
+| Large ranges | Raise `-rate` and `-workers` together, watch loss |
+| WAN or lossy links | Raise `-timeout` to `2s`–`5s`, keep `-retries 1` |
+| Slow or embedded VNC servers | Raise `-vnc-timeout` to `30s` |
+| Untrusted or monitored networks | Lower `-rate` (e.g. `20`) to stay unobtrusive |
+| Very large word list | Trim it; each candidate is a separate connection |
+
+Memory use is dominated by captured frames: one RGBA buffer per in-flight
+capture (up to `-workers`) plus the thumbnails embedded in the HTML report.
+Scanning tens of thousands of ports with `-workers 500` is possible but the
+HTML report grows quickly because every capture is base64-embedded; use
+`-no-pdf` and lower worker counts for very large inventories.
+
+## Troubleshooting
+
+**`error: root privileges required; re-run with sudo`**
+Run the command through `sudo`. `-version` and `-h` are the only exceptions.
+
+**`create report directory /usr/local/vncshot/...: permission denied`**
+The compiled-in report root is not writable. Run as root, or pass an explicit
+`-out-dir` you own.
+
+**Reports are in `/root/.local/share/vncshot` instead of `/usr/local/vncshot`**
+The default root was not writable and no `-out-dir` was given, so the scan fell
+back to the per-user directory. The CLI prints a warning with the reason.
+
+**`refusing to scan N host:port pairs (limit 1048576)`**
+Narrow the range, split the CIDR, or reduce the port list.
+
+**`CIDR ... is too large (… /16 or longer prefixes only …)`**
+`vncshot` expands at most 65,536 hosts per CIDR spec; split a `/8` into `/16`
+blocks or use `-file` with the subnets you actually own.
+
+**A host shows `open: true`, `rfb: false`**
+The TCP port answered but the service did not complete an RFB handshake. It is
+reported with the protocol error in `error` so a non-VNC service on 5900 is
+visible rather than silently treated as closed.
+
+**`auth_locked: true`**
+The server returned `SecurityResult` status 2. Remaining candidates were
+abandoned to avoid locking the account further; investigate manually.
+
+**The GUI URL opens but the dashboard stays empty**
+The token is in the URL query string; if you copied only the host and port the
+cookie was never set. Reopen the full printed URL.
+
+**`warning: webhook notification failed`**
+The scan and all artifacts are intact; only the notification failed. Check DNS,
+TLS trust and the receiver, then replay from the stored JSON if needed.
+
+**HTML report is huge**
+Every capture is embedded as base64. Use `-no-pdf` and fewer workers, or split
+the scan into smaller runs.
+
 ## Package layout
 
 ```
@@ -517,7 +851,7 @@ gui/           embedded web UI (index.html + HTTP server)
 scanner/       target expansion, worker pool, rate limiting, retry and per-host limits
 vnc/           RFB 3.3/3.7/3.8 client, None-auth and weak-password auth, raw capture
 screenshot/    PNG persistence
-report/        Result model, JSON/HTML/PDF/CSV exporters
+report/        Result model, JSON/HTML/PDF/CSV exporters, embedded PDF font
 ```
 
 ## Dependencies
@@ -533,15 +867,29 @@ Everything else uses the Go standard library.
 
 ```bash
 go test ./...          # unit + integration tests
+go test -race ./...    # concurrency checks
 go vet ./...
 gofmt -l .
+go build ./...
+shellcheck -S warning install.sh
 ```
+
+The test suite runs entirely offline: RFB endpoints are simulated in-process,
+so no VNC server or network access is required. Coverage includes the
+handshake for RFB 3.3/3.7/3.8, DES authentication against an independent
+implementation, passwordless and weak-password capture, lockout handling, a
+wire-level assertion that no input or clipboard messages are ever sent, the
+GUI API and its token/traversal guards, CSV/manifest/baseline/webhook
+behaviour, and the report renderers.
 
 CI runs on Linux (`.github/workflows/ci.yml`) for every push to `main`, every
 pull request and manual dispatches. It checks `gofmt -l .`, runs `go vet ./...`,
 `go build ./...` and `go test -race -count=1 ./...`, and lints `install.sh`
 with shellcheck (severity warning, with `SC2034` excluded for two known
 informational findings).
+
+When adding a flag, update `README.md` **and** `README.tr.md`; both files are
+kept in sync and reviewed together.
 
 ## Legal Disclaimer / Terms of Use
 

@@ -88,3 +88,27 @@ func TestWriteJSONUnwritablePath(t *testing.T) {
 		t.Fatal("WriteJSON to missing directory: want error, got nil")
 	}
 }
+
+// TestWriteJSONEnforcesOwnerOnlyMode covers the case where -output points at
+// a file that already exists with a wider mode: the report can contain weak
+// credentials, so the documented 0600 contract must win.
+func TestWriteJSONEnforcesOwnerOnlyMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod seed: %v", err)
+	}
+
+	if err := WriteJSON(path, []Result{{IP: "192.0.2.1", Port: 5900, Open: true, Password: "x"}}); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat report: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("report mode = %o, want owner-only", mode)
+	}
+}

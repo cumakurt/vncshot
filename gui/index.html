@@ -556,6 +556,7 @@
       <span id="credLine"></span>
     </div>
 
+    <div id="diffBox" class="notice hidden"></div>
     <div id="warningBox" class="notice hidden"></div>
     <div id="errorBox" class="error-box hidden"></div>
 
@@ -675,6 +676,21 @@
     $("elapsed").textContent = s.elapsed_ms ? "elapsed " + fmtDuration(s.elapsed_ms) : "—";
     $("rateLine").textContent = s.progress_rate ? s.progress_rate.toFixed(0) + " probes/s" : "";
     $("credLine").textContent = s.credentials ? s.credentials + " password candidates" : "";
+  }
+
+  // renderDiff shows the baseline comparison counts. A scan launched with
+  // -baseline compares against a previous run; without it the line is hidden.
+  function renderDiff(s) {
+    var box = $("diffBox");
+    var d = s.diff;
+    if (!d) {
+      box.classList.add("hidden");
+      box.textContent = "";
+      return;
+    }
+    box.classList.remove("hidden");
+    box.textContent = "Baseline " + d.baseline + ": " +
+      d.new + " new, " + d.resolved + " resolved, " + d.changed + " changed";
   }
 
   function renderReports(s) {
@@ -857,7 +873,10 @@
       "</tr></thead>";
     var tbody = document.createElement("tbody");
 
-    rows.slice().reverse().forEach(function (f) {
+    // The server already sorts findings exactly like the report artifacts
+    // (numeric IP, then port); reversing here would show a different order
+    // than the JSON/HTML/PDF of the same run.
+    rows.forEach(function (f) {
       var tr = document.createElement("tr");
       var stateCell = f.passwordless
         ? '<span class="tag hot">no auth</span>'
@@ -936,6 +955,7 @@
       $("errorBox").classList.add("hidden");
     }
 
+    renderDiff(s);
     renderProgress(s);
     renderCounters(s);
     renderReports(s);

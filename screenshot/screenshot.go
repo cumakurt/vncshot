@@ -12,6 +12,10 @@ import (
 
 // Save writes img as PNG under dir using the conventional
 // "{ip}_{port}_{timestamp}.png" name and returns the resulting path.
+//
+// The timestamp is formatted in local time, matching the run folder name, so
+// every time shown inside one evidence folder uses the same clock. The JSON
+// and report timestamps stay in UTC and are labelled as such.
 func Save(img image.Image, dir, ip string, port int, ts time.Time) (string, error) {
 	if img == nil {
 		return "", fmt.Errorf("no image to save")
@@ -20,7 +24,7 @@ func Save(img image.Image, dir, ip string, port int, ts time.Time) (string, erro
 		return "", fmt.Errorf("create screenshot directory: %w", err)
 	}
 
-	name := fmt.Sprintf("%s_%d_%s.png", sanitize(ip), port, ts.Format("20060102-150405"))
+	name := fmt.Sprintf("%s_%d_%s.png", sanitize(ip), port, ts.Local().Format("20060102-150405"))
 	path := filepath.Join(dir, name)
 
 	// Captures show the live desktop and are sensitive evidence.

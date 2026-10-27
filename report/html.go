@@ -252,12 +252,14 @@ func WriteHTMLWithDiff(path string, results []Result, diff *Diff) error {
 				thumb, full = "", ""
 			}
 			doc.Cards = append(doc.Cards, cardData{
-				IP:             r.IP,
-				Port:           fmt.Sprintf("%d", r.Port),
-				Addr:           r.Addr(),
-				ServerName:     r.ServerName,
-				Dimensions:     dims,
-				CapturedAt:     r.Timestamp.UTC().Format("2006-01-02 15:04:05"),
+				IP:         r.IP,
+				Port:       fmt.Sprintf("%d", r.Port),
+				Addr:       r.Addr(),
+				ServerName: r.ServerName,
+				Dimensions: dims,
+				// Report timestamps are UTC; label them so they are not
+				// confused with the local-clock screenshot file names.
+				CapturedAt:     r.Timestamp.UTC().Format("2006-01-02 15:04:05") + " UTC",
 				DurationMs:     fmt.Sprintf("%d", r.DurationMs),
 				Passwordless:   r.Passwordless,
 				Authenticated:  r.Password != "",
@@ -291,12 +293,14 @@ func WriteHTMLWithDiff(path string, results []Result, diff *Diff) error {
 			TLS:            r.TLS,
 			ServerName:     r.ServerName,
 			Dimensions:     dims,
-			Screenshot:     r.Screenshot,
-			Error:          r.Error,
-			DurationMs:     fmt.Sprintf("%d", r.DurationMs),
-			Attempts:       r.Attempts,
-			Timestamp:      r.Timestamp.UTC().Format("2006-01-02 15:04:05"),
-			SearchIndex:    searchIndex(r),
+			// The HTML report is shareable, so it shows only the capture
+			// file name rather than the absolute host path.
+			Screenshot:  filepath.Base(r.Screenshot),
+			Error:       r.Error,
+			DurationMs:  fmt.Sprintf("%d", r.DurationMs),
+			Attempts:    r.Attempts,
+			Timestamp:   r.Timestamp.UTC().Format("2006-01-02 15:04:05"),
+			SearchIndex: searchIndex(r),
 		})
 	}
 
@@ -308,6 +312,12 @@ func WriteHTMLWithDiff(path string, results []Result, diff *Diff) error {
 	// are owner-readable only.
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("write html report: %w", err)
+	}
+	// WriteFile keeps the mode of an existing file, so an explicit -html
+	// pointing at a world-readable path would leak the credentials. The
+	// documented contract is owner-only, so enforce it.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("restrict html report permissions: %w", err)
 	}
 	return nil
 }
