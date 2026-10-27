@@ -462,6 +462,16 @@
       </div>
 
       <div class="rail-section">
+        <p class="rail-title">Comparison</p>
+        <label>
+          <span class="lbl">Previous run</span>
+          <select id="baseline">
+            <option value="">No comparison</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="rail-section">
         <p class="rail-title">Output</p>
         <label>
           <span class="lbl">Report root</span>
@@ -480,17 +490,51 @@
           <input type="text" id="pdf" placeholder="default: &lt;run-dir&gt;/vncshot_report.pdf">
         </label>
         <label>
+          <span class="lbl">CSV override</span>
+          <input type="text" id="csv" placeholder="default: &lt;run-dir&gt;/vncshot_report.csv">
+        </label>
+        <label>
           <span class="lbl">Screenshot dir</span>
-          <input type="text" id="screenshot_dir" placeholder="default: &lt;run-dir&gt;/screenshots">
+          <input type="text" id="screenshot_dir" placeholder="default: &lt;run-dir&gt;/screenshots (must stay inside the run folder)">
         </label>
         <label class="check">
           <input type="checkbox" id="no_pdf">
           <span>Skip the PDF report (faster on very large scans)</span>
         </label>
         <label class="check">
+          <input type="checkbox" id="manifest">
+          <span>Write a SHA-256 checksum manifest for the run artifacts</span>
+        </label>
+        <div class="pair">
+          <label>
+            <span class="lbl">Keep runs</span>
+            <input type="number" id="keep_runs" min="0" placeholder="0 = keep all">
+          </label>
+        </div>
+        <label class="check">
+          <input type="checkbox" id="prune_dry_run">
+          <span>Report expired runs without deleting them</span>
+        </label>
+        <label class="check">
           <input type="checkbox" id="shared" checked>
           <span>Request a shared RFB session (do not kick active viewers)</span>
         </label>
+      </div>
+
+      <div class="rail-section">
+        <p class="rail-title">Delivery</p>
+        <label>
+          <span class="lbl">Webhook URL</span>
+          <input type="text" id="webhook" placeholder="https://hooks.example/vncshot">
+        </label>
+        <label class="check">
+          <input type="checkbox" id="redact">
+          <span>Redact captured passwords in reports</span>
+        </label>
+        <p class="hint" style="font-size:11px;color:var(--muted);margin:0">
+          Redaction is a launch-time option: start the GUI with -redact. The
+          dashboard keeps this preference but the scan pipeline ignores it.
+        </p>
       </div>
 
       <div class="rail-section">
@@ -557,6 +601,7 @@
     </div>
 
     <div id="diffBox" class="notice hidden"></div>
+    <div id="retentionBox" class="notice hidden"></div>
     <div id="warningBox" class="notice hidden"></div>
     <div id="errorBox" class="error-box hidden"></div>
 
@@ -693,6 +738,20 @@
       d.new + " new, " + d.resolved + " resolved, " + d.changed + " changed";
   }
 
+  // renderRetention surfaces the retention pass: the dashboard must show when
+  // old run folders were deleted instead of leaving it to the log.
+  function renderRetention(s) {
+    var box = $("retentionBox");
+    var removed = s.removed_runs || 0;
+    if (!removed) {
+      box.classList.add("hidden");
+      box.textContent = "";
+      return;
+    }
+    box.classList.remove("hidden");
+    box.textContent = "Removed " + removed + " old run" + (removed === 1 ? "" : "s");
+  }
+
   function renderReports(s) {
     var host = $("reportLinks");
     var links = s.report_links || {};
@@ -786,6 +845,37 @@
   var historyLoading = false;
   var historyRuns = null;
 
+  function savedBaseline() {
+    try {
+      var raw = localStorage.getItem(FORM_STORAGE_KEY);
+      return raw ? String(JSON.parse(raw).baseline || "") : "";
+    } catch (e) { return ""; }
+  }
+
+  // fillBaselineOptions mirrors the run history into the comparison select.
+  // The saved choice is re-applied only when that run still exists, so a
+  // pruned baseline silently falls back to "no comparison" instead of
+  // submitting a folder the server cannot read.
+  function fillBaselineOptions(runs) {
+    var select = $("baseline");
+    var wanted = select.value || savedBaseline();
+    select.innerHTML = '<option value="">No comparison</option>';
+    (runs || []).forEach(function (run) {
+      var option = document.createElement("option");
+      option.value = run.name;
+      option.textContent = run.name + (run.summary ? " · " + run.summary.passwordless + " pwless" : "");
+      select.appendChild(option);
+    });
+    select.value = "";
+    if (!wanted) return;
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === wanted) {
+        select.value = wanted;
+        return;
+      }
+    }
+  }
+
   function loadHistory() {
     if (historyLoading) return;
     historyLoading = true;
@@ -797,6 +887,7 @@
       .then(function (runs) {
         historyRuns = runs;
         renderHistory(runs);
+        fillBaselineOptions(runs);
       })
       .catch(function () {
         $("historyList").innerHTML = '<div class="empty">History unavailable.</div>';
@@ -823,8 +914,9 @@
   var FORM_STORAGE_KEY = "vncshot.form.v1";
   var formFields = [
     "target", "file", "ports", "workers", "rate", "timeout_ms", "vnc_timeout_ms",
-    "out_dir", "output", "html", "pdf", "screenshot_dir", "no_pdf", "shared",
-    "word_list", "no_default_passwords", "no_password_check"
+    "out_dir", "output", "html", "pdf", "csv", "screenshot_dir", "no_pdf",
+    "manifest", "keep_runs", "prune_dry_run", "shared", "word_list",
+    "no_default_passwords", "no_password_check", "baseline", "webhook", "redact"
   ];
 
   function saveForm() {
@@ -956,6 +1048,7 @@
     }
 
     renderDiff(s);
+    renderRetention(s);
     renderProgress(s);
     renderCounters(s);
     renderReports(s);
@@ -1008,12 +1101,19 @@
       output: $("output").value.trim(),
       html: $("html").value.trim(),
       pdf: $("pdf").value.trim(),
+      csv: $("csv").value.trim(),
       screenshot_dir: $("screenshot_dir").value.trim(),
       no_pdf: $("no_pdf").checked,
+      manifest: $("manifest").checked,
+      keep_runs: parseInt($("keep_runs").value || "0", 10),
+      prune_dry_run: $("prune_dry_run").checked,
       shared: $("shared").checked,
       word_list: $("word_list").value.trim(),
       no_default_passwords: $("no_default_passwords").checked,
       no_password_check: $("no_password_check").checked,
+      baseline: $("baseline").value,
+      webhook: $("webhook").value.trim(),
+      redact: $("redact").checked,
       authorized: $("authorized").checked
     };
     if (!body.authorized) {

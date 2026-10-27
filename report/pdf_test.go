@@ -110,6 +110,28 @@ func TestWritePDFHappyPath(t *testing.T) {
 	requireValidPDF(t, path)
 }
 
+func TestWritePDFRedactsPassword(t *testing.T) {
+	dir := t.TempDir()
+	results := []Result{
+		{
+			IP:             "192.0.2.42",
+			Port:           5900,
+			Open:           true,
+			RFB:            true,
+			Password:       "hunter2",
+			PasswordSource: "default",
+			DurationMs:     12,
+			Timestamp:      time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC),
+		},
+	}
+
+	path := filepath.Join(dir, "out.pdf")
+	if err := WritePDFWithOptions(path, results, Options{Redact: true}); err != nil {
+		t.Fatalf("WritePDFWithOptions: %v", err)
+	}
+	requireValidPDF(t, path)
+}
+
 func TestWritePDFEmptyResults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.pdf")
 	if err := WritePDF(path, nil); err != nil {

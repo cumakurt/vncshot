@@ -48,6 +48,9 @@ type Options struct {
 	// Passwords are weak-password candidates. Empty disables password
 	// testing and keeps the scan to the passwordless check.
 	Passwords []vnc.Credential
+	// LocalAddr binds probes to a specific source address. Nil uses the
+	// routing table's choice.
+	LocalAddr net.IP
 	// ShowProgress enables the terminal progress bar.
 	ShowProgress bool
 	// OnProgress, when set, is called once per completed probe. It runs on
@@ -198,6 +201,7 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 		ConnectTimeout: opts.ConnectTimeout,
 		Shared:         opts.Shared,
 		Passwords:      opts.Passwords,
+		LocalAddr:      opts.LocalAddr,
 	}
 
 	var vncRes *vnc.Result
@@ -260,6 +264,21 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 	res.AuthLocked = vncRes.AuthLocked
 	res.SecurityTypes = vncRes.SecurityTypeNames
 	res.TLS = vncRes.TLS
+	if info := vncRes.TLSInfo; info != nil {
+		res.Certificate = &report.Certificate{
+			Version:     info.Version,
+			CipherSuite: info.CipherSuite,
+			Subject:     info.Subject,
+			Issuer:      info.Issuer,
+			NotBefore:   info.NotBefore,
+			NotAfter:    info.NotAfter,
+			DNSNames:    append([]string(nil), info.DNSNames...),
+			Fingerprint: info.Fingerprint,
+			SelfSigned:  info.SelfSigned,
+			Expired:     info.Expired,
+			Verified:    info.Verified,
+		}
+	}
 	res.ServerName = vncRes.ServerName
 	res.ScreenWidth = vncRes.Width
 	res.ScreenHeight = vncRes.Height

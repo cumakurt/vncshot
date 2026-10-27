@@ -38,6 +38,17 @@ var csvHeader = []string{
 // port so the output is deterministic regardless of the caller's order, and
 // the file is written owner-only because it can contain weak credentials.
 func WriteCSV(path string, results []Result) error {
+	return WriteCSVWithOptions(path, results, Options{})
+}
+
+// WriteCSVWithOptions exports the results as RFC 4180 CSV.
+//
+// The CSV schema deliberately holds no secret value: it records only whether a
+// weak password was found (weak_password) and where it came from
+// (password_source), never the credential itself. Redaction therefore has
+// nothing to change here, and opts is accepted only to keep the exporter API
+// uniform.
+func WriteCSVWithOptions(path string, results []Result, opts Options) error {
 	sorted := make([]Result, len(results))
 	copy(sorted, results)
 	SortResults(sorted)

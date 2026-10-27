@@ -27,6 +27,19 @@ type Options struct {
 	// connection so a server-side lockout is never triggered by hammering
 	// one session, and the list stays under operator control.
 	Passwords []Credential
+	// LocalAddr binds the client socket to this source address. The zero
+	// value leaves the choice to the operating system. It applies to every
+	// dial the probe makes, including password-candidate connections.
+	LocalAddr net.IP
+	// InsecureTLS states that certificate verification must not abort the
+	// probe, which is also the default: the certificate is recorded and its
+	// verification outcome is reported instead of being enforced. The field
+	// exists so callers can express that intent explicitly; it does not
+	// change the wire behaviour.
+	InsecureTLS bool
+	// skipEncrypted forces the clear-text security types. It is used for the
+	// single retry after a failed encrypted negotiation, never by callers.
+	skipEncrypted bool
 }
 
 // Result is what a probe learned about one endpoint.
@@ -44,6 +57,16 @@ type Result struct {
 	// encrypted channel. A server may offer both None and an encrypted
 	// type; this stays true even though the probe prefers the weaker None.
 	TLS bool
+	// SawBanner is true once the RFB version banner was parsed. A probe that
+	// fails later still proves the endpoint speaks RFB, which the reports
+	// need in order to classify it as an RFB service with an error rather
+	// than as a non-RFB port.
+	SawBanner bool
+	// TLSInfo describes the certificate and negotiated parameters when the
+	// probe completed a TLS handshake, including for a VeNCrypt session. It
+	// is nil when no TLS session was established (for example a VeNCrypt
+	// X509 subtype the probe does not implement).
+	TLSInfo *TLSInfo
 	// ServerName is the desktop name from ServerInit.
 	ServerName string
 	Width      int
@@ -168,9 +191,25 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 	// Discovery attempt: learn the security types without sending any
 	// credential. This keeps an inventory scan from looking like an attack
 	// against hosts that are not in scope for password testing.
-	discovery, err := probeOnce(ctx, addr, opts, Credential{})
-	if err != nil {
+	attemptOpts := opts
+	discovery, err := probeOnce(ctx, addr, attemptOpts, Credential{})
+	if err != nil && errors.Is(err, ErrConnect) {
 		return nil, err
+	}
+	if err != nil {
+		// The encrypted negotiation failed. Some appliances advertise
+		// VeNCrypt or TLS but cannot complete it, or expect a subtype this
+		// client does not implement. Retry once over the clear-text types so
+		// the host is still inventoried, and use the same path for the
+		// password candidates below.
+		retry, retryErr := probeOnce(ctx, addr, opts.withSkipEncrypted(), Credential{})
+		if retryErr != nil {
+			if retry != nil && retry.SawBanner && (discovery == nil || !discovery.SawBanner) {
+				return retry, retryErr
+			}
+			return discovery, err
+		}
+		discovery, attemptOpts = retry, opts.withSkipEncrypted()
 	}
 	if discovery.Passwordless || !discovery.AuthRequired || len(opts.Passwords) == 0 {
 		return discovery, nil
@@ -180,7 +219,7 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 		if err := ctx.Err(); err != nil {
 			return discovery, err
 		}
-		res, err := probeOnce(ctx, addr, opts, cred)
+		res, err := probeOnce(ctx, addr, attemptOpts, cred)
 		if err != nil {
 			// A network-level failure ends the attempt loop; the discovery
 			// result still describes the endpoint.
@@ -203,6 +242,9 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 // caller only wants the security-type discovery step.
 func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) (*Result, error) {
 	dialer := net.Dialer{Timeout: opts.ConnectTimeout}
+	if opts.LocalAddr != nil {
+		dialer.LocalAddr = &net.TCPAddr{IP: opts.LocalAddr}
+	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", &connectError{err: err})
@@ -221,6 +263,8 @@ func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) 
 		w:          bufio.NewWriterSize(conn, 32*1024),
 		opts:       opts,
 		credential: cred,
+		ctx:        ctx,
+		serverName: serverNameFromAddr(addr),
 		result:     &Result{},
 	}
 
@@ -234,10 +278,19 @@ func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) 
 			c.result.AuthLocked = true
 			return c.result, nil
 		default:
-			return nil, err
+			// Keep whatever was learned (banner, security types) so the
+			// caller can still classify the endpoint.
+			return c.result, err
 		}
 	}
 	return c.result, nil
+}
+
+// withSkipEncrypted returns a copy of the options that forces the clear-text
+// security types.
+func (o Options) withSkipEncrypted() Options {
+	o.skipEncrypted = true
+	return o
 }
 
 type client struct {
@@ -246,6 +299,15 @@ type client struct {
 	w          *bufio.Writer
 	opts       Options
 	credential Credential
+	// skipEncrypted disables the TLS/VeNCrypt paths. It is used for a single
+	// retry when an encrypted negotiation fails, so a server that advertises
+	// TLS but cannot actually complete it is still inventoried over the
+	// plain-text security type it also offers.
+	skipEncrypted bool
+	ctx           context.Context
+	// serverName is the SNI name derived from the dial address, "" for an
+	// IP literal.
+	serverName string
 
 	result      *Result
 	version     [2]int
@@ -269,6 +331,7 @@ func (c *client) handshake() error {
 	}
 	major, minor := selectVersion(sMajor, sMinor)
 	c.version = [2]int{major, minor}
+	c.result.SawBanner = true
 
 	if err := c.write(formatVersion(major, minor)); err != nil {
 		return fmt.Errorf("write protocol version: %w", err)
@@ -359,16 +422,23 @@ func (c *client) securityHandshake() error {
 		}
 	}
 
-	hasNone, hasVNC, hasOther := false, false, false
+	hasNone, hasVNC, hasVeNCrypt, hasTLS := false, false, false, false
 	for _, t := range types {
 		switch t {
 		case secTypeNone:
 			hasNone = true
 		case secTypeVNCAuth:
 			hasVNC = true
-		default:
-			hasOther = true
+		case secTypeVeNCrypt:
+			hasVeNCrypt = true
+		case secTypeTLS:
+			hasTLS = true
 		}
+	}
+	if c.opts.skipEncrypted {
+		// The encrypted negotiation already failed once for this endpoint;
+		// fall back to the clear-text types it also advertises.
+		hasVeNCrypt, hasTLS = false, false
 	}
 
 	// A server that offers both None and auth is treated as passwordless:
@@ -383,7 +453,33 @@ func (c *client) securityHandshake() error {
 
 	c.result.AuthRequired = true
 
+	// Encrypted transports are preferred over plain authentication: both
+	// yield either a passwordless capture or a certificate that identifies
+	// the endpoint, which plain VNC authentication cannot provide.
 	switch {
+	case hasVeNCrypt:
+		if err := c.selectSecurityType(secTypeVeNCrypt); err != nil {
+			return err
+		}
+		return c.veNCryptHandshake()
+
+	case hasTLS:
+		// Security type 18 is "None over TLS": no credential is needed
+		// once the encrypted channel is established.
+		if err := c.selectSecurityType(secTypeTLS); err != nil {
+			return err
+		}
+		if err := c.upgradeTLS(); err != nil {
+			return err
+		}
+		c.result.Passwordless = true
+		// 3.8 sends SecurityResult for the None-equivalent flow; 3.3 and
+		// 3.7 go straight to ClientInit.
+		if c.version[0] == 3 && c.version[1] >= 8 {
+			return c.readSecurityResult()
+		}
+		return nil
+
 	case hasVNC:
 		// Discovery connection: report the posture without sending a
 		// password guess.
@@ -398,8 +494,6 @@ func (c *client) securityHandshake() error {
 		}
 		return nil
 
-	case hasOther:
-		return errStopProbe
 	default:
 		return errStopProbe
 	}

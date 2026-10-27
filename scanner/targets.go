@@ -3,6 +3,7 @@ package scanner
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -28,9 +29,19 @@ const maxTargets = 1 << 20
 // allocate a gigabyte-scale host list before the target cap applies.
 const maxCIDRHostBits = 16
 
+// stdinLabel is the user-facing name used for targets read from standard input.
+const stdinLabel = "stdin"
+
 // ParseTargets expands the CLI inputs into a concrete host:port list.
 // target may be empty when a file is supplied; either input is enough.
+// A file of "-" reads the target list from standard input.
 func ParseTargets(target, file string, ports []int) ([]Target, error) {
+	return parseTargets(target, file, ports, os.Stdin)
+}
+
+// parseTargets is the testable core of ParseTargets; stdin is the stream used
+// when file is "-".
+func parseTargets(target, file string, ports []int, stdin io.Reader) ([]Target, error) {
 	if len(ports) == 0 {
 		return nil, fmt.Errorf("no ports to scan")
 	}
@@ -44,7 +55,15 @@ func ParseTargets(target, file string, ports []int) ([]Target, error) {
 		hosts = append(hosts, expanded...)
 	}
 	if file != "" {
-		fromFile, err := hostsFromFile(file)
+		var (
+			fromFile []string
+			err      error
+		)
+		if file == "-" {
+			fromFile, err = hostsFromReader(stdin, stdinLabel)
+		} else {
+			fromFile, err = hostsFromFile(file)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -138,8 +157,14 @@ func hostsFromFile(path string) ([]string, error) {
 	}
 	defer f.Close()
 
+	return hostsFromReader(f, path)
+}
+
+// hostsFromReader scans one target spec per line until EOF. label names the
+// source in error messages ("stdin" or the file path).
+func hostsFromReader(r io.Reader, label string) ([]string, error) {
 	var hosts []string
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
@@ -156,12 +181,17 @@ func hostsFromFile(path string) ([]string, error) {
 		}
 		expanded, err := expandSpec(line)
 		if err != nil {
-			return nil, fmt.Errorf("%s:%d: %w", path, lineNo, err)
+			return nil, fmt.Errorf("%s:%d: %w", label, lineNo, err)
+		}
+		// Check before appending: a single line can expand to 2^16 hosts and
+		// an endless stream must not grow the slice without bound.
+		if len(hosts)+len(expanded) > maxTargets {
+			return nil, fmt.Errorf("refusing to read more than %d hosts from %s; narrow the input", maxTargets, label)
 		}
 		hosts = append(hosts, expanded...)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read target file: %w", err)
+		return nil, fmt.Errorf("read targets from %s: %w", label, err)
 	}
 	return hosts, nil
 }

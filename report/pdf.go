@@ -70,14 +70,25 @@ const (
 // WritePDF renders the scan results as a PDF report. Generation is done
 // entirely in-process: no browser, no external tools.
 func WritePDF(path string, results []Result) error {
-	return WritePDFWithDiff(path, results, nil)
+	return WritePDFWithOptions(path, results, Options{})
 }
 
 // WritePDFWithDiff renders the report together with a baseline comparison.
 // A nil diff keeps the output identical to WritePDF.
 func WritePDFWithDiff(path string, results []Result, diff *Diff) error {
-	diff = normalizedDiff(diff)
+	return WritePDFWithOptions(path, results, Options{Diff: diff})
+}
+
+// WritePDFWithOptions renders the report with the requested redaction. A
+// redacted report replaces the captured password with the marker in the
+// findings and in the endpoint table while the weak / passwordless state and
+// the summary counters stay intact.
+func WritePDFWithOptions(path string, results []Result, opts Options) error {
+	diff := normalizedDiff(opts.redactDiff(opts.Diff))
+	// Counters describe the observed findings, before redaction hides the
+	// secret values.
 	sum := Summarize(results)
+	results = opts.apply(results)
 
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.SetMargins(marginX, topY, marginX)

@@ -22,6 +22,9 @@ type Result struct {
 	// TLS is true when the server offers an encrypted security type, i.e.
 	// the session can be confidential rather than clear-text.
 	TLS bool `json:"tls,omitempty"`
+	// Certificate summarises the peer certificate when a TLS session was
+	// actually established. Nil for clear-text RFB.
+	Certificate *Certificate `json:"certificate,omitempty"`
 	// Attempts is how many TCP connection attempts were needed, which
 	// exposes flaky hosts that only answered after a retry.
 	Attempts     int       `json:"attempts,omitempty"`
@@ -32,6 +35,29 @@ type Result struct {
 	Error        string    `json:"error,omitempty"`
 	DurationMs   int64     `json:"duration_ms"`
 	Timestamp    time.Time `json:"timestamp"`
+}
+
+// Certificate is the evidence collected from a VNC server's TLS certificate.
+// The probe records the certificate instead of trusting it: embedded VNC
+// appliances almost always use self-signed certificates, and an inventory
+// should report that rather than fail the connection.
+type Certificate struct {
+	Version     string    `json:"tls_version,omitempty"`
+	CipherSuite string    `json:"cipher_suite,omitempty"`
+	Subject     string    `json:"subject,omitempty"`
+	Issuer      string    `json:"issuer,omitempty"`
+	NotBefore   time.Time `json:"not_before,omitempty"`
+	NotAfter    time.Time `json:"not_after,omitempty"`
+	DNSNames    []string  `json:"dns_names,omitempty"`
+	// Fingerprint is the SHA-256 digest of the DER certificate.
+	Fingerprint string `json:"sha256_fingerprint,omitempty"`
+	// SelfSigned is true when the certificate names itself as its issuer.
+	SelfSigned bool `json:"self_signed,omitempty"`
+	// Expired is true when NotAfter is in the past at scan time.
+	Expired bool `json:"expired,omitempty"`
+	// Verified is true only when the chain validated against the system
+	// roots, so a self-signed certificate reports false.
+	Verified bool `json:"verified,omitempty"`
 }
 
 // Summary aggregates the counters shown at the top of the reports.

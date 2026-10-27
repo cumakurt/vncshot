@@ -260,6 +260,44 @@ func TestWriteCSVEndsWithNewline(t *testing.T) {
 	}
 }
 
+// TestWriteCSVRedactionChangesNothing guards the schema: the CSV records only
+// the weak_password flag and the credential source, never the secret, so a
+// redacted export must be byte-identical to a normal one.
+func TestWriteCSVRedactionChangesNothing(t *testing.T) {
+	results := []Result{{
+		IP:             "192.0.2.17",
+		Port:           5900,
+		Open:           true,
+		RFB:            true,
+		Password:       "hunter2",
+		PasswordSource: "default",
+	}}
+
+	plainPath := filepath.Join(t.TempDir(), "plain.csv")
+	redactedPath := filepath.Join(t.TempDir(), "redacted.csv")
+	if err := WriteCSV(plainPath, results); err != nil {
+		t.Fatalf("WriteCSV: %v", err)
+	}
+	if err := WriteCSVWithOptions(redactedPath, results, Options{Redact: true}); err != nil {
+		t.Fatalf("WriteCSVWithOptions: %v", err)
+	}
+
+	plain, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatalf("read plain csv: %v", err)
+	}
+	redacted, err := os.ReadFile(redactedPath)
+	if err != nil {
+		t.Fatalf("read redacted csv: %v", err)
+	}
+	if string(plain) != string(redacted) {
+		t.Errorf("redacted CSV differs from plain CSV:\nplain:\n%s\nredacted:\n%s", plain, redacted)
+	}
+	if strings.Contains(string(redacted), "hunter2") {
+		t.Error("CSV contains the secret password")
+	}
+}
+
 func TestWriteCSVUnwritablePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist", "out.csv")
 	if err := WriteCSV(path, nil); err == nil {

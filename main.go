@@ -33,6 +33,7 @@ import (
 	"vncshot/app"
 	configfile "vncshot/config"
 	"vncshot/gui"
+	"vncshot/scanner"
 )
 
 const appName = "vncshot"
@@ -54,6 +55,7 @@ type config struct {
 	workers       int
 	rate          int
 	retries       int
+	sourceAddr    string
 	outDir        string
 	outDirSet     bool
 	output        string
@@ -76,6 +78,13 @@ type config struct {
 	noBrowser     bool
 	configPath    string
 	showVersion   bool
+	redact        bool
+	thumbOnly     bool
+	keepRuns      int
+	prune         int
+	pruneSet      bool
+	pruneDryRun   bool
+	dryRun        bool
 }
 
 func (c config) appConfig() app.Config {
@@ -88,6 +97,7 @@ func (c config) appConfig() app.Config {
 		Workers:            c.workers,
 		RatePerSec:         c.rate,
 		MaxRetries:         c.retries,
+		SourceAddr:         c.sourceAddr,
 		Shared:             c.shared,
 		NoPDF:              c.noPDF,
 		WordList:           c.wordList,
@@ -103,6 +113,10 @@ func (c config) appConfig() app.Config {
 		Baseline:           c.baseline,
 		WebhookURL:         c.webhook,
 		Manifest:           c.manifest,
+		Redact:             c.redact,
+		ThumbnailOnly:      c.thumbOnly,
+		KeepRuns:           c.keepRuns,
+		PruneDryRun:        c.pruneDryRun,
 	}
 }
 
@@ -133,6 +147,18 @@ func main() {
 	if err := requireRoot(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+
+	// -prune is a maintenance command, not a scan: run it and exit so it can
+	// be scheduled from cron without inventing a dummy target.
+	// -prune with an explicit zero is a mistake worth reporting, so the flag
+	// being *set* (not merely non-zero) selects the maintenance command.
+	if cfg.pruneSet || cfg.pruneDryRun {
+		if err := runPrune(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if cfg.gui {
@@ -170,6 +196,7 @@ func parseFlags() (config, error) {
 	flag.IntVar(&cfg.workers, "workers", 150, "concurrent scan workers")
 	flag.IntVar(&cfg.rate, "rate", 200, "max new connections per second (0 = unlimited)")
 	flag.IntVar(&cfg.retries, "retries", 1, "extra connect attempts for transient failures (0 = none)")
+	flag.StringVar(&cfg.sourceAddr, "source-addr", "", "local IP to bind probes to (default: route table)")
 	flag.StringVar(&cfg.outDir, "out-dir", reportBaseDir, "root directory for timestamped report folders")
 	flag.StringVar(&cfg.output, "output", "", "JSON report path (default <run-dir>/"+appName+"_report.json)")
 	flag.StringVar(&cfg.html, "html", "", "HTML report path (default <run-dir>/"+appName+"_report.html)")
@@ -177,6 +204,12 @@ func parseFlags() (config, error) {
 	flag.StringVar(&cfg.csv, "csv", "", "CSV report path (default <run-dir>/"+appName+"_report.csv)")
 	flag.StringVar(&cfg.baseline, "baseline", "", "previous run directory to compare against")
 	flag.BoolVar(&cfg.manifest, "manifest", false, "write a SHA-256 checksum manifest for the run artifacts")
+	flag.BoolVar(&cfg.redact, "redact", false, "replace captured passwords with a placeholder (safe to share)")
+	flag.BoolVar(&cfg.thumbOnly, "thumb-only", false, "embed only preview images in the HTML report (smaller file)")
+	flag.IntVar(&cfg.keepRuns, "keep", 0, "keep only the newest N run folders after a scan (0 = keep all)")
+	flag.IntVar(&cfg.prune, "prune", 0, "delete all but the newest N run folders and exit (0 = disabled)")
+	flag.BoolVar(&cfg.pruneDryRun, "prune-dry-run", false, "with -prune or -keep, list what would be deleted")
+	flag.BoolVar(&cfg.dryRun, "dry-run", false, "expand targets and report the scope without scanning")
 	flag.StringVar(&cfg.webhook, "webhook", "", "POST a JSON summary to this URL when the scan finishes with new findings or weak credentials")
 	flag.StringVar(&cfg.configPath, "config", "", "config file with flag defaults (JSON or simple YAML)")
 	flag.BoolVar(&cfg.noPDF, "no-pdf", false, "skip PDF generation")
@@ -217,8 +250,11 @@ func parseFlags() (config, error) {
 	// fs.Set, used for environment and config values, also records the flag
 	// as visited, so this catches every explicit source, not just the CLI.
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "out-dir" {
+		switch f.Name {
+		case "out-dir":
 			cfg.outDirSet = true
+		case "prune":
+			cfg.pruneSet = true
 		}
 	})
 
@@ -248,6 +284,12 @@ func printUsage(w io.Writer) {
 }
 
 func runCLI(cfg config) error {
+	// A dry run only expands the scope locally, so it neither needs the
+	// authorization prompt nor touches the network.
+	if cfg.dryRun {
+		return runDryRun(cfg)
+	}
+
 	if !cfg.assumeYes {
 		ok, err := confirmAuthorization()
 		if err != nil {
@@ -298,6 +340,9 @@ func runCLI(cfg config) error {
 	}
 	if out.Manifest != "" {
 		fmt.Fprintf(os.Stderr, "manifest: %s\n", out.Manifest)
+	}
+	if len(out.RemovedRuns) > 0 {
+		fmt.Fprintf(os.Stderr, "retention:   removed %d old run(s)\n", len(out.RemovedRuns))
 	}
 	if out.Warning != "" {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", out.Warning)
@@ -350,4 +395,83 @@ func confirmAuthorization() (bool, error) {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}
 	return strings.EqualFold(strings.TrimSpace(answer), "yes"), nil
+}
+
+// runPrune deletes old run folders under the report root and prints what it
+// did. It is deliberately separate from a scan so retention can be scheduled
+// on its own.
+func runPrune(cfg config) error {
+	keep := cfg.prune
+	if !cfg.pruneSet && cfg.pruneDryRun {
+		// "-prune-dry-run" alone previews the -keep policy of a scan.
+		keep = cfg.keepRuns
+	}
+	if keep <= 0 {
+		return fmt.Errorf("-prune needs a positive run count, e.g. -prune 30")
+	}
+
+	root := cfg.outDir
+	runs, err := app.ListRuns(root)
+	if err != nil {
+		return err
+	}
+
+	removed, err := app.PruneRuns(root, keep, cfg.pruneDryRun)
+	if err != nil {
+		return err
+	}
+
+	verb := "removed"
+	if cfg.pruneDryRun {
+		verb = "would remove"
+	}
+	fmt.Fprintf(os.Stderr, "report root: %s\n", root)
+	fmt.Fprintf(os.Stderr, "runs found:  %d | keeping newest %d\n", len(runs), keep)
+	fmt.Fprintf(os.Stderr, "%s: %d run folder(s)\n", verb, len(removed))
+	for _, run := range removed {
+		fmt.Fprintf(os.Stderr, "  %s  %s  %d file(s)  %s\n",
+			run.Name, run.Started.Format("2006-01-02 15:04"), run.Files, humanBytes(run.Size))
+	}
+	return nil
+}
+
+// humanBytes renders a byte count for terminal output.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// runDryRun expands the requested scope and reports it without sending a
+// single packet, so a large CIDR or port list can be sanity-checked first.
+func runDryRun(cfg config) error {
+	ports, err := scanner.ParsePorts(cfg.ports)
+	if err != nil {
+		return err
+	}
+	cfgScan := cfg.appConfig()
+	plan, err := app.DescribeScope(cfgScan, ports)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "dry run: nothing will be sent\n")
+	fmt.Fprintf(os.Stderr, "targets:            %d host:port pairs\n", plan.Targets)
+	fmt.Fprintf(os.Stderr, "unique hosts:       %d\n", plan.Hosts)
+	fmt.Fprintf(os.Stderr, "ports:              %s\n", cfg.ports)
+	fmt.Fprintf(os.Stderr, "password candidates:%d\n", plan.Credentials)
+	fmt.Fprintf(os.Stderr, "report root:        %s\n", cfg.outDir)
+	fmt.Fprintf(os.Stderr, "workers:            %d | rate: %s\n", cfg.workers, rateText(cfg.rate))
+	if plan.Targets > 0 {
+		fmt.Fprintf(os.Stderr, "first target:       %s\n", plan.First)
+		fmt.Fprintf(os.Stderr, "last target:        %s\n", plan.Last)
+	}
+	return nil
 }

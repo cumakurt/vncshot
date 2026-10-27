@@ -933,3 +933,169 @@ func TestSnapshotExposesWarningAndDiff(t *testing.T) {
 		t.Error("snapshot JSON does not contain the diff object")
 	}
 }
+
+// TestScanConfigMapsRunOptions guards the dashboard/CLI parity: the form must
+// be able to start a baseline comparison, write a CSV and a manifest, notify a
+// webhook and apply retention.
+func TestScanConfigMapsRunOptions(t *testing.T) {
+	root := t.TempDir()
+	srv, _ := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+
+	cfg, err := srv.scanConfig(scanRequest{
+		Target:      "192.0.2.1",
+		Baseline:    " 20261020-090000 ",
+		CSV:         " audit.csv ",
+		Webhook:     " https://hooks.example/vncshot ",
+		Manifest:    true,
+		KeepRuns:    5,
+		PruneDryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("scanConfig: %v", err)
+	}
+	wantBaseline := filepath.Join(root, "20261020-090000")
+	if cfg.Baseline != wantBaseline {
+		t.Errorf("Baseline = %q, want %q resolved against the report root", cfg.Baseline, wantBaseline)
+	}
+	if cfg.CSV != "audit.csv" {
+		t.Errorf("CSV = %q, want the trimmed override", cfg.CSV)
+	}
+	if cfg.WebhookURL != "https://hooks.example/vncshot" {
+		t.Errorf("WebhookURL = %q, want the trimmed URL", cfg.WebhookURL)
+	}
+	if !cfg.Manifest {
+		t.Error("Manifest = false, want true")
+	}
+	if cfg.KeepRuns != 5 {
+		t.Errorf("KeepRuns = %d, want 5", cfg.KeepRuns)
+	}
+	if !cfg.PruneDryRun {
+		t.Error("PruneDryRun = false, want true")
+	}
+
+	// An explicit path from the CLI-style field is kept verbatim.
+	absolute := filepath.Join(t.TempDir(), "previous")
+	cfg, err = srv.scanConfig(scanRequest{Target: "192.0.2.1", Baseline: absolute})
+	if err != nil {
+		t.Fatalf("scanConfig with absolute baseline: %v", err)
+	}
+	if cfg.Baseline != absolute {
+		t.Errorf("Baseline = %q, want %q", cfg.Baseline, absolute)
+	}
+}
+
+func TestScanConfigRejectsNegativeKeepRuns(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	if _, err := srv.scanConfig(scanRequest{Target: "192.0.2.1", KeepRuns: -1}); err == nil {
+		t.Fatal("scanConfig accepted a negative keep_runs, want an error")
+	}
+}
+
+// TestScanConfigRejectsNonHTTPWebhook guards the notifier: the server posts to
+// the configured URL, so only http(s) endpoints are allowed.
+func TestScanConfigRejectsNonHTTPWebhook(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	for _, endpoint := range []string{
+		"file:///etc/passwd",
+		"ftp://hooks.example/vncshot",
+		"gopher://hooks.example/vncshot",
+	} {
+		_, err := srv.scanConfig(scanRequest{Target: "192.0.2.1", Webhook: endpoint})
+		if err == nil {
+			t.Fatalf("scanConfig accepted %q, want an error", endpoint)
+		}
+		scheme := endpoint[:strings.Index(endpoint, ":")]
+		if !strings.Contains(err.Error(), scheme) {
+			t.Errorf("error for %q = %q, want the scheme named", endpoint, err)
+		}
+	}
+}
+
+// TestScanConfigRejectsScreenshotDirOutsideRunRoot guards thumbnail
+// visibility: /files/ only serves the run folder, so a screenshot directory
+// elsewhere would produce findings whose images silently 404.
+func TestScanConfigRejectsScreenshotDirOutsideRunRoot(t *testing.T) {
+	root := t.TempDir()
+	srv, _ := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+
+	outside := t.TempDir()
+	for _, dir := range []string{outside, "../screenshots", "shots/../../elsewhere"} {
+		_, err := srv.scanConfig(scanRequest{Target: "192.0.2.1", ScreenshotDir: dir})
+		if err == nil {
+			t.Fatalf("scanConfig accepted screenshot dir %q outside the run root", dir)
+		}
+		if !strings.Contains(err.Error(), "screenshot directory must be inside the run folder") {
+			t.Errorf("error for %q = %q, want the actionable message", dir, err)
+		}
+	}
+}
+
+func TestScanConfigAcceptsScreenshotDirInsideRunRoot(t *testing.T) {
+	root := t.TempDir()
+	srv, _ := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+
+	for _, dir := range []string{"screenshots", "shots/2026", filepath.Join(root, "screenshots")} {
+		cfg, err := srv.scanConfig(scanRequest{Target: "192.0.2.1", ScreenshotDir: dir})
+		if err != nil {
+			t.Fatalf("scanConfig rejected %q: %v", dir, err)
+		}
+		if cfg.ScreenshotDir != dir {
+			t.Errorf("ScreenshotDir = %q, want %q", cfg.ScreenshotDir, dir)
+		}
+	}
+}
+
+// TestSnapshotExposesRemovedRuns guards the retention indicator: the dashboard
+// shows how many old run folders the last scan removed.
+func TestSnapshotExposesRemovedRuns(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	if snap := srv.snapshot(); snap.RemovedRuns != 0 {
+		t.Errorf("RemovedRuns = %d before a retention pass, want 0", snap.RemovedRuns)
+	}
+
+	srv.run.removedRuns = 3
+	raw, err := json.Marshal(srv.snapshot())
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	value, ok := decoded["removed_runs"]
+	if !ok {
+		t.Fatal("snapshot JSON is missing removed_runs")
+	}
+	var removed int
+	if err := json.Unmarshal(value, &removed); err != nil || removed != 3 {
+		t.Errorf("removed_runs = %s, want 3", value)
+	}
+}
+
+// TestFormPersistsRunOptionsButNotAuthorization guards the dashboard contract:
+// the new run-level controls survive a reload, while the authorization
+// checkbox must be re-confirmed for every scan.
+func TestFormPersistsRunOptionsButNotAuthorization(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded html: %v", err)
+	}
+	html := string(page)
+
+	match := regexp.MustCompile(`(?s)var formFields = \[(.*?)\]`).FindStringSubmatch(html)
+	if match == nil {
+		t.Fatal("index.html has no formFields list")
+	}
+	fields := match[1]
+	for _, id := range []string{"baseline", "csv", "manifest", "webhook", "redact", "keep_runs", "prune_dry_run"} {
+		if !strings.Contains(fields, `"`+id+`"`) {
+			t.Errorf("formFields is missing %q, so the control does not persist", id)
+		}
+	}
+	if strings.Contains(fields, `"authorized"`) {
+		t.Error("formFields persists the authorization checkbox; it must be re-confirmed every time")
+	}
+	if !strings.Contains(html, "authorized.checked = false") {
+		t.Error("loadForm no longer clears the authorization checkbox")
+	}
+}

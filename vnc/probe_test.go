@@ -318,11 +318,21 @@ func TestExportedSecurityTypeName(t *testing.T) {
 
 func TestProbeReportsEncryptedSecurityTypes(t *testing.T) {
 	// VeNCrypt (19) plus VNC authentication (2): the probe takes no
-	// credential and stops after the list, but the report must still show
-	// that an encrypted channel was on offer.
+	// credential and does not perform TLS authentication, but the report must
+	// still show that an encrypted channel was on offer. The server offers
+	// only the X509Vnc subtype, which the probe does not implement, so the
+	// negotiation stops after the subtype list.
 	addr := serveRFB(t, func(s *rfbServer) {
 		s.sendBanner("RFB 003.008\n")
 		s.mustWrite([]byte{2, 19, 2})
+		if sel := s.mustRead(1); sel[0] != 19 {
+			s.t.Errorf("fake server: security selection = %d, want 19 (VeNCrypt)", sel[0])
+		}
+		s.mustWrite([]byte{0, 2}) // VeNCrypt server version
+		s.mustRead(2)             // client version
+		s.mustWrite([]byte{0})    // version ack
+		s.mustWrite([]byte{1})    // one subtype
+		s.mustWriteU32(261)       // X509Vnc, not implemented
 	})
 
 	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
@@ -337,6 +347,9 @@ func TestProbeReportsEncryptedSecurityTypes(t *testing.T) {
 	}
 	if !result.TLS {
 		t.Error("TLS = false, want true for VeNCrypt")
+	}
+	if result.TLSInfo != nil {
+		t.Error("TLSInfo is non-nil, want nil when no TLS handshake happened")
 	}
 	want := []string{"VeNCrypt", "VNC authentication"}
 	if !reflect.DeepEqual(result.SecurityTypeNames, want) {

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"vncshot/report"
@@ -64,6 +66,22 @@ type Config struct {
 	WebhookURL string
 	// Manifest writes a checksum manifest for the run artifacts.
 	Manifest bool
+
+	// SourceAddr binds probes to a specific local address ("", "auto" or an
+	// IP). It matters on multi-homed hosts where the route is ambiguous.
+	SourceAddr string
+	// Redact replaces captured credentials with a placeholder in every
+	// artifact. Use it when a report is handed to a third party.
+	Redact bool
+	// ThumbnailOnly keeps the full-resolution captures out of the HTML
+	// report, which keeps large inventories shareable as one file.
+	ThumbnailOnly bool
+	// KeepRuns bounds how many run folders stay below the report root after
+	// a successful scan. Zero disables pruning.
+	KeepRuns int
+	// PruneDryRun reports the runs that retention would remove without
+	// deleting them.
+	PruneDryRun bool
 }
 
 // Progress reports scan advancement to a caller-supplied observer.
@@ -94,6 +112,7 @@ type Session struct {
 	// before any probe starts.
 	baseline    []report.Result
 	baselineDir string
+	sourceIP    net.IP
 }
 
 // Outcome is the result of a completed scan.
@@ -111,9 +130,12 @@ type Outcome struct {
 	// Diff is the baseline comparison, nil when no baseline was requested.
 	Diff *Diff
 	// Warning carries non-fatal problems such as a failed webhook
-	// notification. Callers should surface it to the operator, for example
-	// on stderr, without treating the scan as failed.
+	// notification or retention pass. Callers should surface it to the
+	// operator, for example on stderr, without treating the scan as failed.
 	Warning string
+	// RemovedRuns lists the old run folders that retention deleted (or would
+	// delete, when pruning is a dry run).
+	RemovedRuns []RunInfo
 }
 
 // Prepare validates the request, expands targets and creates the run folder.
@@ -178,6 +200,14 @@ func Prepare(cfg Config) (*Session, error) {
 		baseline:    baseline,
 		baselineDir: cfg.Baseline,
 	}
+	if addr := strings.TrimSpace(cfg.SourceAddr); addr != "" && !strings.EqualFold(addr, "auto") {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			return nil, fmt.Errorf("source address %q is not a valid IP", addr)
+		}
+		s.sourceIP = ip
+	}
+
 	if err := os.MkdirAll(s.ShotDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create screenshot directory: %w", err)
 	}
@@ -191,6 +221,11 @@ func (s *Session) FallbackWarning() string {
 		return ""
 	}
 	return fmt.Sprintf("%v; writing reports to %s", s.fallbackErr, filepath.Dir(s.RunDir))
+}
+
+// ReportRoot returns the directory that holds this session's run folder.
+func (s *Session) ReportRoot() string {
+	return filepath.Dir(s.RunDir)
 }
 
 // Scan probes every target and writes JSON, HTML, CSV and (optionally) PDF
@@ -209,6 +244,7 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 		ScreenshotDir:   s.ShotDir,
 		Shared:          cfg.Shared,
 		Passwords:       s.Credentials,
+		LocalAddr:       s.sourceIP,
 		ShowProgress:    cfg.ShowProgress,
 	}
 	if progress != nil {
@@ -235,17 +271,22 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 		out.Diff = Compare(s.baselineDir, s.baseline, results)
 	}
 
-	if err := report.WriteJSON(s.JSONPath, results); err != nil {
+	// The baseline comparison is rendered into every report so the artifacts
+	// stand on their own; it stays nil without -baseline.
+	reportOpts := report.Options{
+		Diff:          out.Diff.reportDiff(),
+		Redact:        cfg.Redact,
+		ThumbnailOnly: cfg.ThumbnailOnly,
+	}
+
+	if err := report.WriteJSONWithOptions(s.JSONPath, results, reportOpts); err != nil {
 		return out, err
 	}
-	// The baseline comparison is rendered into the HTML and PDF reports so
-	// the artifacts stand on their own; it stays nil without -baseline.
-	diff := out.Diff.reportDiff()
-	if err := report.WriteHTMLWithDiff(s.HTMLPath, results, diff); err != nil {
+	if err := report.WriteHTMLWithOptions(s.HTMLPath, results, reportOpts); err != nil {
 		return out, err
 	}
 	if !cfg.NoPDF {
-		if err := report.WritePDFWithDiff(s.PDFPath, results, diff); err != nil {
+		if err := report.WritePDFWithOptions(s.PDFPath, results, reportOpts); err != nil {
 			// PDF is a convenience artifact; a render failure must not
 			// discard the scan itself.
 			out.PDF = ""
@@ -256,7 +297,7 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 			out.PDF = s.PDFPath
 		}
 	}
-	if err := report.WriteCSV(s.CSVPath, results); err != nil {
+	if err := report.WriteCSVWithOptions(s.CSVPath, results, reportOpts); err != nil {
 		return out, err
 	}
 
@@ -274,6 +315,23 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 	if cfg.WebhookURL != "" && shouldNotifyWebhook(out) && ctx.Err() == nil {
 		if err := NotifyWebhook(ctx, cfg.WebhookURL, webhookPayload(out, Version)); err != nil {
 			out.Warning = fmt.Sprintf("webhook notification failed: %v", err)
+		}
+	}
+
+	// Retention runs only for a scan that produced complete artifacts. A
+	// failed prune must not discard or fail the scan, so it becomes a
+	// warning next to any webhook problem.
+	if cfg.KeepRuns > 0 && ctx.Err() == nil {
+		removed, err := s.RetainRuns()
+		if err != nil {
+			message := fmt.Sprintf("retention failed: %v", err)
+			if out.Warning == "" {
+				out.Warning = message
+			} else {
+				out.Warning += "; " + message
+			}
+		} else {
+			out.RemovedRuns = removed
 		}
 	}
 

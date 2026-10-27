@@ -8,9 +8,20 @@ import (
 
 // RFB security types we care about for inventory purposes.
 const (
-	secTypeInvalid uint8 = 0
-	secTypeNone    uint8 = 1
-	secTypeVNCAuth uint8 = 2
+	secTypeInvalid  uint8 = 0
+	secTypeNone     uint8 = 1
+	secTypeVNCAuth  uint8 = 2
+	secTypeTLS      uint8 = 18
+	secTypeVeNCrypt uint8 = 19
+)
+
+// VeNCrypt subtypes the probe can complete end-to-end. Values are U32 on the
+// wire because they are not RFB security types; see the RFB protocol
+// specification's VeNCrypt section and the IANA subtype registry (257 is
+// TLSNone, 258 is TLSVnc, 259 is TLSPlain).
+const (
+	vencryptSubtypeTLSNone uint32 = 257
+	vencryptSubtypeTLSVnc  uint32 = 258
 )
 
 // Encoding types. Only Raw is requested; the pseudo-encodings below may

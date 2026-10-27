@@ -577,6 +577,64 @@ func TestWriteHTMLWithoutDiffHasNoBaselineSection(t *testing.T) {
 	mustNotContain(t, readHTML(t, pathNil), "Changes since baseline", "baseline section for a nil diff")
 }
 
+func TestWriteHTMLRedactsPassword(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "frame.png")
+	writeTestPNG(t, pngPath, 8, 8)
+
+	results := []Result{
+		{
+			IP:             "192.0.2.23",
+			Port:           5900,
+			Open:           true,
+			RFB:            true,
+			Password:       "hunter2",
+			PasswordSource: "default",
+			Screenshot:     pngPath,
+		},
+	}
+
+	path := filepath.Join(dir, "report.html")
+	if err := WriteHTMLWithOptions(path, results, Options{Redact: true}); err != nil {
+		t.Fatalf("WriteHTMLWithOptions: %v", err)
+	}
+	html := readHTML(t, path)
+
+	mustContain(t, html, RedactedValue, "redaction marker in the report")
+	mustNotContain(t, html, "hunter2", "real password")
+	mustContain(t, html, `class="badge"`, "credential badge stays visible")
+	mustContain(t, html, `class="tag hot"`, "weak-password tag stays visible")
+	mustContain(t, html, "weakpassword", "weak-password filter term stays visible")
+}
+
+func TestWriteHTMLThumbnailOnly(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "frame.png")
+	writeTestPNG(t, pngPath, 64, 64)
+
+	results := []Result{
+		{
+			IP:           "192.0.2.24",
+			Port:         5900,
+			Open:         true,
+			RFB:          true,
+			Passwordless: true,
+			Screenshot:   pngPath,
+		},
+	}
+
+	path := filepath.Join(dir, "report.html")
+	if err := WriteHTMLWithOptions(path, results, Options{ThumbnailOnly: true}); err != nil {
+		t.Fatalf("WriteHTMLWithOptions: %v", err)
+	}
+	html := readHTML(t, path)
+
+	if got := strings.Count(html, "data:image/png;base64,"); got != 1 {
+		t.Errorf("embedded data URIs = %d, want 1 (thumbnail only)", got)
+	}
+	mustContain(t, html, `data-full=""`, "empty data-full attribute")
+}
+
 func TestResizeNearestCapsWidth(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 640, 480))
 	got := resizeNearest(src, thumbMaxWidth)

@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -39,12 +40,18 @@ var assets embed.FS
 
 // Config boots the GUI.
 type Config struct {
-	Scan        app.Config
-	Version     string
-	Host        string
-	Port        int
-	OpenBrowser bool
-	Reason      string
+	Scan app.Config
+	// Redact and ThumbnailOnly are the launch-time report defaults. The scan
+	// pipeline has no switch for them yet (app.Config owns those fields), so
+	// the dashboard exposes them as fixed launch options instead of letting
+	// the form silently override them.
+	Redact        bool
+	ThumbnailOnly bool
+	Version       string
+	Host          string
+	Port          int
+	OpenBrowser   bool
+	Reason        string
 }
 
 // scanRequest is the JSON body posted by the form.
@@ -68,6 +75,18 @@ type scanRequest struct {
 	NoPasswordChk  bool   `json:"no_password_check"`
 	Authorized     bool   `json:"authorized"`
 	ScreenshotBase string `json:"screenshot_base"`
+
+	// Run-level options shared with the CLI. Redact and ThumbnailOnly are
+	// accepted for a stable form contract but cannot be applied yet: the scan
+	// pipeline has no switch for them (see Config.Redact).
+	Baseline      string `json:"baseline"`
+	CSV           string `json:"csv"`
+	Manifest      bool   `json:"manifest"`
+	Webhook       string `json:"webhook"`
+	Redact        bool   `json:"redact"`
+	ThumbnailOnly bool   `json:"thumbnail_only"`
+	KeepRuns      int    `json:"keep_runs"`
+	PruneDryRun   bool   `json:"prune_dry_run"`
 }
 
 type event struct {
@@ -133,6 +152,9 @@ type snapshot struct {
 	StartedScan  bool              `json:"started_scan"`
 	ProgressRate float64           `json:"progress_rate"`
 	ReportLinks  map[string]string `json:"report_links"`
+	// RemovedRuns counts the old run folders retention deleted (or would
+	// delete, for a dry run).
+	RemovedRuns int `json:"removed_runs"`
 	// Diff summarises the baseline comparison; nil without -baseline.
 	Diff *diffSummary `json:"diff,omitempty"`
 }
@@ -167,6 +189,7 @@ type runState struct {
 	events      []event
 	warning     string
 	diff        *diffSummary
+	removedRuns int
 	session     *app.Session
 	cancel      context.CancelFunc
 	subscribers map[chan snapshot]struct{}
@@ -410,6 +433,7 @@ func (s *server) handleScan(w http.ResponseWriter, r *http.Request) {
 	s.run.events = nil
 	s.run.warning = session.FallbackWarning()
 	s.run.diff = nil
+	s.run.removedRuns = 0
 	s.run.session = session
 	s.run.cancel = cancel
 	s.run.mu.Unlock()
@@ -467,6 +491,7 @@ func (s *server) execute(ctx context.Context, session *app.Session, cancel conte
 			Changed:  len(out.Diff.Changed),
 		}
 	}
+	s.run.removedRuns = len(out.RemovedRuns)
 	switch {
 	case errors.Is(err, context.Canceled):
 		s.run.status = statusCancelled
@@ -739,6 +764,8 @@ func (s *server) handleRunOpen(w http.ResponseWriter, r *http.Request) {
 	s.run.findings = findings
 	s.run.events = []event{}
 	s.run.warning = ""
+	s.run.diff = nil
+	s.run.removedRuns = 0
 	s.run.session = nil
 	s.run.cancel = nil
 	s.run.mu.Unlock()
@@ -937,6 +964,7 @@ func (s *server) snapshotLocked() snapshot {
 		// only exist once it settles. Linking them mid-scan would render
 		// "Reports" buttons that answer 404.
 		ReportLinks: s.reportLinksLocked(),
+		RemovedRuns: s.run.removedRuns,
 		Diff:        s.run.diff,
 	}
 	if !s.run.started.IsZero() {
@@ -1070,7 +1098,104 @@ func (s *server) scanConfig(req scanRequest) (app.Config, error) {
 	cfg.PDF = strings.TrimSpace(req.PDF)
 	cfg.ScreenshotDir = strings.TrimSpace(req.ScreenshotDir)
 
+	// The run-level options mirror the CLI flags. Empty strings keep the
+	// launch-time defaults so a GUI started with -csv, -webhook or -baseline
+	// does not silently lose them.
+	if csvPath := strings.TrimSpace(req.CSV); csvPath != "" {
+		cfg.CSV = csvPath
+	}
+	cfg.Manifest = req.Manifest
+
+	if endpoint := strings.TrimSpace(req.Webhook); endpoint != "" {
+		if err := validateWebhookURL(endpoint); err != nil {
+			return cfg, err
+		}
+		cfg.WebhookURL = endpoint
+	}
+
+	if req.KeepRuns < 0 {
+		return cfg, fmt.Errorf("keep_runs must not be negative")
+	}
+	cfg.KeepRuns = req.KeepRuns
+	cfg.PruneDryRun = req.PruneDryRun
+
+	// Redact and ThumbnailOnly remain launch-time options: app.Config has no
+	// switch for them yet, so the request values stay accepted but unused
+	// instead of pretending the dashboard can change report redaction.
+
+	// The dashboard offers previous runs by folder name, while the pipeline
+	// expects a directory, so resolve bare names against the report root that
+	// this scan will write to.
+	runRoot := cfg.OutDir
+	if runRoot == "" {
+		runRoot = s.reportRoot()
+	}
+	if name := strings.TrimSpace(req.Baseline); name != "" {
+		if validRunName(name) {
+			cfg.Baseline = filepath.Join(runRoot, name)
+		} else {
+			cfg.Baseline = name
+		}
+	}
+
+	// Screenshots are served through /files/, which is rooted at the run
+	// folder. A directory outside it would leave working findings with
+	// thumbnails that 404 in the dashboard, so reject it before any probe
+	// starts.
+	if err := validateScreenshotDir(cfg.ScreenshotDir, runRoot); err != nil {
+		return cfg, err
+	}
+
 	return cfg, nil
+}
+
+// validateWebhookURL accepts only the schemes the notifier can POST to. The
+// server will send a request to this address, so anything else (file, ftp,
+// unix) is rejected before the scan starts.
+func validateWebhookURL(endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("webhook URL is invalid")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("webhook URL scheme %q is not supported; use http:// or https://", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("webhook URL must include a host")
+	}
+	return nil
+}
+
+// validateScreenshotDir keeps screenshots inside the report root so the
+// /files/ route can serve them. Relative values are resolved against the run
+// folder by the pipeline, so only a leading ".." can escape it.
+func validateScreenshotDir(dir, runRoot string) error {
+	if dir == "" {
+		return nil
+	}
+	outside := fmt.Errorf("screenshot directory must be inside the run folder; remove -screenshot-dir or point it inside %s", runRoot)
+
+	if !filepath.IsAbs(dir) {
+		clean := filepath.Clean(dir)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+			return outside
+		}
+		return nil
+	}
+
+	rootAbs, err := filepath.Abs(runRoot)
+	if err != nil {
+		return outside
+	}
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return outside
+	}
+	rel, err := filepath.Rel(rootAbs, dirAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return outside
+	}
+	return nil
 }
 
 func toFinding(r report.Result) finding {

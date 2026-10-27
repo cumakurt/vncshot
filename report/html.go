@@ -222,23 +222,34 @@ type htmlDiffData struct {
 // full-size captures are embedded as data URIs so the file can be shared
 // as a single artifact.
 func WriteHTML(path string, results []Result) error {
-	return WriteHTMLWithDiff(path, results, nil)
+	return WriteHTMLWithOptions(path, results, Options{})
 }
 
 // WriteHTMLWithDiff renders the report together with a baseline comparison.
 // A nil diff keeps the output identical to WriteHTML.
 func WriteHTMLWithDiff(path string, results []Result, diff *Diff) error {
-	diff = normalizedDiff(diff)
+	return WriteHTMLWithOptions(path, results, Options{Diff: diff})
+}
+
+// WriteHTMLWithOptions renders the report with the requested redaction and
+// thumbnail policy. Redaction replaces the captured password on the cards and
+// in the endpoint table while the weak / passwordless state stays visible.
+// ThumbnailOnly drops the full-resolution data URI so the report carries one
+// embedded image per card; the PNG files themselves stay in the run folder.
+func WriteHTMLWithOptions(path string, results []Result, opts Options) error {
+	diff := normalizedDiff(opts.redactDiff(opts.Diff))
 
 	doc := htmlData{
 		GeneratedAt: time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
-		Summary:     Summarize(results),
+		// Counters describe the observed findings, before redaction hides
+		// the secret values.
+		Summary: Summarize(results),
 	}
 	if hasBaselineSection(diff) {
 		doc.Diff = buildHTMLDiff(diff)
 	}
 
-	for _, r := range results {
+	for _, r := range opts.apply(results) {
 		dims := ""
 		if r.ScreenWidth > 0 && r.ScreenHeight > 0 {
 			dims = fmt.Sprintf("%dx%d", r.ScreenWidth, r.ScreenHeight)
@@ -250,6 +261,11 @@ func WriteHTMLWithDiff(path string, results []Result, diff *Diff) error {
 				// A missing/corrupt capture should not drop the finding
 				// from the report; keep the card without imagery.
 				thumb, full = "", ""
+			}
+			if opts.ThumbnailOnly {
+				// The template only opens the modal when data-full is set,
+				// so emptying it also disables the enlarged view.
+				full = ""
 			}
 			doc.Cards = append(doc.Cards, cardData{
 				IP:         r.IP,

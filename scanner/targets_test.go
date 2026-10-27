@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -153,6 +154,131 @@ func TestParseTargetsErrors(t *testing.T) {
 	}
 	if _, err := ParseTargets("", "/nonexistent/hosts.txt", []int{5900}); err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestHostsFromReader(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		label   string
+		want    []string
+		wantErr string
+	}{
+		{
+			name: "comments blank lines cidr and range",
+			input: `# comment line
+192.168.1.1
+10.0.0.0/30  # inline comment
+
+   # indented comment
+10.0.0.9-10
+`,
+			label: "stdin",
+			want: []string{
+				"192.168.1.1",
+				"10.0.0.0", "10.0.0.1", "10.0.0.2", "10.0.0.3",
+				"10.0.0.9", "10.0.0.10",
+			},
+		},
+		{
+			name:  "empty input",
+			input: "\n# only comments\n",
+			label: "stdin",
+			want:  nil,
+		},
+		{
+			name:    "error names stdin and line",
+			input:   "192.168.1.1\nnot-an-ip\n",
+			label:   "stdin",
+			wantErr: "stdin:2:",
+		},
+		{
+			name:    "error names file label and line",
+			input:   "not-an-ip\n",
+			label:   "/tmp/hosts.txt",
+			wantErr: "/tmp/hosts.txt:1:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := hostsFromReader(strings.NewReader(tt.input), tt.label)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("hostsFromReader error = nil, want error containing %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("hostsFromReader error = %q, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("hostsFromReader error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("hostsFromReader = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHostsFromReaderRejectsOversizedInput(t *testing.T) {
+	// Each /16 expands to 2^16 hosts, so the first block past the budget
+	// must abort instead of growing the slice further.
+	blocks := maxTargets/(1<<maxCIDRHostBits) + 1
+	input := strings.Repeat("10.0.0.0/16\n", blocks)
+
+	_, err := hostsFromReader(strings.NewReader(input), "stdin")
+	if err == nil {
+		t.Fatal("hostsFromReader error = nil, want oversize error")
+	}
+	want := fmt.Sprintf("refusing to read more than %d hosts from stdin", maxTargets)
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("hostsFromReader error = %q, want it to contain %q", err, want)
+	}
+}
+
+func TestParseTargetsFromStdin(t *testing.T) {
+	input := `# gateway
+192.168.1.1
+10.0.0.0/31  # a pair
+
+10.0.0.9-10
+`
+	got, err := parseTargets("", "-", []int{5900}, strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parseTargets error = %v", err)
+	}
+	want := []Target{
+		{IP: "192.168.1.1", Port: 5900},
+		{IP: "10.0.0.0", Port: 5900},
+		{IP: "10.0.0.1", Port: 5900},
+		{IP: "10.0.0.9", Port: 5900},
+		{IP: "10.0.0.10", Port: 5900},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseTargets = %v, want %v", got, want)
+	}
+}
+
+func TestParseTargetsFromStdinCombinesWithTarget(t *testing.T) {
+	got, err := parseTargets("192.168.1.2", "-", []int{5900}, strings.NewReader("192.168.1.1\n"))
+	if err != nil {
+		t.Fatalf("parseTargets error = %v", err)
+	}
+	want := []Target{
+		{IP: "192.168.1.2", Port: 5900},
+		{IP: "192.168.1.1", Port: 5900},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseTargets = %v, want %v", got, want)
+	}
+}
+
+func TestParseTargetsFromStdinEmpty(t *testing.T) {
+	if _, err := parseTargets("", "-", []int{5900}, strings.NewReader("# nothing\n")); err == nil {
+		t.Fatal("expected error for empty stdin")
 	}
 }
 
