@@ -1,0 +1,83 @@
+# Reference VNC deployment for real-server checks.
+#
+# The x11vnc service is pinned and runnable: theasp/novnc runs `x11vnc
+# -forever -shared` (no password) on container port 5900.
+#
+# The two TigerVNC services are intentionally commented TEMPLATES. This project
+# does not know a widely used image with a reliably pinned tag that also
+# exposes the tigervncserver command line and its -SecurityTypes flags in a
+# stable way. Do not invent an image reference: choose an image you have
+# verified, pin it by tag and digest, then uncomment the service.
+# docs/reference-inventory.md describes the procedure.
+#
+# Every port is bound to 127.0.0.1 on purpose. This deployment is for local,
+# authorized checks with vncshot; it is not meant to expose desktops to a
+# network.
+
+name: vncshot-reference
+
+services:
+  # -------------------------------------------------------------------------
+  # x11vnc: a real, independent server implementation, passwordless. The
+  # pinned digest is linux/amd64; use the digest for your own platform if it
+  # differs. vncshot should report passwordless + capture on 127.0.0.1:5902.
+  # -------------------------------------------------------------------------
+  x11vnc:
+    image: theasp/novnc@sha256:f2d05e35c8d2550d39bb2e01db36c46f35bf72159666596855e5660c017d847e
+    environment:
+      DISPLAY_WIDTH: "1024"
+      DISPLAY_HEIGHT: "768"
+      RUN_XTERM: "no"
+      RUN_FLUXBOX: "no"
+    ports:
+      - "127.0.0.1:5902:5900"
+
+  # -------------------------------------------------------------------------
+  # TigerVNC, passwordless: the scanner must report passwordless + capture.
+  # -------------------------------------------------------------------------
+  # tigervnc-none:
+  #   image: <registry>/<tigervnc-image>:<pinned-tag>@sha256:<digest>
+  #   command:
+  #     - tigervncserver
+  #     - :0
+  #     - -fg
+  #     - -rfbport
+  #     - "5900"
+  #     - -SecurityTypes
+  #     - None
+  #     - -geometry
+  #     - 1024x768
+  #     - -depth
+  #     - "24"
+  #     - -localhost
+  #     - "no"
+  #   ports:
+  #     - "127.0.0.1:5900:5900"
+
+  # -------------------------------------------------------------------------
+  # TigerVNC, VNC authentication: the scanner must report a password and its
+  # source. Build the password file with `vncpasswd -f`; the default path keeps
+  # the credential outside the repository so it can never be committed.
+  # -------------------------------------------------------------------------
+  # tigervnc-vncauth:
+  #   image: <registry>/<tigervnc-image>:<pinned-tag>@sha256:<digest>
+  #   command:
+  #     - tigervncserver
+  #     - :1
+  #     - -fg
+  #     - -rfbport
+  #     - "5901"
+  #     - -SecurityTypes
+  #     - VncAuth
+  #     - -PasswordFile
+  #     - /etc/vnc/passwd
+  #     - -geometry
+  #     - 1024x768
+  #     - -depth
+  #     - "24"
+  #     - -localhost
+  #     - "no"
+  #   volumes:
+  #     - "${VNC_PASSWORD_FILE:-/tmp/vncshot-reference/passwd}:/etc/vnc/passwd:ro"
+  #   ports:
+  #     - "127.0.0.1:5901:5901"
