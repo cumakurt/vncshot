@@ -1,0 +1,8 @@
+ip,port,open,rfb,passwordless,weak_password,password_source,tls,security_types,server_name,screen_width,screen_height,screenshot,error,duration_ms,attempts,tls_version,cipher_suite,cert_subject,cert_issuer,cert_not_before,cert_not_after,cert_dns_names,cert_sha256,cert_self_signed,cert_expired,cert_verified,timestamp
+192.0.2.10,5900,yes,yes,yes,no,,no,VNC authentication,Reception display,96,48,captures/192.0.2.10-5900.png,,118,1,,,,,,,,,,,,2026-10-26T12:00:00Z
+192.0.2.11,5900,yes,yes,no,yes,word-list,no,VNC authentication,Meeting room,96,48,captures/192.0.2.11-5900.png,,204,1,,,,,,,,,,,,2026-10-26T12:01:00Z
+198.51.100.20,5900,yes,yes,no,no,,no,VNC authentication,Build agent,1280,1024,,,76,0,,,,,,,,,,,,2026-10-26T12:02:00Z
+198.51.100.50,5900,yes,yes,no,no,,yes,VeNCrypt;VNC authentication,vnc-console.example.net,1024,768,,,143,0,TLS 1.3,TLS_AES_256_GCM_SHA384,CN=vnc-console.example.net,CN=vnc-console.example.net,2026-10-01T00:00:00Z,2027-10-01T00:00:00Z,vnc-console.example.net;vnc-console-alt.example.net,3F:1A:9C:7E:5B:20:D4:88:11:6C:AF:02:E7:35:91:4B:6D:08:C2:74:9E:15:AB:63:F0:2D:87:5C:19:B4:6E:40,yes,no,no,2026-10-26T12:04:00Z
+198.51.100.60,5900,yes,yes,no,no,,yes,VeNCrypt,,0,0,,,52,0,,,,,,,,,,,,2026-10-26T12:05:00Z
+198.51.100.70,5900,yes,yes,no,no,,no,VNC authentication,Lab workstation,800,600,,,311,2,,,,,,,,,,,,2026-10-26T12:06:00Z
+198.51.100.99,5901,no,no,no,no,,no,,,0,0,,connection refused,9,0,,,,,,,,,,,,2026-10-26T12:03:00Z

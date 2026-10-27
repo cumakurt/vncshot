@@ -25,6 +25,10 @@ type Result struct {
 	// Certificate summarises the peer certificate when a TLS session was
 	// actually established. Nil for clear-text RFB.
 	Certificate *Certificate `json:"certificate,omitempty"`
+	// Note explains why a session was not attempted or completed, for
+	// example "client certificate required (VeNCrypt/X509Vnc)" or
+	// "Apple Remote Desktop authentication". It is evidence, not an error.
+	Note string `json:"note,omitempty"`
 	// Attempts is how many TCP connection attempts were needed, which
 	// exposes flaky hosts that only answered after a retry.
 	Attempts     int       `json:"attempts,omitempty"`

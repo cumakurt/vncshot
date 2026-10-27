@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,14 +78,24 @@ func (c *bufferedConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 // startTLS upgrades the fake server side of the connection.
 func (s *rfbServer) startTLS(cfg *tls.Config) {
 	s.t.Helper()
+	if err := s.startTLSToleratingFailure(cfg); err != nil {
+		s.t.Errorf("fake server: TLS handshake: %v", err)
+	}
+}
+
+// startTLSToleratingFailure upgrades the fake server side of the connection
+// and returns the handshake error instead of reporting it. Use it when a
+// failed handshake is the scenario under test.
+func (s *rfbServer) startTLSToleratingFailure(cfg *tls.Config) error {
+	s.t.Helper()
 	tlsConn := tls.Server(&bufferedConn{Conn: s.conn, r: s.r}, cfg)
 	if err := tlsConn.Handshake(); err != nil {
-		s.t.Errorf("fake server: TLS handshake: %v", err)
-		return
+		return err
 	}
 	s.conn = tlsConn
 	s.r = bufio.NewReader(tlsConn)
 	s.w = bufio.NewWriter(tlsConn)
+	return nil
 }
 
 // readN is the non-fatal counterpart of mustRead: for the discovery
@@ -355,7 +366,7 @@ func TestProbeVeNCryptUnsupportedSubtype(t *testing.T) {
 		s.mustRead(2)             // client version
 		s.mustWrite([]byte{0})    // version accepted
 		s.mustWrite([]byte{1})    // one subtype
-		s.mustWriteU32(260)       // X509None: not implemented
+		s.mustWriteU32(259)       // TLSPlain: still not implemented
 		// The client must stop without selecting a subtype.
 		_, _ = io.Copy(io.Discard, s.r)
 	})
@@ -381,6 +392,163 @@ func TestProbeVeNCryptUnsupportedSubtype(t *testing.T) {
 	}
 	if result.Frame != nil {
 		t.Error("Frame is non-nil, want nil without a completed session")
+	}
+}
+
+// TestVeNCryptX509NoneWithoutClientCert covers an X509 subtype whose server
+// demands a client certificate. The probe has none, so the session cannot be
+// established, but the certificate the server presented must still be
+// reported along with a note explaining the stop.
+//
+// Both TLS generations matter: TLS 1.2 fails the handshake, while TLS 1.3
+// completes the client side first and only rejects the empty client
+// certificate on the next read.
+func TestVeNCryptX509NoneWithoutClientCert(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		maxVersion uint16
+	}{
+		{name: "TLS 1.3 post-handshake rejection", maxVersion: 0},
+		{name: "TLS 1.2 handshake failure", maxVersion: tls.VersionTLS12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testTLSConfig(t)
+			cfg.ClientAuth = tls.RequireAnyClientCert
+			cfg.MaxVersion = tc.maxVersion
+			assertX509NoneRequiresClientCert(t, cfg)
+		})
+	}
+}
+
+func assertX509NoneRequiresClientCert(t *testing.T, cfg *tls.Config) {
+	t.Helper()
+
+	addr := serveRFB(t, func(s *rfbServer) {
+		s.sendBanner("RFB 003.008\n")
+		s.mustWrite([]byte{1, 19}) // VeNCrypt only
+		if sel := s.mustRead(1); sel[0] != 19 {
+			s.t.Errorf("fake server: security selection = %d, want 19 (VeNCrypt)", sel[0])
+		}
+		s.veNCryptNegotiate(260) // X509None
+		if err := s.startTLSToleratingFailure(cfg); err == nil {
+			s.t.Error("fake server: TLS handshake succeeded, want the missing client certificate to abort it")
+		}
+		// The probe records the certificate and stops; it must not send
+		// anything else.
+	})
+
+	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+	})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Probe returned nil result")
+	}
+	if !result.AuthRequired {
+		t.Error("AuthRequired = false, want true when a client certificate is required")
+	}
+	if !result.TLS {
+		t.Error("TLS = false, want true")
+	}
+	if result.Frame != nil {
+		t.Error("Frame is non-nil, want nil without a completed session")
+	}
+	if result.Note == "" {
+		t.Fatal("Note is empty, want an explanation of the required client certificate")
+	}
+	if !strings.Contains(result.Note, "client certificate") {
+		t.Errorf("Note = %q, want it to mention the client certificate", result.Note)
+	}
+
+	info := result.TLSInfo
+	if info == nil {
+		t.Fatal("TLSInfo is nil, want the certificate from the aborted handshake")
+	}
+	if info.Subject == "" || info.Issuer == "" || info.Fingerprint == "" {
+		t.Errorf("TLSInfo = %+v, want subject, issuer and fingerprint", info)
+	}
+	if info.Version == "" || info.CipherSuite == "" {
+		t.Errorf("TLSInfo = %+v, want the negotiated version and cipher suite", info)
+	}
+}
+
+// TestVeNCryptX509VncWithClientCertOptional covers the X509 subtype whose
+// server does not require a client certificate: it must behave exactly like
+// TLSVnc.
+func TestVeNCryptX509VncWithClientCertOptional(t *testing.T) {
+	cfg := testTLSConfig(t)
+	cfg.ClientAuth = tls.NoClientCert
+
+	addr := serveRFBConns(t, func(s *rfbServer) {
+		s.sendBanner("RFB 003.008\n")
+		s.mustWrite([]byte{1, 19})
+		if sel := s.mustRead(1); sel[0] != 19 {
+			s.t.Errorf("fake server: security selection = %d, want 19", sel[0])
+		}
+		s.veNCryptNegotiate(261) // X509Vnc
+		s.startTLS(cfg)
+
+		s.mustWrite(challenge)
+		// The discovery connection closes right after the TLS handshake,
+		// before answering the challenge; that is expected.
+		got, err := s.readN(16)
+		if err != nil {
+			return
+		}
+		if !bytes.Equal(got, expectedResponse("hunter2")) {
+			s.mustWriteU32(1) // failure
+			s.writeFailureReason("invalid password")
+			return
+		}
+
+		s.mustWriteU32(0) // SecurityResult: OK
+		_ = s.mustRead(1) // ClientInit
+		s.sendServerInit(4, 3, "x509-vnc")
+		s.readCaptureMessages()
+		s.sendSolidRawRect(4, 3, 255, 0, 0)
+	})
+
+	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+		Passwords: []vnc.Credential{
+			{Password: "hunter2", Source: vnc.SourceWordList},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if result.Password != "hunter2" {
+		t.Errorf("Password = %q, want %q", result.Password, "hunter2")
+	}
+	if result.Frame == nil {
+		t.Fatal("Frame is nil, want a capture after X509Vnc authentication")
+	}
+	assertRedPixel(t, result.Frame)
+	if result.ServerName != "x509-vnc" {
+		t.Errorf("ServerName = %q, want %q", result.ServerName, "x509-vnc")
+	}
+	if result.Note != "" {
+		t.Errorf("Note = %q, want empty for a completed session", result.Note)
+	}
+	if result.TLSInfo == nil {
+		t.Fatal("TLSInfo is nil, want the server certificate")
+	}
+	if result.TLSInfo.Verified {
+		t.Error("TLSInfo.Verified = true, want false for a self-signed certificate")
+	}
+
+	found := false
+	for _, name := range result.SecurityTypeNames {
+		if name == "VeNCrypt/X509Vnc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("SecurityTypeNames = %v, want it to contain %q", result.SecurityTypeNames, "VeNCrypt/X509Vnc")
 	}
 }
 

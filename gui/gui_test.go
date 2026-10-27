@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -740,6 +741,7 @@ func TestSnapshotExposesTransportAndRetryData(t *testing.T) {
 // a TLS finding must expose the peer certificate, including the self-signed
 // and expiry markers the transport column renders.
 func TestFindingIncludesCertificate(t *testing.T) {
+	notBefore := time.Date(2026, 1, 2, 9, 0, 0, 0, time.UTC)
 	notAfter := time.Date(2027, 3, 1, 12, 30, 0, 0, time.UTC)
 	f := toFinding(report.Result{
 		IP:            "192.0.2.10",
@@ -753,7 +755,9 @@ func TestFindingIncludesCertificate(t *testing.T) {
 			CipherSuite: "TLS_AES_128_GCM_SHA256",
 			Subject:     "CN=vnc-appliance",
 			Issuer:      "CN=vnc-appliance",
+			NotBefore:   notBefore,
 			NotAfter:    notAfter,
+			DNSNames:    []string{"vnc.lab.example", "vnc-appliance.local"},
 			Fingerprint: "AA:BB:CC",
 			SelfSigned:  true,
 		},
@@ -765,15 +769,17 @@ func TestFindingIncludesCertificate(t *testing.T) {
 	}
 	var decoded struct {
 		Certificate struct {
-			Subject     string `json:"subject"`
-			Issuer      string `json:"issuer"`
-			NotAfter    string `json:"not_after"`
-			Version     string `json:"version"`
-			Cipher      string `json:"cipher"`
-			Fingerprint string `json:"fingerprint"`
-			SelfSigned  bool   `json:"self_signed"`
-			Expired     bool   `json:"expired"`
-			Verified    bool   `json:"verified"`
+			Subject     string   `json:"subject"`
+			Issuer      string   `json:"issuer"`
+			NotBefore   string   `json:"not_before"`
+			NotAfter    string   `json:"not_after"`
+			Version     string   `json:"version"`
+			Cipher      string   `json:"cipher"`
+			DNSNames    []string `json:"dns_names"`
+			Fingerprint string   `json:"fingerprint"`
+			SelfSigned  bool     `json:"self_signed"`
+			Expired     bool     `json:"expired"`
+			Verified    bool     `json:"verified"`
 		} `json:"certificate"`
 		SecurityTypes []string `json:"security_types"`
 		TLS           bool     `json:"tls"`
@@ -794,6 +800,12 @@ func TestFindingIncludesCertificate(t *testing.T) {
 	if cert.Issuer == "" {
 		t.Error("certificate.issuer is empty, want the certificate issuer")
 	}
+	if cert.NotBefore == "" {
+		t.Fatal("certificate.not_before is empty, want a start timestamp")
+	}
+	if got, want := cert.NotBefore, "2026-01-02T09:00:00Z"; got != want {
+		t.Errorf("certificate.not_before = %q, want %q", got, want)
+	}
 	if cert.NotAfter == "" {
 		t.Fatal("certificate.not_after is empty, want an expiry timestamp")
 	}
@@ -805,6 +817,9 @@ func TestFindingIncludesCertificate(t *testing.T) {
 	}
 	if cert.Version != "TLS 1.3" || cert.Cipher != "TLS_AES_128_GCM_SHA256" {
 		t.Errorf("certificate = %+v, want version and cipher preserved", cert)
+	}
+	if want := []string{"vnc.lab.example", "vnc-appliance.local"}; !reflect.DeepEqual(cert.DNSNames, want) {
+		t.Errorf("certificate.dns_names = %v, want %v", cert.DNSNames, want)
 	}
 	if !decoded.TLS || len(decoded.SecurityTypes) != 1 {
 		t.Errorf("finding = %s, want the existing tls and security_types fields kept", raw)
@@ -825,6 +840,38 @@ func TestFindingWithoutCertificateOmitsIt(t *testing.T) {
 	}
 	if _, ok := decoded["certificate"]; ok {
 		t.Errorf("clear-text finding carries a certificate key: %s", raw)
+	}
+}
+
+// TestCertificateTooltipShowsFullEvidence guards the transport column: the
+// compact tag stays, but its tooltip must carry the whole certificate evidence
+// the report collects, escaped through esc().
+func TestCertificateTooltipShowsFullEvidence(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded page: %v", err)
+	}
+	body := string(page)
+
+	match := regexp.MustCompile(`(?s)function certMarker\(cert\).*?\n  \}`).FindString(body)
+	if match == "" {
+		t.Fatal("index.html has no certMarker renderer")
+	}
+	for _, field := range []string{
+		"cert.subject", "cert.issuer", "cert.not_before", "cert.not_after",
+		"cert.version", "cert.cipher", "cert.dns_names", "cert.fingerprint",
+	} {
+		if !strings.Contains(match, field) {
+			t.Errorf("certMarker tooltip does not render %s", field)
+		}
+	}
+	if !strings.Contains(match, `title="' + esc(`) {
+		t.Error("certMarker tooltip is not escaped with esc()")
+	}
+	// The tag line must stay compact: the table row height must not grow with
+	// the full evidence.
+	if !strings.Contains(match, `var text = flags.join(" · ")`) {
+		t.Error("certMarker no longer renders the compact flag line")
 	}
 }
 

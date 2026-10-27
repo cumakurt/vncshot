@@ -19,9 +19,16 @@ const (
 // wire because they are not RFB security types; see the RFB protocol
 // specification's VeNCrypt section and the IANA subtype registry (257 is
 // TLSNone, 258 is TLSVnc, 259 is TLSPlain).
+//
+// The X509 subtypes share the TLSNone/TLSVnc flows but the server may also
+// demand a client certificate. The probe has none, so it attempts the
+// handshake and records the server certificate even when that demand aborts
+// it.
 const (
-	vencryptSubtypeTLSNone uint32 = 257
-	vencryptSubtypeTLSVnc  uint32 = 258
+	vencryptSubtypeTLSNone  uint32 = 257
+	vencryptSubtypeTLSVnc   uint32 = 258
+	vencryptSubtypeX509None uint32 = 260
+	vencryptSubtypeX509Vnc  uint32 = 261
 )
 
 // Encoding types. Only Raw is requested; the pseudo-encodings below may

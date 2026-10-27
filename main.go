@@ -25,6 +25,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -68,6 +69,7 @@ type config struct {
 	pdf           string
 	csv           string
 	baseline      string
+	resume        string
 	manifest      bool
 	webhook       string
 	noPDF         bool
@@ -116,6 +118,7 @@ func (c config) appConfig() app.Config {
 		CSV:                c.csv,
 		ScreenshotDir:      c.screenshotDir,
 		Baseline:           c.baseline,
+		ResumeDir:          c.resume,
 		WebhookURL:         c.webhook,
 		Manifest:           c.manifest,
 		Redact:             c.redact,
@@ -208,6 +211,7 @@ func parseFlags() (config, error) {
 	flag.StringVar(&cfg.pdf, "pdf", "", "PDF report path (default <run-dir>/"+appName+"_report.pdf)")
 	flag.StringVar(&cfg.csv, "csv", "", "CSV report path (default <run-dir>/"+appName+"_report.csv)")
 	flag.StringVar(&cfg.baseline, "baseline", "", "previous run directory to compare against")
+	flag.StringVar(&cfg.resume, "resume", "", "continue a previously interrupted run; completed targets are reused")
 	flag.BoolVar(&cfg.manifest, "manifest", false, "write a SHA-256 checksum manifest for the run artifacts")
 	flag.BoolVar(&cfg.redact, "redact", false, "replace captured passwords with a placeholder (safe to share)")
 	flag.BoolVar(&cfg.thumbOnly, "thumb-only", false, "embed only preview images in the HTML report (smaller file)")
@@ -321,6 +325,10 @@ func runCLI(cfg config) error {
 		len(session.Targets), cfg.ports, cfg.workers, rateText(cfg.rate))
 	fmt.Fprintf(os.Stderr, "password candidates: %d\n", len(session.Credentials))
 	fmt.Fprintf(os.Stderr, "report directory: %s\n", session.RunDir)
+	if cfg.resume != "" {
+		fmt.Fprintf(os.Stderr, "resuming: reused %d result(s) from %s, %d target(s) remaining\n",
+			session.ResumedTargets(), filepath.Base(cfg.resume), session.RemainingTargets())
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -329,6 +337,9 @@ func runCLI(cfg config) error {
 
 	fmt.Fprintf(os.Stderr, "\n=== summary ===\n")
 	fmt.Fprintf(os.Stderr, "targets:      %d\n", out.Summary.Targets)
+	if out.Resumed > 0 {
+		fmt.Fprintf(os.Stderr, "resumed:      %d\n", out.Resumed)
+	}
 	fmt.Fprintf(os.Stderr, "open:         %d\n", out.Summary.Open)
 	fmt.Fprintf(os.Stderr, "rfb services: %d\n", out.Summary.RFB)
 	fmt.Fprintf(os.Stderr, "passwordless: %d\n", out.Summary.Passwordless)

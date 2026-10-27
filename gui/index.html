@@ -954,8 +954,9 @@
   }
 
   // certMarker renders the compact certificate line under the transport cell.
-  // Subject, issuer and fingerprint go into the tooltip, so the dashboard
-  // keeps the screenshot modal as the only dialog.
+  // The full evidence (validity window, TLS parameters, SANs and fingerprint)
+  // goes into the tooltip, so the dashboard keeps the screenshot modal as the
+  // only dialog and the table row height stays unchanged.
   function certMarker(cert) {
     var flags = [];
     if (cert.self_signed) flags.push("self-signed");
@@ -966,9 +967,13 @@
     var text = flags.join(" · ");
     if (cert.not_after) text += " · " + cert.not_after.slice(0, 10);
     var tip = [];
-    if (cert.subject) tip.push("subject: " + cert.subject);
-    if (cert.issuer) tip.push("issuer: " + cert.issuer);
-    if (cert.fingerprint) tip.push("sha256: " + cert.fingerprint);
+    tip.push("subject: " + (cert.subject || "—"));
+    tip.push("issuer: " + (cert.issuer || "—"));
+    tip.push("valid: " + (cert.not_before || "unknown") + " → " + (cert.not_after || "unknown"));
+    tip.push("tls: " + (cert.version || "—"));
+    tip.push("cipher: " + (cert.cipher || "—"));
+    tip.push("dns: " + (cert.dns_names && cert.dns_names.length ? cert.dns_names.join(", ") : "—"));
+    tip.push("sha256: " + (cert.fingerprint || "—"));
     return '<span class="' + cls + '" title="' + esc(tip.join("\n")) + '">' + esc(text) + "</span>";
   }
 

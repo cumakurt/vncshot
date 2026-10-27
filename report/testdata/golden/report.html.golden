@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vncshot · VNC security inventory</title>
+<style>
+:root {
+  --paper: #FBFAF7;
+  --panel: #FFFFFF;
+  --ink: #17242B;
+  --ink-soft: #41525B;
+  --muted: #6F8089;
+  --rule: #DCD5C9;
+  --hairline: #EFEAE1;
+  --accent: #0E6E62;
+  --accent-soft: #E4F1EE;
+  --warning: #B45309;
+  --warning-soft: #FDF2E3;
+  --danger: #A3312A;
+  --danger-soft: #FBEDEB;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { background: var(--paper); }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 36px 72px;
+}
+ 
+.masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 48px;
+  padding: 56px 0 26px;
+  border-bottom: 2px solid var(--ink);
+}
+.eyebrow {
+  display: block;
+  margin: 0;
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+h1 {
+  margin: 14px 0 10px;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5vw, 52px);
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: -.015em;
+  color: var(--ink);
+}
+.dek {
+  margin: 0;
+  max-width: 50ch;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+.masthead-meta {
+  flex: 0 0 auto;
+  min-width: 246px;
+  padding-left: 22px;
+  border-left: 1px solid var(--rule);
+}
+.meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 5px 0;
+}
+.meta-key {
+  font: 600 9.5px/1.6 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.meta-value {
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-align: right;
+}
+ 
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  border-bottom: 1px solid var(--rule);
+}
+.stat {
+  padding: 22px 20px;
+  border-left: 1px solid var(--hairline);
+}
+.stat:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+.stat .label {
+  font: 600 9.5px/1.35 var(--sans);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stat .value {
+  margin-top: 8px;
+  font-family: var(--serif);
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.stat.alert .value { color: var(--warning); }
+.stat.good .value { color: var(--accent); }
+ 
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px 28px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.search-wrap { flex: 1 1 280px; }
+.search-wrap .eyebrow {
+  margin-bottom: 7px;
+  color: var(--muted);
+  letter-spacing: .14em;
+}
+input[type="search"] {
+  width: 100%;
+  padding: 8px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 15px/1.4 var(--sans);
+  outline: none;
+  transition: border-color .15s ease;
+}
+input[type="search"]::placeholder { color: var(--muted); opacity: .85; }
+input[type="search"]:focus { border-bottom-color: var(--accent); }
+input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--muted);
+  font: 600 10px/1.4 var(--sans);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  transition: color .15s ease, background-color .15s ease;
+}
+.chip:hover { color: var(--ink); background: var(--accent-soft); }
+.chip.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+}
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+ 
+.section { padding-top: 46px; }
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 22px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule);
+}
+h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.section-note {
+  font: 600 9.5px/1.4 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: right;
+}
+ 
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 30px 24px;
+}
+.card {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color .15s ease;
+}
+.card:hover { border-color: var(--ink-soft); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 168px;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.card img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+.frame-missing {
+  padding: 0 12px;
+  font: 600 9.5px/1.6 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: center;
+}
+.card .meta { padding: 12px 2px 2px; }
+.card .addr {
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.card .line {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.badge {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--warning);
+  border-radius: 2px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font: 600 9px/1.4 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.empty {
+  padding: 28px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 14px;
+}
+ 
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font: 600 9px/1.4 var(--sans);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.tag.hot {
+  border-color: #F0D3AB;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.tag.tls {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.tag.ok {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.tag.danger {
+  border-color: #EBC6C2;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+ 
+.cert-list {
+  border-top: 1px solid var(--hairline);
+}
+.cert-entry {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.cert-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 18px;
+}
+.cert-addr {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.cert-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cert-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 6px 28px;
+  margin: 11px 0 0;
+}
+.cert-fact {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+}
+.cert-fact dt,
+.cert-key {
+  flex: 0 0 62px;
+  font: 600 9px/1.5 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cert-fact dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  word-break: break-word;
+}
+.cert-hash-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 7px;
+}
+.cert-hash {
+  min-width: 0;
+  color: var(--ink-soft);
+  word-break: break-all;
+}
+.cert-line {
+  margin-top: 4px;
+}
+.cert-validity {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+ 
+.diff-groups {
+  display: grid;
+  gap: 26px;
+}
+.diff-group-head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.diff-label {
+  font: 600 9.5px/1.4 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.diff-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 8px 18px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.diff-row:last-child { border-bottom: 0; }
+.diff-addr {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.diff-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+}
+.diff-reason { color: var(--ink); }
+.diff-transition {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+.diff-arrow { color: var(--muted); }
+.diff-more {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.diff-empty {
+  margin: 0;
+  padding: 4px 0 2px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.retried {
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.cred-source {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+ 
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  background: var(--panel);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel);
+  color: var(--muted);
+  font: 600 9px/1.5 var(--sans);
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: #FAF7F1; }
+td { color: var(--ink-soft); }
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: -.01em;
+}
+.yes { color: var(--accent); font-weight: 600; }
+.no { color: var(--muted); }
+.err {
+  max-width: 260px;
+  color: var(--danger);
+  word-break: break-word;
+}
+ 
+#modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(23, 36, 43, .62);
+}
+#modal.open { display: flex; }
+#modal .panel {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 96vw);
+  max-height: 92vh;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--panel);
+}
+#modal .panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+#modal .title {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+#modal .panel-head button {
+  padding: 5px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: 600 9.5px/1.4 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+#modal .panel-head button:hover {
+  border-color: var(--ink-soft);
+  color: var(--ink);
+}
+#modal .panel-body {
+  overflow: auto;
+  background: var(--paper);
+}
+#modal img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: calc(92vh - 56px);
+  object-fit: contain;
+}
+ 
+footer {
+  margin-top: 64px;
+  padding-top: 26px;
+  border-top: 2px solid var(--ink);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+footer strong { color: var(--ink-soft); font-weight: 600; }
+.legal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 26px 44px;
+}
+footer h3 {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+  font: 600 9.5px/1.4 var(--sans);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+footer p { margin: 0; }
+footer .evidence-note {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+.colophon {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+}
+footer a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-soft);
+}
+footer a:hover { border-bottom-color: var(--accent); }
+ 
+@media (max-width: 880px) {
+  .masthead {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 24px;
+  }
+  .masthead-meta {
+    width: 100%;
+    padding: 12px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--hairline);
+  }
+  .stat-strip { grid-template-columns: repeat(3, 1fr); }
+  .stat { padding-left: 16px; border-left: 1px solid var(--hairline); }
+  .stat:nth-child(3n+1) { padding-left: 0; border-left: 0; }
+  .legal-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .page { padding: 0 18px 48px; }
+  .stat-strip { grid-template-columns: repeat(2, 1fr); }
+  .stat:nth-child(3n+1) { padding-left: 16px; border-left: 1px solid var(--hairline); }
+  .stat:nth-child(2n+1) { padding-left: 0; border-left: 0; }
+  .section-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .section-note { text-align: left; }
+}
+@media print {
+  body { background: var(--panel); }
+  .toolbar, #modal { display: none; }
+  .card { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <div class="masthead-main">
+    <span class="eyebrow">Technical dossier · Network exposure</span>
+    <h1>VNC Security Inventory</h1>
+    <p class="dek">Framebuffer captures and authentication posture across the probed address range.</p>
+  </div>
+  <div class="masthead-meta">
+    <div class="meta-row"><span class="meta-key">Generated</span><span class="meta-value mono"><GENERATED_AT></span></div>
+    <div class="meta-row"><span class="meta-key">Probes</span><span class="meta-value mono">7</span></div>
+    <div class="meta-row"><span class="meta-key">Use</span><span class="meta-value">Authorized assessments only</span></div>
+  </div>
+</header>
+
+<section class="stat-strip" aria-label="Scan summary">
+  <div class="stat"><div class="label">Targets</div><div class="value">7</div></div>
+  <div class="stat"><div class="label">Open ports</div><div class="value">6</div></div>
+  <div class="stat"><div class="label">RFB services</div><div class="value">6</div></div>
+  <div class="stat good"><div class="label">TLS services</div><div class="value">2</div></div>
+  <div class="stat"><div class="label">Self-signed certs</div><div class="value">1</div></div>
+  <div class="stat alert"><div class="label">Passwordless</div><div class="value">1</div></div>
+  <div class="stat alert"><div class="label">Weak creds</div><div class="value">1</div></div>
+  <div class="stat good"><div class="label">Screenshots</div><div class="value">2</div></div>
+  <div class="stat"><div class="label">Errors</div><div class="value">1</div></div>
+</section>
+
+<div class="toolbar">
+  <div class="search-wrap">
+    <label class="eyebrow" for="filter">Filter records</label>
+    <input id="filter" type="search" placeholder="IP address, port, status or server name" autocomplete="off">
+  </div>
+  <div class="chips" role="group" aria-label="Filter records">
+    <div class="chip active" data-filter="">All records</div>
+    <div class="chip" data-filter="passwordless">Passwordless</div>
+    <div class="chip" data-filter="weak">Weak password</div>
+    <div class="chip" data-filter="authenticated">Authenticated</div>
+    <div class="chip" data-filter="open">Open</div>
+  </div>
+</div>
+
+<main>
+  <section class="section">
+    <div class="section-head">
+      <h2>Unauthenticated and weak-password captures</h2>
+      <span class="section-note">Frames collected without authentication or with cracked credentials</span>
+    </div>
+    
+    <div class="cards" id="cards">
+      
+      <figure class="card" data-search="192.0.2.10 5900 passwordless open Reception display VNC auth" data-full="<DATA_URI>" data-title="192.0.2.10:5900" tabindex="0" role="button" aria-label="Enlarge capture of 192.0.2.10:5900">
+        <div class="frame">
+          <img src="<DATA_URI>" alt="Framebuffer captured from 192.0.2.10:5900">
+        </div>
+        <figcaption class="meta">
+          <div class="addr">192.0.2.10:5900</div>
+          <div class="line"><span class="mono">96x48</span> · Reception display</div>
+          <div class="line">VNC authentication (clear text)</div>
+          <div class="line"><span class="mono">2026-10-26 12:00:00 UTC</span> · <span class="mono">118</span> ms</div>
+          <div class="badge">no authentication</div>
+        </figcaption>
+      </figure>
+      
+      <figure class="card" data-search="192.0.2.11 5900 authenticated open Meeting room VNC auth weakpassword" data-full="<DATA_URI>" data-title="192.0.2.11:5900" tabindex="0" role="button" aria-label="Enlarge capture of 192.0.2.11:5900">
+        <div class="frame">
+          <img src="<DATA_URI>" alt="Framebuffer captured from 192.0.2.11:5900">
+        </div>
+        <figcaption class="meta">
+          <div class="addr">192.0.2.11:5900</div>
+          <div class="line"><span class="mono">96x48</span> · Meeting room</div>
+          <div class="line">VNC authentication (clear text)</div>
+          <div class="line"><span class="mono">2026-10-26 12:01:00 UTC</span> · <span class="mono">204</span> ms</div>
+          <div class="badge">password: <span class="mono">hunter2</span> · word list</div>
+        </figcaption>
+      </figure>
+      
+    </div>
+    
+  </section>
+
+  
+
+  
+  <section class="section" aria-label="Certificate evidence">
+    <div class="section-head">
+      <h2>Certificates</h2>
+      <span class="section-note">Peer certificate evidence from established TLS sessions</span>
+    </div>
+    <div class="cert-list">
+      
+      <div class="cert-entry" data-search="198.51.100.50:5900 certificate CN=vnc-console.example.net">
+        <div class="cert-head">
+          <span class="cert-addr">198.51.100.50:5900</span>
+          <span class="cert-tags"><span class="tag hot">self-signed</span></span>
+        </div>
+        <dl class="cert-facts">
+          <div class="cert-fact"><dt>Subject</dt><dd>CN=vnc-console.example.net</dd></div>
+          <div class="cert-fact"><dt>Issuer</dt><dd>CN=vnc-console.example.net</dd></div>
+          <div class="cert-fact"><dt>Valid</dt><dd class="mono">2026-10-01 → 2027-10-01</dd></div>
+          <div class="cert-fact"><dt>TLS</dt><dd>TLS 1.3</dd></div>
+          <div class="cert-fact"><dt>Cipher</dt><dd>TLS_AES_256_GCM_SHA384</dd></div>
+        </dl>
+        <div class="cert-hash-row"><span class="cert-key">SHA-256</span><span class="cert-hash mono">3F:1A:9C:7E:5B:20:D4:88:11:6C:AF:02:E7:35:91:4B:6D:08:C2:74:9E:15:AB:63:F0:2D:87:5C:19:B4:6E:40</span></div>
+      </div>
+      
+    </div>
+  </section>
+  
+
+  <section class="section">
+    <div class="section-head">
+      <h2>Open endpoints</h2>
+      <span class="section-note">Closed ports omitted</span>
+    </div>
+    
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">IP</th><th scope="col">Port</th><th scope="col">RFB</th><th scope="col">Passwordless</th><th scope="col">Security</th><th scope="col">Password</th><th scope="col">Server</th>
+            <th scope="col">Screen</th><th scope="col">Screenshot</th><th scope="col">Error</th><th scope="col">Duration</th><th scope="col">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          
+          <tr data-search="192.0.2.10 5900 passwordless open Reception display VNC auth">
+            <td class="mono">192.0.2.10</td>
+            <td class="mono">5900</td>
+            <td class="yes">yes</td>
+            <td class="yes">yes</td>
+            <td>VNC auth</td>
+            <td><span class="no">—</span></td>
+            <td>Reception display</td>
+            <td class="mono">96x48</td>
+            <td class="mono">192.0.2.10-5900.png</td>
+            <td class="err"></td>
+            <td class="mono">118 ms</td>
+            <td class="mono">2026-10-26 12:00:00</td>
+          </tr>
+          
+          <tr data-search="192.0.2.11 5900 authenticated open Meeting room VNC auth weakpassword">
+            <td class="mono">192.0.2.11</td>
+            <td class="mono">5900</td>
+            <td class="yes">yes</td>
+            <td class="no">no</td>
+            <td>VNC auth</td>
+            <td><span class="tag hot">weak</span> <span class="mono">hunter2</span> <span class="cred-source">word list</span></td>
+            <td>Meeting room</td>
+            <td class="mono">96x48</td>
+            <td class="mono">192.0.2.11-5900.png</td>
+            <td class="err"></td>
+            <td class="mono">204 ms</td>
+            <td class="mono">2026-10-26 12:01:00</td>
+          </tr>
+          
+          <tr data-search="198.51.100.20 5900 authenticated open Build agent VNC auth">
+            <td class="mono">198.51.100.20</td>
+            <td class="mono">5900</td>
+            <td class="yes">yes</td>
+            <td class="no">no</td>
+            <td>VNC auth</td>
+            <td><span class="no">—</span></td>
+            <td>Build agent</td>
+            <td class="mono">1280x1024</td>
+            <td class="mono">.</td>
+            <td class="err"></td>
+            <td class="mono">76 ms</td>
+            <td class="mono">2026-10-26 12:02:00</td>
+          </tr>
+          
+          <tr data-search="198.51.100.50 5900 authenticated open vnc-console.example.net VeNCrypt · VNC auth tls">
+            <td class="mono">198.51.100.50</td>
+            <td class="mono">5900</td>
+            <td class="yes">yes</td>
+            <td class="no">no</td>
+            <td>VeNCrypt · VNC auth <span class="tag tls">tls</span><div class="cert-line"><span class="tag hot">self-signed</span> <span class="cert-validity">expires 2027-10-01</span></div></td>
+            <td><span class="no">—</span></td>
+            <td>vnc-console.example.net</td>
+            <td class="mono">1024x768</td>
+            <td class="mono">.</td>
+            <td class="err"></td>
+            <td class="mono">143 ms</td>
+            <td class="mono">2026-10-26 12:04:00</td>
+          </tr>
+          
+          <tr data-search="198.51.100.60 5900 authenticated open  VeNCrypt tls">
+            <td class="mono">198.51.100.60</td>
+            <td class="mono">5900</td>
+            <td class="yes">yes</td>
+            <td class="no">no</td>
+            <td>VeNCrypt <span class="tag tls">tls</span></td>
+            <td><span class="no">—</span></td>
+            <td></td>
+            <td class="mono"></td>
+            <td class="mono">.</td>
+            <td class="err"></td>
+            <td class="mono">52 ms</td>
+            <td class="mono">2026-10-26 12:05:00</td>
+          </tr>
+          
+          <tr data-search="198.51.100.70 5900 authenticated open Lab workstation VNC auth">
+            <td class="mono">198.51.100.70</td>
+            <td class="mono">5900</td>
+            <td class="yes">yes</td>
+            <td class="no">no</td>
+            <td>VNC auth</td>
+            <td><span class="no">—</span></td>
+            <td>Lab workstation</td>
+            <td class="mono">800x600</td>
+            <td class="mono">.</td>
+            <td class="err"></td>
+            <td class="mono">311 ms <span class="retried">retried ×2</span></td>
+            <td class="mono">2026-10-26 12:06:00</td>
+          </tr>
+          
+        </tbody>
+      </table>
+    </div>
+    
+  </section>
+</main>
+
+<div id="modal" role="dialog" aria-modal="true" aria-label="Screenshot viewer" aria-hidden="true">
+  <div class="panel">
+    <div class="panel-head">
+      <div class="title" id="modal-title"></div>
+      <button type="button" id="modal-close">Close</button>
+    </div>
+    <div class="panel-body">
+      <img id="modal-img" alt="Enlarged framebuffer">
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="legal-grid">
+    <div>
+      <h3>Legal notice</h3>
+      <p>This tool is published for authorized security testing only. Scan only networks you own or have explicit written permission to test. Unauthorized access to computer systems is a criminal offence in most jurisdictions. <strong>The developer (Cuma KURT) accepts no liability whatsoever</strong> for any damage, loss, legal claim, penalty or other consequence arising from use, misuse or inability to use this software. The software is provided "AS IS", without warranty of any kind.</p>
+    </div>
+    <div>
+      <h3>Yasal uyarı</h3>
+      <p>Bu araç yalnızca yetkili güvenlik testleri için yayımlanmıştır. Yalnızca sahibi olduğunuz ya da açık yazılı yetkiniz bulunan ağları tarayın. <strong>Geliştirici (Cuma KURT), kullanım veya kötüye kullanım sonucu doğabilecek hiçbir zarar, kayıp, hukuki talep veya ceza için sorumluluk kabul etmez.</strong> Yazılım "olduğu gibi", hiçbir garanti olmaksızın sunulur.</p>
+    </div>
+  </div>
+  <p class="evidence-note">Handle captured desktops as sensitive evidence. Report findings only to owners of the tested network.</p>
+  <div class="colophon">
+    <span>Developer: <strong>Cuma KURT</strong></span>
+    <span><a href="mailto:cumakurt@gmail.com">cumakurt@gmail.com</a></span>
+    <span><a href="https://github.com/cumakurt/vncshot">github.com/cumakurt/vncshot</a></span>
+    <span><a href="https://www.linkedin.com/in/cuma-kurt-34414917/">linkedin.com/in/cuma-kurt-34414917</a></span>
+    <span>License: GPL-3.0</span>
+  </div>
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var filter = document.getElementById('filter');
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+  var activeChip = '';
+
+  function applyFilter() {
+    var q = (filter.value || '').trim().toLowerCase();
+    var nodes = document.querySelectorAll('[data-search]');
+    Array.prototype.forEach.call(nodes, function (el) {
+      var hay = (el.getAttribute('data-search') || '').toLowerCase();
+      var okQuery = !q || hay.indexOf(q) !== -1;
+      var okChip = !activeChip || hay.indexOf(activeChip) !== -1;
+      el.style.display = (okQuery && okChip) ? '' : 'none';
+    });
+  }
+
+  filter.addEventListener('input', applyFilter);
+  chips.forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      chips.forEach(function (c) { c.classList.remove('active'); });
+      chip.classList.add('active');
+      activeChip = chip.getAttribute('data-filter') || '';
+      applyFilter();
+    });
+  });
+
+  var modal = document.getElementById('modal');
+  var modalImg = document.getElementById('modal-img');
+  var modalTitle = document.getElementById('modal-title');
+
+  function openModal(src, title) {
+    modalImg.src = src;
+    modalTitle.textContent = title;
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+  }
+  function closeModal() {
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+    modalImg.src = '';
+  }
+
+  document.addEventListener('click', function (e) {
+    var card = e.target.closest ? e.target.closest('.card') : null;
+    if (card && card.getAttribute('data-full')) {
+      openModal(card.getAttribute('data-full'), card.getAttribute('data-title') || '');
+    }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      closeModal();
+      return;
+    }
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var card = e.target.closest ? e.target.closest('.card') : null;
+    if (card && card.getAttribute('data-full')) {
+      e.preventDefault();
+      openModal(card.getAttribute('data-full'), card.getAttribute('data-title') || '');
+    }
+  });
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', function (e) {
+    if (e.target === modal) closeModal();
+  });
+})();
+</script>
+</body>
+</html>

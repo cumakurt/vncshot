@@ -42,7 +42,11 @@ func TestWriteCSVHeader(t *testing.T) {
 		"ip", "port", "open", "rfb", "passwordless", "weak_password",
 		"password_source", "tls", "security_types", "server_name",
 		"screen_width", "screen_height", "screenshot", "error",
-		"duration_ms", "attempts", "timestamp",
+		"duration_ms", "attempts",
+		"tls_version", "cipher_suite", "cert_subject", "cert_issuer",
+		"cert_not_before", "cert_not_after", "cert_dns_names", "cert_sha256",
+		"cert_self_signed", "cert_expired", "cert_verified",
+		"timestamp",
 	}
 	if !reflect.DeepEqual(records[0], want) {
 		t.Fatalf("csv header = %v, want %v", records[0], want)
@@ -92,7 +96,9 @@ func TestWriteCSVRowMapping(t *testing.T) {
 	wantWeak := []string{
 		"192.0.2.10", "5900", "yes", "yes", "no", "yes", "default", "yes",
 		"VeNCrypt;VNC authentication", "Lab box", "1920", "1080",
-		"/captures/lab.png", "", "123", "2", "2026-10-27T09:15:30Z",
+		"/captures/lab.png", "", "123", "2",
+		"", "", "", "", "", "", "", "", "", "", "",
+		"2026-10-27T09:15:30Z",
 	}
 	if !reflect.DeepEqual(weak, wantWeak) {
 		t.Fatalf("csv weak row = %v, want %v", weak, wantWeak)
@@ -106,8 +112,8 @@ func TestWriteCSVRowMapping(t *testing.T) {
 	if closed[8] != "" {
 		t.Fatalf("csv closed row security_types = %q, want empty", closed[8])
 	}
-	if closed[16] != "2026-10-27T09:16:30Z" {
-		t.Fatalf("csv closed row timestamp = %q, want RFC 3339 UTC", closed[16])
+	if closed[27] != "2026-10-27T09:16:30Z" {
+		t.Fatalf("csv closed row timestamp = %q, want RFC 3339 UTC", closed[27])
 	}
 }
 
@@ -225,7 +231,7 @@ func TestWriteCSVTimestampIsRFC3339UTC(t *testing.T) {
 	}
 
 	records := readCSV(t, path)
-	if got, want := records[1][16], "2026-10-27T09:00:00Z"; got != want {
+	if got, want := records[1][27], "2026-10-27T09:00:00Z"; got != want {
 		t.Fatalf("timestamp = %q, want %q", got, want)
 	}
 }
@@ -302,5 +308,135 @@ func TestWriteCSVUnwritablePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist", "out.csv")
 	if err := WriteCSV(path, nil); err == nil {
 		t.Fatal("WriteCSV to missing directory: want error, got nil")
+	}
+}
+
+// certificateFieldIndexes maps the certificate evidence columns to their
+// position in the documented schema, so the tests fail loudly if the order
+// drifts rather than silently comparing the wrong fields.
+var certificateFieldIndexes = map[string]int{
+	"tls_version":      16,
+	"cipher_suite":     17,
+	"cert_subject":     18,
+	"cert_issuer":      19,
+	"cert_not_before":  20,
+	"cert_not_after":   21,
+	"cert_dns_names":   22,
+	"cert_sha256":      23,
+	"cert_self_signed": 24,
+	"cert_expired":     25,
+	"cert_verified":    26,
+}
+
+// TestWriteCSVCertificateColumnsEmptyWithoutCertificate guards the clear-text
+// case: the certificate columns must be empty strings, not "no", so a consumer
+// can tell "no certificate" from "certificate that is not self-signed".
+func TestWriteCSVCertificateColumnsEmptyWithoutCertificate(t *testing.T) {
+	results := []Result{{
+		IP:            "192.0.2.20",
+		Port:          5900,
+		Open:          true,
+		RFB:           true,
+		SecurityTypes: []string{"VNC authentication"},
+	}}
+
+	path := filepath.Join(t.TempDir(), "out.csv")
+	if err := WriteCSV(path, results); err != nil {
+		t.Fatalf("WriteCSV: %v", err)
+	}
+
+	record := readCSV(t, path)[1]
+	if len(record) != len(csvHeader) {
+		t.Fatalf("row has %d fields, want %d", len(record), len(csvHeader))
+	}
+	for name, index := range certificateFieldIndexes {
+		if got := record[index]; got != "" {
+			t.Errorf("%s = %q without a certificate, want empty", name, got)
+		}
+	}
+}
+
+// TestWriteCSVCertificateColumnsFillsEvidence guards the self-signed case that
+// dominates VNC appliances: every certificate column carries its evidence in
+// the documented format.
+func TestWriteCSVCertificateColumnsFillsEvidence(t *testing.T) {
+	zone := time.FixedZone("UTC+3", 3*60*60)
+	cert := &Certificate{
+		Version:     "TLS 1.3",
+		CipherSuite: "TLS_AES_128_GCM_SHA256",
+		Subject:     "CN=vnc-appliance",
+		Issuer:      "CN=vnc-appliance",
+		NotBefore:   time.Date(2026, 1, 2, 12, 0, 0, 0, zone),
+		NotAfter:    time.Date(2027, 1, 2, 12, 0, 0, 0, zone),
+		DNSNames:    []string{"vnc.lab.example", "vnc-appliance.local"},
+		Fingerprint: "AA:BB:CC:DD",
+		SelfSigned:  true,
+		Expired:     false,
+		Verified:    false,
+	}
+	results := []Result{{
+		IP:          "192.0.2.21",
+		Port:        5901,
+		Open:        true,
+		RFB:         true,
+		TLS:         true,
+		Certificate: cert,
+		Timestamp:   time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC),
+	}}
+
+	path := filepath.Join(t.TempDir(), "out.csv")
+	if err := WriteCSV(path, results); err != nil {
+		t.Fatalf("WriteCSV: %v", err)
+	}
+
+	record := readCSV(t, path)[1]
+	want := map[string]string{
+		"tls_version":      "TLS 1.3",
+		"cipher_suite":     "TLS_AES_128_GCM_SHA256",
+		"cert_subject":     "CN=vnc-appliance",
+		"cert_issuer":      "CN=vnc-appliance",
+		"cert_not_before":  "2026-01-02T09:00:00Z",
+		"cert_not_after":   "2027-01-02T09:00:00Z",
+		"cert_dns_names":   "vnc.lab.example;vnc-appliance.local",
+		"cert_sha256":      "AA:BB:CC:DD",
+		"cert_self_signed": "yes",
+		"cert_expired":     "no",
+		"cert_verified":    "no",
+	}
+	for name, wantValue := range want {
+		if got := record[certificateFieldIndexes[name]]; got != wantValue {
+			t.Errorf("%s = %q, want %q", name, got, wantValue)
+		}
+	}
+}
+
+// TestWriteCSVVerifiedCertificateFlags guards the trusted-certificate case:
+// the flags must report the certificate as verified but not self-signed.
+func TestWriteCSVVerifiedCertificateFlags(t *testing.T) {
+	results := []Result{{
+		IP:   "192.0.2.22",
+		Port: 5902,
+		Certificate: &Certificate{
+			Subject:    "CN=trusted.example",
+			Issuer:     "CN=Lab CA",
+			SelfSigned: false,
+			Verified:   true,
+		},
+	}}
+
+	path := filepath.Join(t.TempDir(), "out.csv")
+	if err := WriteCSV(path, results); err != nil {
+		t.Fatalf("WriteCSV: %v", err)
+	}
+
+	record := readCSV(t, path)[1]
+	if got := record[certificateFieldIndexes["cert_self_signed"]]; got != "no" {
+		t.Errorf("cert_self_signed = %q, want no", got)
+	}
+	if got := record[certificateFieldIndexes["cert_verified"]]; got != "yes" {
+		t.Errorf("cert_verified = %q, want yes", got)
+	}
+	if got := record[certificateFieldIndexes["cert_expired"]]; got != "no" {
+		t.Errorf("cert_expired = %q, want no", got)
 	}
 }

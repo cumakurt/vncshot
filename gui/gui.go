@@ -122,15 +122,17 @@ type finding struct {
 // fields the transport column and its tooltip render are carried, so the live
 // SSE payload stays small during a scan.
 type certificateView struct {
-	Subject     string `json:"subject"`
-	Issuer      string `json:"issuer"`
-	NotAfter    string `json:"not_after"`
-	Version     string `json:"version"`
-	Cipher      string `json:"cipher"`
-	Fingerprint string `json:"fingerprint"`
-	SelfSigned  bool   `json:"self_signed"`
-	Expired     bool   `json:"expired"`
-	Verified    bool   `json:"verified"`
+	Subject     string   `json:"subject"`
+	Issuer      string   `json:"issuer"`
+	NotBefore   string   `json:"not_before"`
+	NotAfter    string   `json:"not_after"`
+	Version     string   `json:"version"`
+	Cipher      string   `json:"cipher"`
+	DNSNames    []string `json:"dns_names,omitempty"`
+	Fingerprint string   `json:"fingerprint"`
+	SelfSigned  bool     `json:"self_signed"`
+	Expired     bool     `json:"expired"`
+	Verified    bool     `json:"verified"`
 }
 
 // runInfo is one entry of the run history shown in the dashboard.
@@ -1259,10 +1261,14 @@ func toFinding(r report.Result) finding {
 }
 
 // certificateViewOf projects the report certificate onto the dashboard view,
-// keeping an unset expiry empty rather than emitting the zero timestamp.
+// keeping unset timestamps empty rather than emitting the zero value.
 func certificateViewOf(cert *report.Certificate) *certificateView {
 	if cert == nil {
 		return nil
+	}
+	notBefore := ""
+	if !cert.NotBefore.IsZero() {
+		notBefore = cert.NotBefore.UTC().Format(time.RFC3339)
 	}
 	notAfter := ""
 	if !cert.NotAfter.IsZero() {
@@ -1271,9 +1277,11 @@ func certificateViewOf(cert *report.Certificate) *certificateView {
 	return &certificateView{
 		Subject:     cert.Subject,
 		Issuer:      cert.Issuer,
+		NotBefore:   notBefore,
 		NotAfter:    notAfter,
 		Version:     cert.Version,
 		Cipher:      cert.CipherSuite,
+		DNSNames:    append([]string(nil), cert.DNSNames...),
 		Fingerprint: cert.Fingerprint,
 		SelfSigned:  cert.SelfSigned,
 		Expired:     cert.Expired,

@@ -61,6 +61,9 @@ type Config struct {
 	// Baseline points at a previous run directory; results are compared with
 	// it so the report can show new and resolved findings.
 	Baseline string
+	// ResumeDir points at an interrupted run directory; already completed
+	// targets are reused instead of being probed again.
+	ResumeDir string
 	// WebhookURL receives a POST when a completed scan contains new
 	// findings or weak credentials.
 	WebhookURL string
@@ -113,6 +116,12 @@ type Session struct {
 	baseline    []report.Result
 	baselineDir string
 	sourceIP    net.IP
+
+	// remaining is the subset of Targets that still needs a probe; the rest
+	// was completed by the run named by resumeDir and is held in reused.
+	remaining []scanner.Target
+	reused    []report.Result
+	resumeDir string
 }
 
 // Outcome is the result of a completed scan.
@@ -136,10 +145,23 @@ type Outcome struct {
 	// RemovedRuns lists the old run folders that retention deleted (or would
 	// delete, when pruning is a dry run).
 	RemovedRuns []RunInfo
+	// Resumed is how many results came from the resume source instead of a
+	// fresh probe. It is zero for a normal scan.
+	Resumed int
+	// Remaining is how many targets this run still had to probe after the
+	// resume plan was applied. It equals Summary.Targets - Resumed.
+	Remaining int
 }
 
 // Prepare validates the request, expands targets and creates the run folder.
 func Prepare(cfg Config) (*Session, error) {
+	// A resumed run reuses results from a different scope, so comparing it
+	// against a baseline would report findings as new or resolved merely
+	// because they were or were not probed.
+	if cfg.ResumeDir != "" && cfg.Baseline != "" {
+		return nil, fmt.Errorf("-resume cannot be combined with -baseline: a resumed run would compare a different scope")
+	}
+
 	ports, err := scanner.ParsePorts(cfg.Ports)
 	if err != nil {
 		return nil, err
@@ -178,6 +200,23 @@ func Prepare(cfg Config) (*Session, error) {
 		}
 	}
 
+	// Resume has the same fail-fast contract: a missing or broken report must
+	// stop the scan before an empty run folder is created. Results outside
+	// the requested scope are dropped so the merged report never describes
+	// endpoints the operator did not ask for.
+	remaining := targets
+	var reused []report.Result
+	if cfg.ResumeDir != "" {
+		previous, err := LoadCompleted(cfg.ResumeDir)
+		if err != nil {
+			return nil, fmt.Errorf("resume requested: %w", err)
+		}
+		remaining, reused, err = ResumePlan(previous, targets)
+		if err != nil {
+			return nil, fmt.Errorf("resume requested: %w", err)
+		}
+	}
+
 	runDir, fallbacked, fallbackErr := prepareRunDir(cfg)
 	if runDir == "" {
 		// fallbackErr carries the reason when no writable root could be
@@ -199,6 +238,9 @@ func Prepare(cfg Config) (*Session, error) {
 		fallbackErr: fallbackErr,
 		baseline:    baseline,
 		baselineDir: cfg.Baseline,
+		remaining:   remaining,
+		reused:      reused,
+		resumeDir:   cfg.ResumeDir,
 	}
 	if addr := strings.TrimSpace(cfg.SourceAddr); addr != "" && !strings.EqualFold(addr, "auto") {
 		ip := net.ParseIP(addr)
@@ -228,9 +270,22 @@ func (s *Session) ReportRoot() string {
 	return filepath.Dir(s.RunDir)
 }
 
-// Scan probes every target and writes JSON, HTML, CSV and (optionally) PDF
-// reports, plus an optional checksum manifest. A cancelled context returns
-// partial results together with context.Canceled.
+// ResumedTargets returns how many targets are satisfied by results reused
+// from the resume source instead of a fresh probe.
+func (s *Session) ResumedTargets() int {
+	return len(s.reused)
+}
+
+// RemainingTargets returns how many targets this session still has to probe.
+// It equals len(Targets) - ResumedTargets().
+func (s *Session) RemainingTargets() int {
+	return len(s.remaining)
+}
+
+// Scan probes every target that still needs one and writes JSON, HTML, CSV
+// and (optionally) PDF reports, plus an optional checksum manifest. Results
+// reused from a resume source are merged into the same result set. A
+// cancelled context returns partial results together with context.Canceled.
 func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, error) {
 	cfg := s.config
 
@@ -248,12 +303,20 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 		ShowProgress:    cfg.ShowProgress,
 	}
 	if progress != nil {
+		// Progress covers the full requested scope, not just the probes this
+		// run still performs, so a resumed scan's bar starts at the reused
+		// count instead of appearing to restart from zero.
+		fullScope := len(s.reused) + len(s.remaining)
 		opts.OnProgress = func(done int, total int, r report.Result) {
-			progress(Progress{Done: done, Total: total, Result: r})
+			progress(Progress{Done: len(s.reused) + done, Total: fullScope, Result: r})
 		}
 	}
 
-	results, scanErr := scanner.Run(ctx, s.Targets, opts)
+	results, scanErr := scanner.Run(ctx, s.remaining, opts)
+	// Reused results describe the rest of the requested scope, so they join
+	// the fresh probes before sorting and reporting; every artifact then
+	// covers the whole scope rather than only the resumed tail.
+	results = append(results, s.reused...)
 	// Sort once before any artifact is written so every report contains the
 	// same deterministic order.
 	report.SortResults(results)
@@ -266,6 +329,9 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 		HTML:    s.HTMLPath,
 		CSV:     s.CSVPath,
 		ShotDir: s.ShotDir,
+		// Callers use the counters to explain what a resumed run did.
+		Resumed:   len(s.reused),
+		Remaining: len(s.remaining),
 	}
 	if s.baselineDir != "" {
 		out.Diff = Compare(s.baselineDir, s.baseline, results)
@@ -279,7 +345,14 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 		ThumbnailOnly: cfg.ThumbnailOnly,
 	}
 
-	if err := report.WriteJSONWithOptions(s.JSONPath, results, reportOpts); err != nil {
+	// ResumedFrom records only the folder name so a report never carries an
+	// absolute host path, matching how the baseline is recorded.
+	resumedFrom := ""
+	if s.resumeDir != "" {
+		resumedFrom = filepath.Base(s.resumeDir)
+	}
+
+	if err := report.WriteJSONDocument(s.JSONPath, results, reportOpts, report.DocumentOptions{ResumedFrom: resumedFrom}); err != nil {
 		return out, err
 	}
 	if err := report.WriteHTMLWithOptions(s.HTMLPath, results, reportOpts); err != nil {

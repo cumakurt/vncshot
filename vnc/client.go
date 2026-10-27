@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -53,6 +54,17 @@ type Result struct {
 	// SecurityTypeNames is AuthTypes mapped through SecurityTypeName, in
 	// the order the server advertised them.
 	SecurityTypeNames []string
+	// SecurityNotes explains the advertised types the probe cannot
+	// complete, filled through SecurityTypeNote in advertisement order.
+	// Types the probe supports, and types without a specific explanation,
+	// are omitted, so this is usually shorter than SecurityTypeNames.
+	SecurityNotes []string
+	// Note is a stable, user-facing explanation for an otherwise
+	// unexplained outcome, such as a server that demands a client
+	// certificate or advertises only unsupported security types. It is
+	// empty when the probe completed normally, and unlike Error it never
+	// indicates a scan failure.
+	Note string
 	// TLS is true when at least one advertised security type provides an
 	// encrypted channel. A server may offer both None and an encrypted
 	// type; this stays true even though the probe prefers the weaker None.
@@ -63,9 +75,11 @@ type Result struct {
 	// than as a non-RFB port.
 	SawBanner bool
 	// TLSInfo describes the certificate and negotiated parameters when the
-	// probe completed a TLS handshake, including for a VeNCrypt session. It
-	// is nil when no TLS session was established (for example a VeNCrypt
-	// X509 subtype the probe does not implement).
+	// probe completed a TLS handshake, including for a VeNCrypt session. A
+	// handshake that aborted because the server demands a client
+	// certificate still records the certificate the server presented, so
+	// this is non-nil for that partial handshake too. It is nil when no
+	// server certificate was received at all.
 	TLSInfo *TLSInfo
 	// ServerName is the desktop name from ServerInit.
 	ServerName string
@@ -145,6 +159,34 @@ func SecurityTypeName(t uint8) string {
 		return "MSLogon II"
 	default:
 		return fmt.Sprintf("type %d", t)
+	}
+}
+
+// SecurityTypeNote returns a short, stable explanation for a security type
+// the probe cannot complete. It is empty for the types the probe supports
+// (None, VNC authentication, TLS and VeNCrypt) and for values it has no
+// specific explanation for, so callers can omit empty entries.
+//
+// The strings end up in reports; keep them short and do not reword them
+// without treating that as a user-visible change.
+func SecurityTypeNote(t uint8) string {
+	switch t {
+	case 5, 6:
+		return "proprietary authentication (RealVNC)"
+	case 16, 17:
+		return "Tight/Ultra tunneling"
+	case 20:
+		return "SASL authentication"
+	case 21:
+		return "MD5 authentication (RealVNC)"
+	case 22:
+		return "xvp authentication"
+	case 30:
+		return "Apple Remote Desktop authentication"
+	case 113:
+		return "MSLogon II (UltraVNC)"
+	default:
+		return ""
 	}
 }
 
@@ -434,6 +476,9 @@ func (c *client) securityHandshake() error {
 	c.result.SecurityTypeNames = make([]string, len(types))
 	for i, t := range types {
 		c.result.SecurityTypeNames[i] = SecurityTypeName(t)
+		if note := SecurityTypeNote(t); note != "" {
+			c.result.SecurityNotes = append(c.result.SecurityNotes, note)
+		}
 		if securityTypeProvidesTLS(t) {
 			c.result.TLS = true
 		}
@@ -512,8 +557,31 @@ func (c *client) securityHandshake() error {
 		return nil
 
 	default:
+		// Nothing on offer can be completed. Explain why, so the report
+		// does not show an unexplained stop after the type list.
+		c.result.Note = joinSecurityNotes(c.result.SecurityNotes)
 		return errStopProbe
 	}
+}
+
+// joinSecurityNotes renders the advertised explanations as one report note.
+// Identical notes collapse so a server that advertises RA2 and RA2ne does not
+// repeat the same sentence.
+func joinSecurityNotes(notes []string) string {
+	unique := make([]string, 0, len(notes))
+	for _, note := range notes {
+		seen := false
+		for _, existing := range unique {
+			if existing == note {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			unique = append(unique, note)
+		}
+	}
+	return strings.Join(unique, ", ")
 }
 
 // selectSecurityType sends the chosen type, which only RFB 3.7+ expects,

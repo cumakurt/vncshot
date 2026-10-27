@@ -14,6 +14,11 @@ import (
 
 // csvHeader is the deterministic column order of the export. Fields are
 // kept stable so spreadsheets and downstream scripts can rely on the schema.
+//
+// The schema is append-only: existing columns keep their names and relative
+// order, and new evidence columns are added as a block before the trailing
+// timestamp so the timestamp stays the last field. Downstream scripts index
+// columns by position, so a column must never be renamed, removed or moved.
 var csvHeader = []string{
 	"ip",
 	"port",
@@ -31,8 +36,24 @@ var csvHeader = []string{
 	"error",
 	"duration_ms",
 	"attempts",
+	"tls_version",
+	"cipher_suite",
+	"cert_subject",
+	"cert_issuer",
+	"cert_not_before",
+	"cert_not_after",
+	"cert_dns_names",
+	"cert_sha256",
+	"cert_self_signed",
+	"cert_expired",
+	"cert_verified",
 	"timestamp",
 }
+
+// certificateColumnCount is the number of certificate evidence columns. A
+// result without a certificate still renders this many empty fields so every
+// row keeps the header width.
+const certificateColumnCount = 11
 
 // WriteCSV exports the results as RFC 4180 CSV. Rows are sorted by IP and
 // port so the output is deterministic regardless of the caller's order, and
@@ -91,7 +112,7 @@ func WriteCSVWithOptions(path string, results []Result, opts Options) error {
 // than true/false for spreadsheet friendliness, and security types are joined
 // with ";" so the list stays inside a single CSV field.
 func csvRecord(r Result) []string {
-	return []string{
+	record := []string{
 		r.IP,
 		strconv.Itoa(r.Port),
 		yesNo(r.Open),
@@ -108,8 +129,41 @@ func csvRecord(r Result) []string {
 		r.Error,
 		strconv.FormatInt(r.DurationMs, 10),
 		strconv.Itoa(r.Attempts),
-		r.Timestamp.UTC().Format(time.RFC3339),
 	}
+	record = append(record, certificateColumns(r.Certificate)...)
+	return append(record, r.Timestamp.UTC().Format(time.RFC3339))
+}
+
+// certificateColumns renders the certificate evidence. Every column is empty
+// when no certificate was presented: the boolean flags stay empty rather than
+// "no" so a consumer can tell clear-text from a certificate that is simply not
+// self-signed, expired or verified.
+func certificateColumns(cert *Certificate) []string {
+	if cert == nil {
+		return make([]string, certificateColumnCount)
+	}
+	return []string{
+		cert.Version,
+		cert.CipherSuite,
+		cert.Subject,
+		cert.Issuer,
+		certTime(cert.NotBefore),
+		certTime(cert.NotAfter),
+		strings.Join(cert.DNSNames, ";"),
+		cert.Fingerprint,
+		yesNo(cert.SelfSigned),
+		yesNo(cert.Expired),
+		yesNo(cert.Verified),
+	}
+}
+
+// certTime formats a certificate timestamp in UTC, keeping an unset time
+// empty instead of emitting the zero value.
+func certTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // SortResults orders results by IP and then port. Numeric IP ordering is used

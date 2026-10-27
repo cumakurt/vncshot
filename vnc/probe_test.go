@@ -316,11 +316,76 @@ func TestExportedSecurityTypeName(t *testing.T) {
 	}
 }
 
+func TestSecurityTypeNote(t *testing.T) {
+	tests := []struct {
+		typ  uint8
+		want string
+	}{
+		{typ: 0, want: ""},
+		{typ: 1, want: ""}, // None
+		{typ: 2, want: ""}, // VNC authentication
+		{typ: 5, want: "proprietary authentication (RealVNC)"},
+		{typ: 6, want: "proprietary authentication (RealVNC)"},
+		{typ: 16, want: "Tight/Ultra tunneling"},
+		{typ: 17, want: "Tight/Ultra tunneling"},
+		{typ: 18, want: ""}, // TLS
+		{typ: 19, want: ""}, // VeNCrypt
+		{typ: 20, want: "SASL authentication"},
+		{typ: 21, want: "MD5 authentication (RealVNC)"},
+		{typ: 22, want: "xvp authentication"},
+		{typ: 30, want: "Apple Remote Desktop authentication"},
+		{typ: 113, want: "MSLogon II (UltraVNC)"},
+		{typ: 200, want: ""}, // unknown
+	}
+
+	for _, tt := range tests {
+		if got := vnc.SecurityTypeNote(tt.typ); got != tt.want {
+			t.Errorf("SecurityTypeNote(%d) = %q, want %q", tt.typ, got, tt.want)
+		}
+	}
+}
+
+func TestUnsupportedOnlyTypesProduceNotes(t *testing.T) {
+	addr := serveRFB(t, func(s *rfbServer) {
+		s.sendBanner("RFB 003.008\n")
+		s.mustWrite([]byte{1, 30}) // Apple Remote Desktop only
+
+		// The probe must not select a type it cannot complete.
+		if extra, err := io.ReadAll(io.LimitReader(s.conn, 1)); err == nil && len(extra) > 0 {
+			s.t.Errorf("fake server: client sent %d unexpected byte(s)", len(extra))
+		}
+	})
+
+	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+	})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Probe returned nil result")
+	}
+	want := []string{"Apple Remote Desktop authentication"}
+	if !reflect.DeepEqual(result.SecurityNotes, want) {
+		t.Errorf("SecurityNotes = %v, want %v", result.SecurityNotes, want)
+	}
+	if result.Note != want[0] {
+		t.Errorf("Note = %q, want %q", result.Note, want[0])
+	}
+	if !result.AuthRequired {
+		t.Error("AuthRequired = false, want true")
+	}
+	if result.Frame != nil {
+		t.Error("Frame is non-nil, want nil when no supported type is offered")
+	}
+}
+
 func TestProbeReportsEncryptedSecurityTypes(t *testing.T) {
 	// VeNCrypt (19) plus VNC authentication (2): the probe takes no
 	// credential and does not perform TLS authentication, but the report must
 	// still show that an encrypted channel was on offer. The server offers
-	// only the X509Vnc subtype, which the probe does not implement, so the
+	// only the X509Plain subtype, which the probe does not implement, so the
 	// negotiation stops after the subtype list.
 	addr := serveRFB(t, func(s *rfbServer) {
 		s.sendBanner("RFB 003.008\n")
@@ -332,7 +397,7 @@ func TestProbeReportsEncryptedSecurityTypes(t *testing.T) {
 		s.mustRead(2)             // client version
 		s.mustWrite([]byte{0})    // version ack
 		s.mustWrite([]byte{1})    // one subtype
-		s.mustWriteU32(261)       // X509Vnc, not implemented
+		s.mustWriteU32(262)       // X509Plain, not implemented
 	})
 
 	result, err := vnc.Probe(t.Context(), addr, vnc.Options{

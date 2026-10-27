@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -61,9 +62,9 @@ func VeNCryptSubtypeName(t uint32) string {
 		return "TLSVnc"
 	case 259:
 		return "TLSPlain"
-	case 260:
+	case vencryptSubtypeX509None:
 		return "X509None"
-	case 261:
+	case vencryptSubtypeX509Vnc:
 		return "X509Vnc"
 	case 262:
 		return "X509Plain"
@@ -135,14 +136,70 @@ func (c *client) upgradeTLS() error {
 		return fmt.Errorf("TLS handshake: %w", err)
 	}
 
+	c.adoptTLS(tlsConn)
+	return nil
+}
+
+// errClientCertRequired means the server aborted the handshake because it
+// demands a client certificate. It is a finding, not a scan failure: the
+// server certificate it presented before aborting is still reported.
+var errClientCertRequired = errors.New("server requires a client certificate")
+
+// upgradeTLSForX509 is upgradeTLS for the VeNCrypt X509 subtypes. Their flows
+// are identical to TLSNone/TLSVnc, except that the server may require a
+// client certificate the probe does not have.
+//
+// The returned bool reports whether the server asked for a client
+// certificate during the handshake. That matters because TLS 1.3 finishes the
+// client side of the handshake before the server evaluates the (empty)
+// client certificate, so a rejection there arrives as an alert on the first
+// read rather than as a handshake error. The caller uses this flag to
+// recognise that case without interpreting error text.
+//
+// A handshake that fails after the server has sent its own certificate is
+// reported as errClientCertRequired when a peer certificate is present: the
+// certificate arrives before the client-certificate check, so it is
+// available even though the handshake failed.
+func (c *client) upgradeTLSForX509() (bool, error) {
+	if n := c.r.Buffered(); n != 0 {
+		return false, fmt.Errorf("TLS upgrade with %d buffered plaintext byte(s)", n)
+	}
+
+	cfg := tlsConfig(c.serverName)
+	clientCertRequested := false
+	cfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		clientCertRequested = true
+		// No client certificate is available; an empty certificate is what
+		// the TLS stack sends when no callback is configured.
+		return &tls.Certificate{}, nil
+	}
+
+	tlsConn := tls.Client(c.conn, cfg)
+	c.setDeadline()
+	if err := tlsConn.HandshakeContext(c.ctx); err != nil {
+		state := tlsConn.ConnectionState()
+		if len(state.PeerCertificates) == 0 {
+			return false, fmt.Errorf("TLS handshake: %w", err)
+		}
+		// The handshake did not complete, so the stream is unusable, but
+		// the certificate and cipher negotiated so far are evidence.
+		c.result.TLSInfo = tlsInfoFromState(state, c.serverName)
+		c.result.TLS = true
+		return false, errClientCertRequired
+	}
+
+	c.adoptTLS(tlsConn)
+	return clientCertRequested, nil
+}
+
+// adoptTLS installs a completed TLS handshake and records its posture.
+func (c *client) adoptTLS(tlsConn *tls.Conn) {
 	c.conn = tlsConn
 	c.r = bufio.NewReaderSize(tlsConn, 64*1024)
 	c.w = bufio.NewWriterSize(tlsConn, 32*1024)
 
-	state := tlsConn.ConnectionState()
-	c.result.TLSInfo = tlsInfoFromState(state, c.serverName)
+	c.result.TLSInfo = tlsInfoFromState(tlsConn.ConnectionState(), c.serverName)
 	c.result.TLS = true
-	return nil
 }
 
 // tlsInfoFromState converts a completed handshake into the reported posture.
@@ -206,11 +263,22 @@ func certificateVerified(leaf *x509.Certificate, chain []*x509.Certificate) bool
 	return err == nil
 }
 
+// veNCryptSubtypes lists the subtypes the probe can attempt, strongest
+// first. The X509 variants come last: they are the same flows, but a server
+// may reject them for lack of a client certificate.
+var veNCryptSubtypes = []uint32{
+	vencryptSubtypeTLSNone,
+	vencryptSubtypeTLSVnc,
+	vencryptSubtypeX509None,
+	vencryptSubtypeX509Vnc,
+}
+
 // chooseVeNCryptSubtype picks the strongest subtype the probe can complete.
-// TLSNone is preferred because it needs no credential and therefore yields a
-// capture; TLSVnc follows when the server does not offer TLSNone.
+// TLSNone is preferred because it needs neither a credential nor a client
+// certificate and therefore yields a capture. TLSVnc follows when the server
+// does not offer TLSNone, and the X509 variants are the last resort.
 func chooseVeNCryptSubtype(offered []uint32) (uint32, bool) {
-	for _, want := range []uint32{vencryptSubtypeTLSNone, vencryptSubtypeTLSVnc} {
+	for _, want := range veNCryptSubtypes {
 		for _, got := range offered {
 			if got == want {
 				return want, true
@@ -259,10 +327,10 @@ func (c *client) veNCryptHandshake() error {
 	if minor == 1 {
 		// 0.1: the client publishes its supported subtypes and the
 		// server picks one.
-		if err := c.write([]byte{2}); err != nil {
+		if err := c.write([]byte{byte(len(veNCryptSubtypes))}); err != nil {
 			return fmt.Errorf("write VeNCrypt subtype list: %w", err)
 		}
-		for _, st := range []uint32{vencryptSubtypeTLSNone, vencryptSubtypeTLSVnc} {
+		for _, st := range veNCryptSubtypes {
 			if err := writeU32(c.w, st); err != nil {
 				return fmt.Errorf("write VeNCrypt subtype: %w", err)
 			}
@@ -323,8 +391,9 @@ func (c *client) veNCryptHandshake() error {
 
 // completeVeNCrypt runs the handshake for an accepted TLS-based subtype.
 func (c *client) completeVeNCrypt(subtype uint32) error {
+	x509Subtype := subtype == vencryptSubtypeX509None || subtype == vencryptSubtypeX509Vnc
 	switch subtype {
-	case vencryptSubtypeTLSNone, vencryptSubtypeTLSVnc:
+	case vencryptSubtypeTLSNone, vencryptSubtypeTLSVnc, vencryptSubtypeX509None, vencryptSubtypeX509Vnc:
 	default:
 		return errStopProbe
 	}
@@ -336,12 +405,59 @@ func (c *client) completeVeNCrypt(subtype uint32) error {
 	c.result.TLS = true
 	c.result.AuthRequired = true
 
-	if err := c.upgradeTLS(); err != nil {
+	clientCertRequested := false
+	if x509Subtype {
+		requested, err := c.upgradeTLSForX509()
+		if err != nil {
+			if errors.Is(err, errClientCertRequired) {
+				return c.stopForClientCertificate(subtype)
+			}
+			return err
+		}
+		clientCertRequested = requested
+	} else if err := c.upgradeTLS(); err != nil {
 		return err
 	}
 
+	err := c.finishVeNCrypt(subtype)
+	if x509Subtype && clientCertRequested && isProtocolFailure(err) {
+		// TLS 1.3: the client side of the handshake succeeded before the
+		// server rejected our empty client certificate, so the alert
+		// arrives on the first read. The server did ask for a
+		// certificate, which makes this the same finding as a failed
+		// handshake.
+		return c.stopForClientCertificate(subtype)
+	}
+	return err
+}
+
+// stopForClientCertificate records the outcome of an X509 subtype whose
+// server demands a client certificate. The certificate and cipher from the
+// partial session are already in the result; the note explains the stop.
+func (c *client) stopForClientCertificate(subtype uint32) error {
+	c.result.AuthRequired = true
+	c.result.Note = "client certificate required (VeNCrypt/" +
+		VeNCryptSubtypeName(subtype) + ")"
+	return errStopProbe
+}
+
+// isProtocolFailure reports whether err is a failure to exchange RFB
+// messages, as opposed to the credential findings the probe reports without
+// an error.
+func isProtocolFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, errStopProbe) &&
+		!errors.Is(err, errAuthRejected) &&
+		!errors.Is(err, errAuthLocked)
+}
+
+// finishVeNCrypt runs the subtype-specific authentication after the
+// encrypted channel is established.
+func (c *client) finishVeNCrypt(subtype uint32) error {
 	switch subtype {
-	case vencryptSubtypeTLSNone:
+	case vencryptSubtypeTLSNone, vencryptSubtypeX509None:
 		// "None over TLS": no credential, so the probe can capture. Mirror
 		// the plain None flow, including the 3.8 SecurityResult.
 		c.result.AuthRequired = false
@@ -350,7 +466,7 @@ func (c *client) completeVeNCrypt(subtype uint32) error {
 			return c.readSecurityResult()
 		}
 		return nil
-	default: // vencryptSubtypeTLSVnc
+	default: // vencryptSubtypeTLSVnc, vencryptSubtypeX509Vnc
 		if c.credential.Password == "" && c.credential.Source == "" {
 			// Discovery connection: the certificate is recorded, but a
 			// challenge cannot be answered without a candidate.

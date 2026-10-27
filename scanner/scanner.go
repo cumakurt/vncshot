@@ -242,6 +242,7 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 				// capability, server name) and record why the session could
 				// not be established.
 				res.RFB = true
+				res.Note = vncRes.Note
 				res.SecurityTypes = vncRes.SecurityTypeNames
 				res.TLS = vncRes.TLS
 				res.Passwordless = vncRes.Passwordless
@@ -286,6 +287,7 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 	res.Password = vncRes.Password
 	res.PasswordSource = vncRes.PasswordSource
 	res.AuthLocked = vncRes.AuthLocked
+	res.Note = vncRes.Note
 	res.SecurityTypes = vncRes.SecurityTypeNames
 	res.TLS = vncRes.TLS
 	res.Certificate = certificateOf(vncRes)
