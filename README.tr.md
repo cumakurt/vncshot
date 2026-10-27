@@ -45,6 +45,7 @@ geçmişi; tümü loopback üzerinde.*
   - [Manifest dosyası](#manifest-dosyası)
   - [Temel karşılaştırma](#temel-karşılaştırma)
   - [Webhook bildirimleri](#webhook-bildirimleri)
+  - [Bakım ve saklama](#bakım-ve-saklama)
 - [Çıkış kodları](#çıkış-kodları)
 - [Performans ayarı](#performans-ayarı)
 - [Sorun giderme](#sorun-giderme)
@@ -64,16 +65,23 @@ geçmişi; tümü loopback üzerinde.*
 ## Özellikler
 
 - Yalnızca Linux; hem CLI hem GUI root olarak çalışmalıdır
-- Tek IP, CIDR bloğu, IPv4 aralığı veya hedef dosyası tarama
+- Tek IP, CIDR bloğu, IPv4 aralığı, hedef dosyası veya standart girdiden
+  hedef listesi (`-file -`) tarama
+- `-dry-run` hiçbir paket göndermeden genişletilmiş kapsamı yazdırır
 - Yapılandırılabilir hız sınırı ve hedef başına eşzamanlılık sınırı olan
   eşzamanlı worker havuzu
 - RFB 3.3 / 3.7 / 3.8 el sıkışması, parolasız (`None`) tespiti ve
   zayıf parola tespiti
+- TLS ve VeNCrypt sondalaması (`TLSNone`, `TLSVnc`) ve kurulan her şifreli
+  oturum için eş sertifika kanıtı
 - Parolasız ve zayıf parolalı uç noktalar için PNG'ye ekran görüntüsü
 - Salt okunur sondalama: tek kare istenir ve oturum kapatılır
 - JSON + kendi kendine yeten HTML raporu (gömülü küçük görseller, filtre, modal)
 - Süreç içinde PDF raporu (harici araç gerekmez)
 - Elektronik tablolar ve ardışık düzenler için sabit sütun düzenli CSV çıktısı
+- Delili sırlar veya tam çözünürlüklü kareler olmadan paylaşmak için rapor
+  redaksiyonu (`-redact`) ve yalnızca önizlemeli HTML (`-thumb-only`)
+- Denetimli silme ve deneme moduyla tarama klasörü saklama (`-keep`, `-prune`)
 - Güvenlik tipi envanteri: her bulgu duyurulan `security_types` listesini ve
   `tls` bayrağını kaydeder
 - Önceki taramayla temel karşılaştırma (yeni, çözülen ve değişen bulgular)
@@ -83,7 +91,7 @@ geçmişi; tümü loopback üzerinde.*
   bayrak varsayılanları
 - Tekrarlanan taramaların doğrudan karşılaştırılabilmesi için deterministik,
   sıralı sonuçlar
-- Hedef başına tek TCP bağlantısı ve sınırlı eşzamanlılık
+- Deneme başına tek TCP bağlantısı ve sınırlı eşzamanlılık
 - Canlı ilerleme, rapor bağlantıları ve önceki tarama geçmişi olan yerel web
   GUI'si (`-gui`)
 - `-version` root gerektirmeden derleme bilgisini yazdırır
@@ -191,9 +199,15 @@ sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
 sudo vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
 sudo vncshot -target 10.0.0.1-50 -out-dir /root/assessments
 sudo vncshot -target 192.168.1.0/24 -word-list /root/parolalar.txt
+sudo vncshot -target 10.0.0.0/16 -dry-run
+cat hosts.txt | sudo vncshot -file - -ports 5900
+sudo vncshot -target 192.168.1.0/24 -redact -thumb-only
+sudo vncshot -target 10.0.0.0/16 -source-addr 10.1.2.3
 sudo vncshot -target 192.168.1.0/24 -baseline /usr/local/vncshot/20261020-090000
 sudo vncshot -target 10.0.0.0/24 -manifest -webhook https://hooks.example.test/vncshot
 sudo vncshot -target 192.168.1.0/24 -config /root/vncshot.conf
+sudo vncshot -target 192.168.1.0/24 -keep 30
+sudo vncshot -prune 30 -prune-dry-run
 sudo vncshot -gui
 vncshot -version
 ```
@@ -208,13 +222,14 @@ sırasında gömer.
 |--------|-----------|----------|
 | `-version` | `false` | Derleme bilgisini yazdır ve çık (root gerektirmez) |
 | `-target` | | Tek IP, CIDR veya aralık (`192.168.1.1`, `192.168.1.0/24`, `192.168.1.1-50`) |
-| `-file` | | Satır başına bir IP/CIDR/aralık içeren dosya (`#` yorum satırı desteklenir) |
+| `-file` | | Satır başına bir IP/CIDR/aralık içeren dosya (`#` yorum satırı desteklenir); `-` standart girdiden okur |
 | `-ports` | `5900` | Port listesi/aralıkları (`5900,5901-5910`) |
 | `-timeout` | `1s` | TCP bağlantı zaman aşımı |
 | `-vnc-timeout` | `15s` | RFB el sıkışma/yakalama zaman aşımı |
 | `-workers` | `150` | Eşzamanlı tarama worker sayısı (en fazla 4096) |
 | `-rate` | `200` | Saniyede en fazla yeni bağlantı (`0` = sınırsız, en fazla 100000) |
-| `-retries` | `1` | Geçici hatalar için ek bağlantı denemesi (`0` = yok) |
+| `-retries` | `1` | TCP bağlantısı öncesi ve sonrası geçici hatalar için ek deneme (`0` = yok) |
+| `-source-addr` | `""` | Sondaları bağlayacak yerel IP; boş veya `auto` yönlendirme tablosunu kullanır |
 | `-out-dir` | `/usr/local/vncshot` | Zaman damgalı tarama klasörlerinin kök dizini |
 | `-output` | `<run-dir>/vncshot_report.json` | JSON rapor yolu |
 | `-html` | `<run-dir>/vncshot_report.html` | HTML rapor yolu |
@@ -222,6 +237,12 @@ sırasında gömer.
 | `-csv` | `<run-dir>/vncshot_report.csv` | CSV rapor yolu |
 | `-baseline` | | Önceki tarama dizini; bulgular bununla karşılaştırılır |
 | `-manifest` | `false` | Her çıktının SHA-256 özetlerini içeren `<run-dir>/manifest.json` yaz |
+| `-redact` | `false` | Yakalanan parolaları JSON/HTML/PDF içinde `REDACTED` ile değiştir |
+| `-thumb-only` | `false` | HTML içinde yalnızca önizleme görselini göm, tam çözünürlüklü yakalamayı gömme |
+| `-keep` | `0` | Taramadan sonra yalnızca en yeni n tarama klasörünü tut (`0` = hepsini tut) |
+| `-prune` | `0` | En yeni n tarama klasörü dışındakileri sil ve çık (`0` = kapalı) |
+| `-prune-dry-run` | `false` | `-prune` ile (veya tek başına `-keep` ile) silinecekleri listele, hiçbir şey silme |
+| `-dry-run` | `false` | Kapsamı genişlet, hedef/host/port/parola adaylarını yazdır ve paket göndermeden çık |
 | `-webhook` | | Yeni bulgu veya açık uç nokta varsa bu adrese JSON özeti POST et |
 | `-config` | | Bayrak varsayılanları içeren yapılandırma dosyası (JSON veya düz `key: value` YAML) |
 | `-no-pdf` | `false` | PDF üretimini atla |
@@ -237,6 +258,21 @@ sırasında gömer.
 | `-gui-no-browser` | `false` | GUI'yi tarayıcıda otomatik açma |
 
 `-gui-*` bayrakları yalnızca `-gui` ile birlikte anlamlıdır.
+
+`-prune` çağrıyı bir bakım komutuna dönüştürür: hedef gerektirmez, `-out-dir`
+altındaki en yeni n tarama klasörü dışındakileri siler ve çıkar; böylece kendi
+başına zamanlanabilir. Varsayılan rapor kökü `/usr/local/vncshot` olduğu için
+root kontrolü yine uygulanır, ancak prune veya deneme çalıştırmasında yetki
+onayı istenmez. `-prune-dry-run` bu komutu (`-prune` ile veya tek başına
+`-keep` ile) önizler ya da GUI'de bir sonraki taramanın saklama geçişini
+önizler. Tek başına, pozitif bir `-prune` veya `-keep` değeri olmadan
+çalıştırıldığında önizlenecek bir politika olmadığı için hata vererek çıkar.
+`-keep 0` ve `-prune 0` "kapalı" anlamına gelir; açıkça verilen
+`-prune 0` sessizce yok sayılmak yerine hata olarak reddedilir.
+
+`-dry-run` hedef ve port girdilerini genişletir, kapsamı yazdırır ve hiçbir
+paket gönderilmeden, hiçbir dizin oluşturulmadan çıkar. Yetki onayı istemez ve
+`-yes` gerektirmez, ancak açılıştaki root kontrolü yine uygulanır.
 
 `-h` aynı bayrak başvurusunu yazdırır ve `0` ile çıkar. Bilinmeyen bir bayrak
 `flag provided but not defined: <ad>` satırını ve kullanım metnini yazdırıp
@@ -298,13 +334,14 @@ Parola testi varsayılan olarak açıktır. Her RFB uç noktasına önce, hiçbi
 kimlik bilgisi göndermeden duyurulan güvenlik tiplerini okuyan bir keşif
 bağlantısı yapılır:
 
-* Sunucu `None` güvenlik tipini sunuyorsa host parolasız olarak raporlanır ve
-  ekran görüntüsü alınır.
-* Sunucu VNC kimlik doğrulaması istiyorsa her aday parola kendi kısa ömürlü
-  bağlantısında denenir. İlk kabul edilen parola kaydedilir ve host tıpkı
-  parolasız bir host gibi yakalanır.
-* Yalnızca başka güvenlik tipleri (örneğin TLS veya VeNCrypt) sunan sunucular
-  parola denenmeden RFB servisi olarak raporlanır.
+* Sunucu `None` güvenlik tipini veya `TLS` tipini (18, yani TLS üzerinden
+  `None`) sunuyorsa host parolasız olarak raporlanır ve ekran görüntüsü alınır.
+* Sunucu VNC kimlik doğrulaması istiyorsa — doğrudan veya VeNCrypt `TLSVnc` alt
+  tipi üzerinden — her aday parola kendi kısa ömürlü bağlantısında denenir. İlk
+  kabul edilen parola kaydedilir ve host tıpkı parolasız bir host gibi yakalanır.
+* Yalnızca bu istemcinin uygulamadığı güvenlik tiplerini (örneğin `SASL`,
+  `Plain` veya bir VeNCrypt `X509*` alt tipi) sunan sunucular parola denenmeden
+  RFB servisi olarak raporlanır.
 
 Adaylar yerleşik zayıf parola listesinden (boş parola dahil yaklaşık 30 yaygın
 VNC parolası) ve isteğe bağlı olarak `-word-list` dosyasından gelir.
@@ -348,6 +385,14 @@ CSV raporları ve manifest dosyası `0600` izinleriyle oluşturulur; yalnızca
 sahibi okuyabilir. Çalışma dizinini hassas delil olarak değerlendirin: ortak
 depolamaya kopyalamayın veya redakte etmeden bir kayda eklemeyin.
 
+`-redact` sır değerini JSON, HTML ve PDF çıktıları yazılmadan önce kaldırır:
+yakalanan her parola `REDACTED` olur, bulgu, `password_source` ve zayıf kimlik
+bilgisi sayaçları görünür kalır. CSV çıktısında parola sütunu yoktur, bu
+nedenle değişmez; sertifika kanıtı da sır olmadığı için korunur. `-thumb-only`
+bunu tamamlar: HTML raporuna yalnızca önizleme görselini gömer, böylece büyük
+bir envanter tek dosya olarak paylaşılabilir kalır; tam çözünürlüklü PNG'ler
+tarama klasöründe kalır.
+
 ## Bağlantı ve taşıma katmanı
 
 ### Güvenlik tipleri ve TLS
@@ -368,29 +413,94 @@ tanımlar. `None`, `VNC authentication` ve diğer tipler açık metin kabul edil
 Hem `None` hem de şifreli bir tip sunan sunucu, sonda zayıf `None` yolunu
 izlese bile `tls: true` alır.
 
-Özet, `tls_services` sayacını içerir (JSON anahtarı `tls_services`, HTML ve PDF
-etiketi `TLS services`, GUI sayacı `TLS services`). HTML uç nokta tablosuna bir
-Security sütunu, PDF uç nokta tablosuna `SECURITY` sütunu ve her bulgu kartına
-bir `Transport` satırı, GUI bulgu tablosuna ise bir Transport sütunu eklenir.
-`security_types` ve `tls`, boş veya `false` olduklarında JSON'dan çıkarılır.
+Sonda üç yolda şifreli oturum kurar:
+
+| Yol | Güvenlik tipi | Kimlik bilgisi |
+|-----|---------------|----------------|
+| `TLS` | tip 18, TLS üzerinden `None` | yok |
+| VeNCrypt `TLSNone` | alt tip 257 | yok |
+| VeNCrypt `TLSVnc` | alt tip 258 | TLS içinde VNC kimlik doğrulaması |
+
+Şifreli bir yol, düz VNC kimlik doğrulamasına tercih edilir: her ikisi de ya
+parolasız bir yakalama ya da uç noktayı tanımlayan bir sertifika verir; düz VNC
+kimlik doğrulaması bunu sağlayamaz. Eski cihazların da envantere girebilmesi
+için TLS 1.0 ve 1.1 el sıkışmaları kabul edilir; `tls_version` gerçekte
+müzakere edilen sürümü bildirir.
+
+Diğer VeNCrypt alt tipleri uygulanmamıştır: `Plain`, `TLSPlain`, `X509*`
+ailesi, `TLSSASL`, `X509SASL` ve `Ident` ailesi. Bir sunucu yalnızca bunları
+sunuyorsa duruş kaydedilir ve oturum denenmez; uç nokta yakalama veya sertifika
+olmadan RFB servisi olarak görünür.
+
+Bazı cihazlar TLS veya VeNCrypt duyurur ancak şifreli müzakeresini
+tamamlayamaz ya da bu istemcinin uygulamadığı bir alt tip bekler. Güvenlik tipi
+listesi zaten okunduysa sonda, sunucunun ayrıca duyurduğu açık metin tipleri
+üzerinden bir kez yeniden dener ve varsa parola adayları bu açık metin yolunu
+kullanır. Tip listesinden önceki bir hata, aşağıda açıklanan yeniden deneme
+politikasına bırakılır.
+
+Bir TLS oturumu kurulduğunda sonuç bir `certificate` nesnesi taşır:
+
+| Alan | Anlamı |
+|------|--------|
+| `tls_version` | Müzakere edilen protokol sürümü, örneğin `TLS 1.2` |
+| `cipher_suite` | Müzakere edilen şifre paketi adı |
+| `subject`, `issuer` | Metinsel ayırt edici adlar |
+| `not_before`, `not_after` | UTC olarak geçerlilik sınırları |
+| `dns_names` | DNS konu alternatif adları |
+| `sha256_fingerprint` | DER sertifikasının SHA-256 değeri, iki nokta ayrılmış hex |
+| `self_signed` | Konu ve düzenleyen aynı |
+| `expired` | Tarama anında `not_after` geçmişte |
+| `verified` | Zincir sistem köklerine karşı doğrulandı |
+
+Sonda sertifikayı güvenmek yerine kaydeder: TLS istemcisi
+`InsecureSkipVerify` ile çalışır, böylece bir cihaz sertifikası taramayı asla
+durdurmaz. `verified` bağımsız olarak sistem köklerine karşı hesaplanır ve
+yalnızca zincir güvenini kapsar; sertifikanın taranan adresle eşleşip
+eşleşmediğini kapsamaz. Bu nedenle kendinden imzalı bir cihaz sertifikası
+`self_signed: true` ve `verified: false` bildirir; bu, uç noktanın güven
+duruşuna dair bir kanıttır, başarısız bir sonda değildir. Kendinden imzalı
+olmayan doğrulanmamış bir sertifika raporlarda `untrusted` olarak gösterilir.
+
+Özet, `tls_services` sayacını (JSON anahtarı `tls_services`, HTML ve PDF
+etiketi `TLS services`, GUI sayacı `TLS services`) ve eş sertifikasında konu
+ile düzenleyenin aynı olduğu kurulmuş TLS oturumlarını sayan
+`self_signed_certs` sayacını (HTML, PDF ve GUI etiketi `Self-signed certs`)
+içerir. HTML uç nokta tablosuna sertifika durumlu bir Security sütunu, PDF uç
+nokta tablosuna `SECURITY` sütunu ve her bulgu kartına bir `Transport` satırı,
+GUI bulgu tablosuna ise sertifika işaretli bir Transport sütunu eklenir.
+`security_types` ve `tls`, boş veya `false` olduklarında JSON'dan çıkarılır;
+TLS oturumu kurulmadıysa `certificate` alanı da yoktur.
 
 ### Yeniden deneme ve hedef başına sınırlar
 
-* Bir sonda tam olarak bir TCP bağlantısı kullanır: bağlantı sonucunu belirleyen
-  dial, RFB el sıkışmasını ve tek kare yakalamayı yapan bağlantının kendisidir.
-  Ayrı bir açıklık dial'ı ve ardından ikinci bir el sıkışma dial'ı yoktur.
+* Bir sonda deneme başına tek TCP bağlantısı kullanır: bağlantı sonucunu
+  belirleyen dial, RFB el sıkışmasını ve tek kare yakalamayı yapan bağlantının
+  kendisidir. Ayrı bir açıklık dial'ı ve ardından ikinci bir el sıkışma dial'ı
+  yoktur; yeniden deneme, yeni bağlantıyla yapılan yeni bir denemedir.
 * İstisna parola adaylarıdır: her aday, parola testi bölümünde anlatıldığı gibi
   kendi kısa ömürlü bağlantısında denenir.
-* Tarayıcının yeniden deneme politikası, geçici bir bağlantı hatasını en fazla
-  bir kez yeniden dener ve 150 ms ile başlayan, jitter eklenmiş üstel geri
-  çekilme kullanır (ilk yeniden deneme 150–225 ms bekler). Zaman aşımları,
-  `ECONNRESET`, `EPIPE` ve `EHOSTUNREACH` geçici sayılır; `ECONNREFUSED`
-  kesindir ve hiç yeniden denenmez. Varsayılan bütçe bir yeniden denemedir;
-  `-retries 0` ile varsayılan tarama hedef başına tek bağlantı denemesi yapar.
+* Tarayıcının yeniden deneme politikası en fazla bir kez yeniden dener ve
+  150 ms ile başlayan, jitter eklenmiş üstel geri çekilme kullanır (ilk yeniden
+  deneme 150–225 ms bekler). Aynı `-retries` bütçesi TCP bağlantısının iki
+  tarafını da kapsar:
+  * Bağlantıdan önce zaman aşımları, `ECONNRESET`, `EPIPE` ve `EHOSTUNREACH`
+    geçicidir; `ECONNREFUSED` kesindir ve hiç yeniden denenmez.
+  * Bağlantıdan sonra zaman aşımı, `ECONNRESET`, `EPIPE`, `EOF` veya eksik
+    okuma bir kez yeniden denenir. Protokol düzeyinde bir yanıt — bozuk veya
+    RFB olmayan başlık, desteklenmeyen kodlama, reddedilen müzakere — kesindir
+    ve hiç yeniden denenmez.
+  Varsayılan bütçe bir yeniden denemedir; `-retries 0` ile varsayılan tarama
+  hedef başına tek bağlantı denemesi yapar.
+* RFB başlığını okuyup güvenlik müzakeresinde başarısız olan bir sonda yine RFB
+  servisi olarak raporlanır: `open` ve `rfb` `true` olur, `error` nedeni taşır
+  ve o ana kadar toplanan kanıt (güvenlik tipleri, TLS yeteneği, sertifika,
+  sunucu adı ve geometri) korunur. Başlığı ayrıştırılamayan bir port
+  `open: true`, `rfb: false` olarak kalır.
 * JSON sonucundaki, CSV sütunundaki ve rapor işaretlerindeki `attempts` alanı
-  kaç TCP bağlantı denemesi gerektiğini kaydeder. İlk denemede başarılı bir
-  hedef `1`, hiç bağlanamayan bir hedef `0` bildirir; yeniden denenen hedef
-  daha yüksek sayı gösterir ve HTML/PDF/GUI çıktısında yeniden denendi olarak
+  kaç bağlantı denemesi gerektiğini kaydeder. İlk denemede başarılı bir hedef
+  `1`, hiç bağlanamayan bir hedef `0` bildirir; yeniden denenen hedef daha
+  yüksek sayı gösterir ve HTML/PDF/GUI çıktısında yeniden denendi olarak
   işaretlenir.
 * Hedef başına eşzamanlılık, IP başına 2 eşzamanlı sondayla sınırlıdır; böylece
   çok sayıda portu taranan bir sunucuya tüm worker'lar aynı anda yüklenmez.
@@ -399,6 +509,12 @@ bir `Transport` satırı, GUI bulgu tablosuna ise bir Transport sütunu eklenir.
   worker bir goroutine ve en az bir soket demektir; saniyede 100000 bağlantının
   üzerinde ise hız aralığı sıfıra yuvarlanır. Bu nedenle iki değer de sessizce
   yok sayılmak yerine reddedilir.
+
+`-source-addr` her sonda dial'ını, parola adayları için kullanılan bağlantılar
+dahil, verilen yerel adrese bağlar. Yönlendirme tablosunun değerlendirilen ağın
+dışında bir adres seçebileceği, birden fazla ağ arayüzü olan hostlarda
+önemlidir. Geçersiz bir değer tarama başlamadan reddedilir; `auto` veya boş
+değer yönlendirme tablosunun seçimini korur.
 
 İptal edilen bir sonda, tetiklediği soket zaman aşımı hatasıyla değil iptal
 nedeniyle kaydedilir; aksi halde `i/o timeout` okuyan operatör olmayan bir ağ
@@ -410,9 +526,10 @@ arızasını araştırır.
 
 `-target` tek adres, CIDR bloğu, kapsayıcı son oktet aralığı (`10.0.0.10-20`)
 veya IPv6 adresi/CIDR kabul eder. `-file` aynı sözdizimini satır başına bir
-kayıt olarak okur; `#` yorumları ve boş satırlar yok sayılır. İki kaynak
-birleştirilebilir ve tekrarlar ayıklanır. `-ports` virgülle ayrılmış port
-listesi ve kapsayıcı aralıklar kabul eder.
+kayıt olarak okur; `#` yorumları ve boş satırlar yok sayılır ve `-file -`
+listeyi dosya yerine standart girdiden okur. İki kaynak birleştirilebilir ve
+tekrarlar ayıklanır. `-ports` virgülle ayrılmış port listesi ve kapsayıcı
+aralıklar kabul eder.
 
 Genişletme sınırlıdır; böylece bir yazım hatası devasa bir tarama başlatamaz:
 
@@ -420,10 +537,14 @@ Genişletme sınırlıdır; böylece bir yazım hatası devasa bir tarama başla
 |-------|-------|----------|
 | Tarama başına host:port çifti | 1.048.576 (2^20) | Hedefi veya port listesini daraltma mesajıyla reddedilir |
 | Tek CIDR belirtimindeki host sayısı | 65.536 (2^16, yani `/16` veya daha uzun) | Reddedilir; daha büyük blokları birkaç belirtime bölün |
+| Dosya veya stdin akışından okunan host sayısı | 1.048.576 (2^20) | Reddedilir; akış sınırın ötesinde tamponlanmaz |
 | Word-list kaydı | 500 | Reddedilir |
 
 Hedefler hiçbir paket gönderilmeden önce genişletilir; geçersiz bir girdi
-kısmi tarama bırakmadan hemen hata verir.
+kısmi tarama bırakmadan hemen hata verir. `-dry-run` aynı genişletmeyi kullanır
+ve host:port çifti sayısını, benzersiz host sayısını, port belirtimini, parola
+adayı sayısını, rapor kökünü, worker/hız ayarlarını ve tarama sırasındaki ilk
+ve son hedefi yazdırıp hiçbir dizin oluşturmadan ve hiçbir soket açmadan çıkar.
 
 ### Sondalama hattı
 
@@ -434,8 +555,11 @@ Her `host:port` çifti için worker şunları yapar:
 2. **Protokol başlığı** — `RFB xxx.yyy` okunur, iki tarafın da desteklediği en
    iyi sürümle (3.3, 3.7 veya 3.8) yanıtlanır.
 3. **Güvenlik müzakeresi** — duyurulan tipler okunur. `None` hemen devam eder;
-   VNC kimlik doğrulaması aday döngüsünü tetikler; diğer her şey durumu
-   kaydedip durur.
+   `TLS` tipi ve VeNCrypt `TLSNone` alt tipi kimlik bilgisi olmadan şifreli bir
+   oturum kurar; VNC kimlik doğrulaması ve VeNCrypt `TLSVnc` aday döngüsünü
+   tetikler; diğer her şey durumu kaydedip durur. Başarısız bir şifreli
+   müzakere, sunucunun ayrıca duyurduğu açık metin tipleri üzerinden bir kez
+   yeniden denenir.
 4. **Oturum başlatma** — `ClientInit`/`ServerInit` masaüstü adını ve
    çerçeve tamponu geometrisini verir (kenar başına en fazla 8192x8192).
 5. **Yakalama** — 32 bit gerçek renk piksel formatı, raw kodlama, tek tam kare
@@ -456,19 +580,38 @@ sudo vncshot -gui
 Bu, loopback üzerinde yerel bir web arayüzü başlatır ve oturum URL'sini
 terminale yazdırır. Form tarama seçeneklerini sunar: hedef veya hedef dosyası,
 portlar, worker sayısı, hız, bağlantı ve RFB zaman aşımları, rapor kökü,
-JSON/HTML/PDF yol geçersiz kılmaları, ekran görüntüsü dizini, PDF atlama ve
-paylaşımlı oturum. Tarama düzeyi seçenekler (`-baseline`, `-manifest`,
-`-webhook`, `-csv` ve `-config`) formda yer almaz; başlatma komut satırında
-verilen değerler GUI'den başlatılan taramalara devralınır.
+JSON/HTML/PDF/CSV yol geçersiz kılmaları, ekran görüntüsü dizini, PDF atlama,
+paylaşımlı oturum, manifest, webhook URL'si, tutulacak tarama sayısı ve prune
+deneme çalıştırması anahtarı. `-config` formda yer almaz; başlatma komut
+satırında verilen değerler GUI'den başlatılan taramalara devralınır.
+
+"Comparison" panelinde bir "Previous run" seçicisi bulunur. Rapor kökü
+altındaki tarama klasörlerini listeler ve bir sonraki tarama için birini temel
+olarak seçer; varsayılan "No comparison" değeridir. Saklama ile silinmiş bir
+tarama klasörü, okunamayan bir temel bırakmak yerine sessizce "No comparison"
+değerine döner.
 
 "Passwords" paneli word-list yolunu ve iki atlama anahtarını (yerleşik zayıf
 parola listesi, parola testi) barındırır. Durum satırı geçerli taramanın kaç
 parola adayı deneyeceğini gösterir ve bulgu tablosu zayıf kimlik bilgisiyle
 erişilen hostları işaretler.
 
-Özet şeridi bir `TLS services` sayacı içerir; bulgu tablosunda duyurulan
-güvenlik tiplerini (`·` ile birleştirilmiş) listeleyen ve şifreli uç noktalar
-için `tls` etiketi ekleyen bir Transport sütunu vardır.
+Özet şeridi `TLS services` ve `Self-signed certs` sayaçlarını içerir. Bulgu
+tablosunda duyurulan güvenlik tiplerini (`·` ile birleştirilmiş) listeleyen,
+şifreli uç noktalar için `tls` etiketi ekleyen ve bir TLS oturumu kurulduğunda
+sertifika işareti gösteren bir Transport sütunu vardır. İşaret, geçerli
+olanları `self-signed`, `expired` ve `verified` olarak listeler ve sertifika
+bir bitiş tarihi bildiriyorsa bu tarihi de ekler. İşaretin üzerine gelindiğinde
+konu, düzenleyen ve SHA-256 parmak izi görünür; bu işaretlerin hiçbirini
+taşımayan sertifikalar `certificate` olarak etiketlenir. Saklama içeren bir
+taramadan sonra pano, bir veya daha fazla klasör silindiğinde (deneme
+çalıştırmasında silinecekse) `Removed N old run(s)` satırını gösterir.
+
+Redaksiyon başlatma zamanı seçeneği olarak kalır: "Delivery" paneli kaydedilen
+bir tercih olarak redaksiyon onay kutusunu tutar, ancak tarama hattı yalnızca
+GUI başlatılırken verilen `-redact` değerini uygular. O panodan başlatılan tüm
+taramaların raporlarını redakte etmek için `sudo vncshot -gui -redact`
+çalıştırın.
 
 "Previous runs" paneli rapor kökü altındaki tarama klasörlerini listeler
 (`GET /api/runs`, en yeni önce, en fazla son 100 kayıt). Bir tarama seçildiğinde
@@ -495,6 +638,11 @@ Güvenlik özellikleri:
   çerezde saklanır ve durum değiştiren isteklerde ayrıca `X-Vncshot-Token`
   başlığıyla gönderilmelidir.
 * `/files/` uç noktası yalnızca geçerli tarama klasörü içindeki dosyaları sunar.
+* Tarama klasörü dışındaki bir ekran görüntüsü dizini, herhangi bir sonda
+  başlamadan reddedilir ve hata rapor kökünü işaret eder. `/files/` yalnızca
+  tarama klasörü içinden hizmet verdiği için başka bir yere yazılan yakalamalar
+  panoda bozuk küçük görseller olarak görünür; geçersiz kılmayı kaldırın veya
+  tarama klasörünün içine yönlendirin.
 * GUI de root olarak çalışır; yazdırılan URL'ye sahip olan herkes tarayıcıyı
   yönetebilir. URL'yi ve token'ı kimlik bilgisi olarak değerlendirin.
 * Uzak erişim için loopback bağlamayı koruyup portu SSH üzerinden yönlendirin
@@ -551,6 +699,21 @@ tarafından ikilinin içine gömülür ve aynı betik tarafından oluşturulur:
 * `vncshot_report.pdf` — tarama sonuçlarından süreç içinde üretilen PDF rapor
 * `vncshot_report.csv` — aynı sonuç kümesinin düz aktarımı
 * `manifest.json` — yalnızca `-manifest` ile yazılan SHA-256 özetleri
+
+`-redact` çıktılar yazılırken uygulanır: JSON, HTML ve PDF, yakalanan her
+parolayı `REDACTED` ile değiştirir; bulgu, `password_source` ve sayaçlar
+görünür kalır. CSV çıktısında sır hiç bulunmadığı için bayrakla veya bayraksız
+aynıdır; sertifika kanıtı da sır olmadığı için korunur. `-thumb-only` yalnızca
+HTML raporunu etkiler: kartlar önizleme görselini tutar ve tam çözünürlüklü
+veri URI'si çıkarılır, böylece büyük bir envanter tek dosya olarak
+paylaşılabilir kalır; PNG dosyaları, PDF ve JSON değişmez.
+
+Sertifika kanıtı JSON'daki `certificate` nesnesinde, HTML "Certificates"
+bölümünde ve PDF "Certificate evidence" bölümünde (konu, düzenleyen,
+geçerlilik aralığı, TLS sürümü, şifre paketi ve SHA-256 parmak izi) görünür;
+uç nokta tabloları ise kısa güven durumunu ve bitiş tarihini gösterir. CSV sabit
+ve düz bir şemaya sahip olduğu için yalnızca `tls` bayrağını ve
+`security_types` listesini kaydeder.
 
 Klasör adı, yerel tarama başlangıç zamanının `YYYYMMDD-HHMMSS` biçimidir (GUI
 ve temel karşılaştırma bu düzene dayanır). Ekran görüntüsü adları aynı biçimde
@@ -611,6 +774,7 @@ delil anlık bir görüntüdür, canlı oturum değildir.*
     "passwordless": 1,
     "weak_credentials": 1,
     "tls_services": 1,
+    "self_signed_certs": 1,
     "screenshots": 2,
     "errors": 0
   },
@@ -620,11 +784,22 @@ delil anlık bir görüntüdür, canlı oturum değildir.*
       "port": 5900,
       "open": true,
       "rfb": true,
-      "passwordless": false,
-      "password": "hunter2",
-      "password_source": "word-list",
-      "security_types": ["VNC authentication", "VeNCrypt"],
+      "passwordless": true,
+      "security_types": ["VeNCrypt"],
       "tls": true,
+      "certificate": {
+        "tls_version": "TLS 1.2",
+        "cipher_suite": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+        "subject": "CN=lab-pc",
+        "issuer": "CN=lab-pc",
+        "not_before": "2025-03-04T00:00:00Z",
+        "not_after": "2027-03-04T00:00:00Z",
+        "dns_names": ["lab-pc"],
+        "sha256_fingerprint": "5C:1A:...:9F",
+        "self_signed": true,
+        "expired": false,
+        "verified": false
+      },
       "attempts": 1,
       "server_name": "lab-pc",
       "screen_width": 1920,
@@ -637,26 +812,36 @@ delil anlık bir görüntüdür, canlı oturum değildir.*
 }
 ```
 
+Özet, `tls_services` ve `self_signed_certs` dahil her sayacı her zaman taşır;
+`self_signed_certs`, sertifika hatası değil, eş sertifikası kendinden imzalı
+olan kurulmuş TLS oturumlarını sayar.
+
 Sonuç alanları:
 
 | Alan | Tip | Not |
 |------|-----|-----|
 | `ip`, `port` | string, int | Hedef uç nokta |
 | `open` | bool | TCP bağlantısı başarılı |
-| `rfb` | bool | RFB el sıkışması ve oturum başlatma başarılı |
-| `passwordless` | bool | Sunucu `None` sundu ve kabul etti |
-| `password` | string | Yalnızca zayıf parola kabul edildiyse bulunur; hassas |
+| `rfb` | bool | RFB başlığı ayrıştırıldı ve oturum başlatma başarılı; kısmi bulguda `error` ile birlikte `true` |
+| `passwordless` | bool | Sunucu `None` (veya TLS üzerinden `None`) sundu ve kabul etti |
+| `password` | string | Yalnızca zayıf parola kabul edildiyse bulunur; hassas; `-redact` ile `REDACTED` |
 | `password_source` | string | `default` (yerleşik liste) veya `word-list` |
 | `auth_locked` | bool | Yalnızca sunucu ek denemeleri engellediyse bulunur |
 | `security_types` | []string | Duyurulan tip adları, boşsa yok |
 | `tls` | bool | `false` ise yok |
-| `attempts` | int | Kullanılan TCP denemesi, sıfırsa yok |
+| `certificate` | object | Kurulmuş bir TLS oturumundan eş sertifika kanıtı; aksi halde yok |
+| `attempts` | int | Kullanılan bağlantı denemesi, sıfırsa yok |
 | `server_name` | string | `ServerInit` masaüstü adı, boşsa yok |
 | `screen_width`, `screen_height` | int | Çerçeve tamponu geometrisi, bilinmiyorsa yok |
 | `screenshot` | string | PNG'nin mutlak yolu, yakalama yoksa yok |
 | `error` | string | Kapalı portlarda yok; kısmi hatalarda bulunur |
 | `duration_ms` | int | Sondalama süresi (milisaniye) |
 | `timestamp` | string | UTC olarak RFC 3339 |
+
+`certificate` alanları `tls_version`, `cipher_suite`, `subject`, `issuer`,
+`not_before`, `not_after`, `dns_names`, `sha256_fingerprint`, `self_signed`,
+`expired` ve `verified` alanlarıdır; anlamları için
+[Güvenlik tipleri ve TLS](#güvenlik-tipleri-ve-tls) bölümüne bakın.
 
 ### CSV biçimi
 
@@ -670,7 +855,8 @@ ip,port,open,rfb,passwordless,weak_password,password_source,tls,security_types,s
 Boolean değerler `yes` veya `no` olarak yazılır. `security_types`, duyurulan tip
 adlarını `;` ile birleştirir; böylece liste tek alanda kalır. `timestamp` UTC
 olarak RFC 3339 biçimindedir. Satırlar, diğer çıktılarda olduğu gibi IP ve
-porta göre sıralanır. Dosya parola içerebildiği için `0600` izniyle yazılır.
+porta göre sıralanır. Dosya, hangi uç noktaların zayıf bir parolayı kabul
+ettiğini kaydettiği için `0600` izniyle yazılır.
 
 ### Manifest dosyası
 
@@ -730,9 +916,30 @@ Neden metinleri sabit İngilizce metinlerdir:
 Durumu değişen bir hedef, hem yeni hem çözülen bulgu olarak değil, değişen
 altında tek kez görünür. Sayımlar CLI özetinde yazdırılır (temel, yeni bulgular,
 çözülen, değişen), HTML ve PDF raporlarında "Changes since baseline" bölümü
-olarak gösterilir ve aşağıda açıklanan webhook yüküne eklenir. JSON ve CSV
-çıktıları her zaman yalnızca geçerli taramayı içerir. Yeni bulgular ayrıca
-webhook yükünün tetikleyicisidir.
+olarak gösterilir ve aşağıda açıklanan webhook yüküne eklenir. JSON çıktısı
+geçerli sonuçları üst düzeyde tutar ve bir `diff` nesnesi ekler; CSV çıktısı her
+zaman yalnızca geçerli taramayı içerir. Yeni bulgular ayrıca webhook yükünün
+tetikleyicisidir.
+
+`diff` nesnesi, karşılaştırılan tarama klasörü adını, `new` ve `resolved`
+altında tam sonuçları ve değişen uç noktaları `{addr, reason, before, after}`
+biçiminde taşır. Karşılaştırma çalıştığında üç liste her zaman dizi olarak
+bulunur — boş liste `null` değil `[]` olarak yazılır — böylece bir ardışık
+düzen nil kontrolü yapmadan bunları indeksleyebilir. `before` ve `after`,
+raporlarla aynı görüntüleme etiketlerini kullanır: `no auth`, `weak`, `rfb`,
+`open` ve `closed`.
+
+```json
+"diff": {
+  "baseline": "20261020-090000",
+  "new": [],
+  "resolved": [],
+  "changed": [
+    { "addr": "192.0.2.10:5900", "reason": "became passwordless",
+      "before": "weak", "after": "no auth" }
+  ]
+}
+```
 
 ### Webhook bildirimleri
 
@@ -752,8 +959,8 @@ Yük şu biçimdedir:
   "generated_at": "2026-10-26T20:53:04Z",
   "run_dir": "20261026-205304",
   "summary": { "targets": 254, "open": 3, "rfb": 2, "passwordless": 1,
-               "weak_credentials": 1, "tls_services": 1, "screenshots": 2,
-               "errors": 0 },
+               "weak_credentials": 1, "tls_services": 1, "self_signed_certs": 1,
+               "screenshots": 2, "errors": 0 },
   "new_findings": [
     { "ip": "192.0.2.10", "port": 5900, "open": true, "rfb": true,
       "passwordless": false, "password_source": "word-list", "tls": false,
@@ -774,6 +981,51 @@ ve kullanıcı bilgisini gizler. Temel istenmediyse `new_findings` boştur.
 Teslimat hatası, başarısız tarama değil uyarıdır: CLI özetten sonra stderr'e
 `warning: webhook notification failed: ...` yazar, çıktılar bozulmadan kalır ve
 çıkış durumu yine taramanın kendisini yansıtır.
+
+### Bakım ve saklama
+
+Tarama klasörleri parola ve yakalanmış masaüstü içerir; bu nedenle kullanılmayan
+geçmiş değerlendirme makinesinde birikmemelidir. `-keep n` başarılı bir
+taramadan sonra rapor köküne saklama uygular: en yeni n tarama klasörünü (az
+önce biten tarama dahil) tutar ve gerisini siler. `-prune n` aynı işi bağımsız
+bir bakım komutu olarak yapar ve çıkar; böylece hedef vermeden çalıştırılabilir.
+
+```bash
+# en yeni 30 taramayı tut, her gece
+0 3 * * * /usr/local/bin/vncshot -prune 30 -yes >/dev/null 2>&1
+```
+
+```bash
+# gece prune işlemini hiçbir şey silmeden önizle
+sudo vncshot -prune 30 -prune-dry-run
+
+# bir aralığın her taramasından sonra politikayı uygula
+sudo vncshot -target 10.0.0.0/24 -keep 30
+```
+
+Silme bilinçli olarak dardır ve güvenli tarafta kalır:
+
+* Sıfır veya daha küçük bir sayı hiçbir zaman silmez: `-keep 0` taramalar için
+  saklamayı kapatır ve açıkça verilen `-prune 0`, "her şeyi sil" olarak
+  yorumlanmak yerine reddedilir. Negatif `-keep` de saklamayı kapatır;
+  `-prune` ise pozitif olmayan her sayıyı reddeder.
+* Tehlikeli rapor kökleri reddedilir: `/`, `/root`, `/home`, `/tmp`, `/usr`,
+  `/var` ve geçerli kullanıcının ev dizini.
+* Sembolik bağlantılı bir rapor kökü izlenmek yerine reddedilir.
+* Yalnızca rapor kökünün doğrudan altında bulunan ve adı tarama klasörü olarak
+  ayrıştırılan (`YYYYMMDD-HHMMSS`) dizinler adaydır. Rapor kökündeki düz
+  dosyalar, ilgisiz dizinler ve sembolik bağlantılar hiçbir zaman tarama
+  sayılmaz; bağlantılı içerik ölçülmez veya sayılmaz.
+* Bir saklama hatası `warning: retention failed: ...` olarak bildirilir ve
+  tamamlanan taramayı başarısız taramaya dönüştürmez; çıktılar ve çıkış durumu
+  yine taramayı tanımlar.
+
+`-prune-dry-run` ile komut `would remove` ve aynı tarama başına listeyi (ad,
+başlangıç zamanı, dosya sayısı, boyut) hiçbir şey silmeden yazdırır. Bir
+taramadan sonra CLI, politika klasör sildiyse `retention: removed N old run(s)`
+satırını yazdırır. GUI'de tutulacak tarama sayısı ve prune deneme çalıştırması
+anahtarı panodan başlatılan taramalara uygulanır ve pano geçişten sonra
+`Removed N old run(s)` gösterir.
 
 ## Çıkış kodları
 
@@ -806,7 +1058,8 @@ Bellek kullanımına yakalanan kareler egemen olur: uçuştaki her yakalama içi
 bir RGBA tamponu (en fazla `-workers` kadar) artı HTML raporuna gömülen küçük
 görseller. `-workers 500` ile on binlerce port taramak mümkündür ancak her
 yakalama base64 olarak gömüldüğü için HTML raporu hızla büyür; çok büyük
-envanterlerde `-no-pdf` kullanın ve worker sayısını düşürün.
+envanterlerde yalnızca önizlemeleri tutmak için `-thumb-only` kullanın,
+`-no-pdf` ekleyin ve worker sayısını düşürün. `-redact` boyutu değiştirmez.
 
 ## Sorun giderme
 
@@ -834,6 +1087,13 @@ TCP portu yanıt verdi ancak servis RFB el sıkışmasını tamamlamadı. Protok
 hatası `error` alanında raporlanır; böylece 5900 portundaki VNC olmayan bir
 servis sessizce kapalı sayılmak yerine görünür olur.
 
+**Bir host `rfb: true` ile birlikte `error` gösteriyor**
+RFB başlığı ayrıştırıldı, yani uç nokta bir RFB servisi, ancak oturum
+kurulamadı. `error` nedeni taşır ve hatadan önce toplanan kanıt (güvenlik
+tipleri, TLS yeteneği, sertifika) korunur. Duyurulan güvenlik tiplerini
+kontrol edin: bu sondanın uygulamadığı bir VeNCrypt alt tipi (örneğin
+`X509Vnc`) oturum denenmeden yalnızca duruş olarak raporlanır.
+
 **`auth_locked: true`**
 Sunucu `SecurityResult` durumu 2 döndürdü. Hesabı daha fazla kilitlememek için
 kalan adaylar bırakıldı; elle inceleyin.
@@ -846,21 +1106,39 @@ kurulmamıştır. Yazdırılan tam URL'yi yeniden açın.
 Tarama ve tüm çıktılar sağlamdır; yalnızca bildirim başarısız oldu. DNS, TLS
 güveni ve alıcıyı kontrol edin, gerekirse saklanan JSON'dan yeniden gönderin.
 
+**`warning: retention failed: ...`**
+Tarama ve çıktıları sağlamdır; yalnızca eski tarama temizliği başarısız oldu.
+Mesaj, reddedilen kökü veya kaldırılamayan dizini adlandırır. Yaygın nedenler
+salt okunur bir bağlama noktasındaki rapor kökü, sembolik bağlantılı bir kök
+veya reddedilen listedeki bir kök (`/`, `/root`, `/home`, `/tmp`, `/usr`,
+`/var`) olmasıdır. Kökü düzeltin veya saklamayı `-prune` ile yeniden çalıştırın.
+
+**`refusing to prune report root ...` / `report root ... does not exist`**
+`-prune` yalnızca var olan ve gerçek bir dizin olan rapor kökünde çalışır.
+Taramaların kullandığı `-out-dir` değerini verin ve bir sistem dizinini
+göstermeyin.
+
+**`screenshot directory must be inside the run folder`**
+GUI, tarama klasörü dışındaki bir `-screenshot-dir` (veya form değerini)
+reddeder çünkü `/files/` bu dizini sunamaz. Geçersiz kılmayı kaldırın veya
+rapor kökünün içine yönlendirin.
+
 **HTML raporu çok büyük**
-Her yakalama base64 olarak gömülür. `-no-pdf` kullanın ve worker sayısını
-düşürün veya taramayı daha küçük çalıştırmalara bölün.
+Her yakalama base64 olarak gömülür. Yalnızca önizlemeleri gömmek için
+`-thumb-only` kullanın, `-no-pdf` ekleyin ve worker sayısını düşürün veya
+taramayı daha küçük çalıştırmalara bölün.
 
 ## Paket yapısı
 
 ```
 main.go        CLI bayrakları, root kontrolü, GUI başlatma
-app/           tarama oturumu, çıktı düzeni, temel farkı, manifest, webhook
+app/           tarama oturumu, çıktı düzeni, temel farkı, manifest, saklama, webhook
 config/        yapılandırma dosyası ve VNCSHOT_* ortam değişkenlerinden bayrak varsayılanları
 gui/           gömülü web arayüzü (index.html + HTTP sunucusu)
 scanner/       hedef genişletme, worker havuzu, hız sınırı, yeniden deneme ve hedef başına sınırlar
-vnc/           RFB 3.3/3.7/3.8 istemcisi, None-auth ve zayıf parola kimlik doğrulaması, raw yakalama
+vnc/           RFB 3.3/3.7/3.8 istemcisi, None-auth ve zayıf parola kimlik doğrulaması, TLS/VeNCrypt, raw yakalama
 screenshot/    PNG kalıcılaştırma
-report/        Sonuç modeli, JSON/HTML/PDF/CSV dışa aktarıcıları, gömülü PDF yazı tipi
+report/        Sonuç modeli, JSON/HTML/PDF/CSV dışa aktarıcıları, sertifika kanıtı, gömülü PDF yazı tipi
 ```
 
 ## Bağımlılıklar
@@ -887,9 +1165,12 @@ Test paketi tamamen çevrimdışı çalışır: RFB uç noktaları süreç için
 benzetilir, bu nedenle VNC sunucusu veya ağ erişimi gerekmez. Kapsam; RFB
 3.3/3.7/3.8 el sıkışmasını, DES kimlik doğrulamasının bağımsız bir
 uygulamayla karşılaştırılmasını, parolasız ve zayıf parolalı yakalamayı,
-kilitlenme işlemesini, hiçbir girdi veya pano mesajı gönderilmediğini doğrulayan
-tel düzeyi bir testi, GUI API'sini ve token/yol aşımı korumalarını,
-CSV/manifest/temel/webhook davranışını ve rapor üreticilerini içerir.
+kilitlenme işlemesini, sertifika kanıtı ve açık metin geri dönüşüyle TLS ve
+VeNCrypt oturumlarını, hiçbir girdi veya pano mesajı gönderilmediğini doğrulayan
+tel düzeyi bir testi, dosya ve standart girdiden hedef okumayı, saklama
+korumalarını, redaksiyon ve küçük görsel politikasını, GUI API'sini ve
+token/yol aşımı korumalarını, CSV/manifest/temel/webhook davranışını ve rapor
+üreticilerini içerir.
 
 CI, Linux üzerinde (`.github/workflows/ci.yml`) `main` dalına her push, her
 pull request ve elle tetiklemede çalışır. `gofmt -l .` kontrolünü yapar,

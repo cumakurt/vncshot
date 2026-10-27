@@ -196,12 +196,14 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 	if err != nil && errors.Is(err, ErrConnect) {
 		return nil, err
 	}
-	if err != nil {
-		// The encrypted negotiation failed. Some appliances advertise
-		// VeNCrypt or TLS but cannot complete it, or expect a subtype this
-		// client does not implement. Retry once over the clear-text types so
-		// the host is still inventoried, and use the same path for the
-		// password candidates below.
+	if err != nil && len(discoveryTypes(discovery)) > 0 {
+		// The security types were advertised but the encrypted negotiation
+		// failed. Some appliances advertise VeNCrypt or TLS but cannot
+		// complete it, or expect a subtype this client does not implement.
+		// Retry once over the clear-text types so the host is still
+		// inventoried, and use the same path for the password candidates.
+		// A failure before the type list (dropped connection, truncated
+		// banner) is left to the caller's own retry policy instead.
 		retry, retryErr := probeOnce(ctx, addr, opts.withSkipEncrypted(), Credential{})
 		if retryErr != nil {
 			if retry != nil && retry.SawBanner && (discovery == nil || !discovery.SawBanner) {
@@ -209,7 +211,14 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 			}
 			return discovery, err
 		}
-		discovery, attemptOpts = retry, opts.withSkipEncrypted()
+		// The clear-text retry succeeded: the earlier failure is resolved.
+		discovery, attemptOpts, err = retry, opts.withSkipEncrypted(), nil
+	}
+	if err != nil {
+		// The handshake never reached a usable session state. Return the
+		// partial result so the caller can still see the banner and the
+		// advertised types alongside the error.
+		return discovery, err
 	}
 	if discovery.Passwordless || !discovery.AuthRequired || len(opts.Passwords) == 0 {
 		return discovery, nil
@@ -284,6 +293,14 @@ func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) 
 		}
 	}
 	return c.result, nil
+}
+
+// discoveryTypes returns the advertised security types learned so far.
+func discoveryTypes(res *Result) []uint8 {
+	if res == nil {
+		return nil
+	}
+	return res.AuthTypes
 }
 
 // withSkipEncrypted returns a copy of the options that forces the clear-text

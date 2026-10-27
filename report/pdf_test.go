@@ -740,6 +740,137 @@ func TestNormalizedDiffSortsAndReducesBaseline(t *testing.T) {
 	}
 }
 
+// TestWritePDFCertificateSection covers the certificate evidence section and
+// the pure helpers that drive it: the trust-state labels and the entry cap.
+func TestWritePDFCertificateSection(t *testing.T) {
+	dir := t.TempDir()
+	notBefore := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	notAfter := time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)
+
+	results := []Result{
+		{
+			IP:            "192.0.2.230",
+			Port:          5900,
+			Open:          true,
+			RFB:           true,
+			TLS:           true,
+			SecurityTypes: []string{"VeNCrypt"},
+			Certificate: &Certificate{
+				Version:     "TLS 1.3",
+				CipherSuite: "TLS_AES_256_GCM_SHA384",
+				Subject:     "CN=vnc-appliance.local",
+				Issuer:      "CN=vnc-appliance.local",
+				NotBefore:   notBefore,
+				NotAfter:    notAfter,
+				Fingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99" +
+					":AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+				SelfSigned: true,
+			},
+			Timestamp: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC),
+		},
+		{
+			IP:   "192.0.2.231",
+			Port: 5900,
+			Open: true,
+			RFB:  true,
+			TLS:  true,
+			Certificate: &Certificate{
+				Version:   "TLS 1.2",
+				Subject:   "CN=vnc.example.com",
+				Issuer:    "CN=Example CA",
+				NotBefore: notBefore,
+				NotAfter:  notAfter,
+				Verified:  true,
+			},
+			Timestamp: time.Date(2026, 10, 27, 9, 1, 0, 0, time.UTC),
+		},
+	}
+
+	path := filepath.Join(dir, "certificates.pdf")
+	if err := WritePDF(path, results); err != nil {
+		t.Fatalf("WritePDF with certificates: %v", err)
+	}
+	requireValidPDF(t, path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat pdf: %v", err)
+	}
+	if info.Size() < 4096 {
+		t.Fatalf("pdf size = %d bytes, want at least 4096", info.Size())
+	}
+
+	tests := []struct {
+		name        string
+		certificate *Certificate
+		want        string
+	}{
+		{name: "self-signed", certificate: &Certificate{SelfSigned: true}, want: "self-signed"},
+		{name: "verified", certificate: &Certificate{Verified: true}, want: "verified"},
+		{name: "expired", certificate: &Certificate{SelfSigned: true, Expired: true}, want: "expired"},
+		{name: "untrusted", certificate: &Certificate{}, want: "untrusted"},
+		{name: "absent", certificate: nil, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run("state/"+tt.name, func(t *testing.T) {
+			if got := certificateStateLabel(tt.certificate); got != tt.want {
+				t.Fatalf("certificateStateLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// The section must stop at 40 entries and report the remainder.
+	many := make([]Result, 45)
+	for i := range many {
+		many[i] = Result{
+			IP:          "192.0.2.1",
+			Port:        5900 + i,
+			Certificate: &Certificate{Subject: "CN=many"},
+		}
+	}
+	certificates := certificateResults(many)
+	if len(certificates) != 45 {
+		t.Fatalf("certificateResults = %d, want 45", len(certificates))
+	}
+	kept, hidden := capDiff(certificates, pdfCertificateLimit)
+	if len(kept) != 40 || hidden != 5 {
+		t.Fatalf("certificate cap = %d kept, %d hidden; want 40, 5", len(kept), hidden)
+	}
+
+	// Results without a certificate must not inflate the section.
+	if got := certificateResults([]Result{{IP: "192.0.2.1"}, {IP: "192.0.2.2", Certificate: &Certificate{}}}); len(got) != 1 {
+		t.Fatalf("certificateResults mixed = %d, want 1", len(got))
+	}
+}
+
+func TestWritePDFCoverStatsIncludesSelfSigned(t *testing.T) {
+	results := []Result{
+		{
+			IP: "192.0.2.240", Port: 5900, Open: true, RFB: true, TLS: true,
+			Certificate: &Certificate{SelfSigned: true},
+		},
+		{
+			IP: "192.0.2.241", Port: 5900, Open: true, RFB: true, TLS: true,
+			Certificate: &Certificate{Verified: true},
+		},
+		{IP: "192.0.2.242", Port: 5901, Open: true, RFB: true},
+	}
+
+	stats := coverStats(Summarize(results))
+	var selfSigned *statCell
+	for i := range stats {
+		if stats[i].label == "Self-signed certs" {
+			selfSigned = &stats[i]
+		}
+	}
+	if selfSigned == nil {
+		t.Fatal(`coverStats has no "Self-signed certs" counter`)
+	}
+	if selfSigned.value != "1" {
+		t.Fatalf("Self-signed certs = %q, want 1", selfSigned.value)
+	}
+}
+
 func TestSummaryWeakCredentialsCounted(t *testing.T) {
 	results := []Result{
 		{IP: "192.0.2.50", Port: 5900, Open: true, Passwordless: true},

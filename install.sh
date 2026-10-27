@@ -321,7 +321,11 @@ build_static() {
   # The values are single-quoted inside the ldflags string: without quoting,
   # a path containing a space splits the -X assignment and `go build` fails
   # with a linker usage dump. Values must not contain a single quote.
-  local ldflags="-s -w -X 'main.version=${VERSION:-dev}' -X 'main.reportBaseDir=${REPORT_DIR}'"
+  # The commit and build time make -version identify an exact build.
+  local commit build_date
+  commit="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local ldflags="-s -w -X 'main.version=${VERSION:-dev}' -X 'main.commit=${commit}' -X 'main.buildDate=${build_date}' -X 'main.reportBaseDir=${REPORT_DIR}'"
   # CGO off + explicit GOOS + -trimpath yields a portable static Linux binary.
   if ! CGO_ENABLED=0 GOOS=linux "$GO_BIN" build \
       -trimpath \

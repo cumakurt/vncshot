@@ -108,6 +108,7 @@ func WritePDFWithOptions(path string, results []Result, opts Options) error {
 		writeDiff(pdf, diff)
 	}
 	writeFindings(pdf, results)
+	writeCertificates(pdf, results)
 	writeOpenTable(pdf, results)
 
 	if err := pdf.OutputFileAndClose(path); err != nil {
@@ -121,11 +122,14 @@ func WritePDFWithOptions(path string, results []Result, opts Options) error {
 	return nil
 }
 
-// statCell is one column of the cover stat strip.
+// statCell is one column of the cover stat strip. labelSize overrides the
+// default micro-label size; it is used for the longest label, whose text would
+// otherwise collide with the next column in the nine-column strip.
 type statCell struct {
-	label string
-	value string
-	color pdfColor
+	label     string
+	value     string
+	color     pdfColor
+	labelSize float64
 }
 
 // coverStats builds the stat strip cells. Warning and danger colours are
@@ -146,14 +150,15 @@ func coverStats(sum Summary) []statCell {
 	}
 
 	return []statCell{
-		{"Targets", itoa(sum.Targets), colorInk},
-		{"Open ports", itoa(sum.Open), colorInk},
-		{"RFB services", itoa(sum.RFB), colorInk},
-		{"TLS services", itoa(sum.TLS), tlsColor},
-		{"Passwordless", itoa(sum.Passwordless), colorWarning},
-		{"Weak creds", itoa(sum.WeakCredentials), weakColor},
-		{"Screenshots", itoa(sum.Screenshots), colorAccent},
-		{"Errors", itoa(sum.Errors), errorColor},
+		{"Targets", itoa(sum.Targets), colorInk, 0},
+		{"Open ports", itoa(sum.Open), colorInk, 0},
+		{"RFB services", itoa(sum.RFB), colorInk, 0},
+		{"TLS services", itoa(sum.TLS), tlsColor, 0},
+		{"Self-signed certs", itoa(sum.SelfSignedCerts), colorInk, 5.0},
+		{"Passwordless", itoa(sum.Passwordless), colorWarning, 0},
+		{"Weak creds", itoa(sum.WeakCredentials), weakColor, 0},
+		{"Screenshots", itoa(sum.Screenshots), colorAccent, 0},
+		{"Errors", itoa(sum.Errors), errorColor, 0},
 	}
 }
 
@@ -232,7 +237,11 @@ func writeCover(pdf *pdfType, results []Result, sum Summary) {
 		if i > 0 {
 			pad = 4
 		}
-		pdf.SetFont(fontFamily, "", 6.6)
+		labelSize := 6.6
+		if stat.labelSize > 0 {
+			labelSize = stat.labelSize
+		}
+		pdf.SetFont(fontFamily, "", labelSize)
 		colorMuted.text(pdf)
 		pdf.SetXY(x+pad, stripY+6)
 		pdf.CellFormat(statW-pad, 3.5, strings.ToUpper(sanitizePDFText(stat.label)), "", 0, "L", false, 0, "")
@@ -818,6 +827,142 @@ func drawScreenshot(pdf *pdfType, path string, x, y, w, h float64) bool {
 // generation is single-threaded, so a plain counter is sufficient.
 var imageSeq int
 
+// pdfCertificateLimit caps the certificate section. A large inventory stays a
+// readable dossier; the omitted entries are summarised as one line.
+const pdfCertificateLimit = 40
+
+// certificateRow is one line of a certificate's definition list. small selects
+// the reduced size used for the long SHA-256 digest.
+type certificateRow struct {
+	label string
+	value string
+	small bool
+}
+
+// certificateDefinitionList builds the dossier fields for one certificate.
+func certificateDefinitionList(c *Certificate) []certificateRow {
+	return []certificateRow{
+		{"Subject", sanitizePDFText(certificateFieldValue(c.Subject)), false},
+		{"Issuer", sanitizePDFText(certificateFieldValue(c.Issuer)), false},
+		{"Valid", sanitizePDFText(certificateWindow(c)), false},
+		{"TLS", sanitizePDFText(certificateFieldValue(c.Version)), false},
+		{"Cipher", sanitizePDFText(certificateFieldValue(c.CipherSuite)), false},
+		{"SHA-256", sanitizePDFText(certificateFieldValue(certificateFingerprint(c))), true},
+	}
+}
+
+// writeCertificates renders peer certificate evidence as dossier entries. The
+// section only exists when at least one TLS session was established, and it is
+// page-break safe: entries move to a continuation page instead of splitting.
+func writeCertificates(pdf *pdfType, results []Result) {
+	certificates := certificateResults(results)
+	if len(certificates) == 0 {
+		return
+	}
+
+	pdf.AddPage()
+	y := sectionHeader(pdf, "CERTIFICATE EVIDENCE",
+		fmt.Sprintf("Certificate evidence (%d)", len(certificates)),
+		"Peer certificates recorded from established TLS sessions. Self-signed certificates are common on VNC appliances and are reported as evidence.")
+
+	entries, hidden := capDiff(certificates, pdfCertificateLimit)
+	for i, r := range entries {
+		if y+62 > 270 {
+			pdf.AddPage()
+			y = continuationHeader(pdf, "CERTIFICATE EVIDENCE / CONTINUED",
+				fmt.Sprintf("Continued from certificate %d of %d", i+1, len(certificates)))
+		}
+		y = drawCertificateEntry(pdf, r, y)
+	}
+	if hidden > 0 {
+		y = drawDiffMore(pdf, y, hidden)
+	}
+}
+
+// drawCertificateEntry renders one certificate: address, trust tags and the
+// definition list. It returns the y coordinate below the entry.
+func drawCertificateEntry(pdf *pdfType, r Result, y float64) float64 {
+	certificate := r.Certificate
+
+	pdf.SetFont(fontFamily, "B", 6.6)
+	colorAccent.text(pdf)
+	pdf.SetXY(marginX, y)
+	pdf.CellFormat(contentWidth, 4, letterSpace("TLS CERTIFICATE"), "", 0, "L", false, 0, "")
+
+	// The report has no monospace family; bold ink at a larger size carries
+	// the same "identifier" weight as the mono addresses in the HTML report.
+	pdf.SetFont(fontFamily, "B", 12.5)
+	colorInk.text(pdf)
+	pdf.SetXY(marginX, y+4.5)
+	pdf.CellFormat(contentWidth, 6.5, fitCellText(pdf, sanitizePDFText(r.Addr()), contentWidth), "", 0, "L", false, 0, "")
+
+	drawCertificateTags(pdf, certificateTags(certificate), marginX, y+12)
+
+	colorHairline.draw(pdf)
+	pdf.SetLineWidth(0.2)
+	pdf.Line(marginX, y+17.5, pageWidth-marginX, y+17.5)
+
+	const labelW = 24.0
+	rowY := y + 21
+	for _, row := range certificateDefinitionList(certificate) {
+		pdf.SetFont(fontFamily, "B", 6.2)
+		colorMuted.text(pdf)
+		pdf.SetXY(marginX, rowY)
+		pdf.CellFormat(labelW, 4, letterSpace(row.label), "", 0, "L", false, 0, "")
+
+		if row.small {
+			pdf.SetFont(fontFamily, "", 6.8)
+			colorInkSoft.text(pdf)
+		} else {
+			pdf.SetFont(fontFamily, "", 8.2)
+			colorInkSoft.text(pdf)
+		}
+		pdf.SetXY(marginX+labelW+1, rowY)
+		pdf.CellFormat(contentWidth-labelW-1, 4,
+			fitCellText(pdf, row.value, contentWidth-labelW-2), "", 0, "L", false, 0, "")
+		rowY += 5.4
+	}
+
+	colorHairline.draw(pdf)
+	pdf.SetLineWidth(0.2)
+	pdf.Line(marginX, rowY+1, pageWidth-marginX, rowY+1)
+
+	return rowY + 7
+}
+
+// drawCertificateTags paints the trust badges as small outlined labels. The
+// warning and danger colours mark self-signed and expired certificates; the
+// accent colour marks a verified chain.
+func drawCertificateTags(pdf *pdfType, tags []certificateTag, x, y float64) {
+	pdf.SetFont(fontFamily, "B", 6.4)
+	for _, tag := range tags {
+		label := strings.ToUpper(sanitizePDFText(tag.Label))
+		width := pdf.GetStringWidth(label) + 4
+		color := certificateTagColor(tag.Class)
+		color.draw(pdf)
+		pdf.SetLineWidth(0.2)
+		pdf.Rect(x, y, width, 4.2, "D")
+		color.text(pdf)
+		pdf.SetXY(x, y)
+		pdf.CellFormat(width, 4.2, label, "", 0, "C", false, 0, "")
+		x += width + 2.5
+	}
+}
+
+// certificateTagColor maps the shared badge classes to the PDF palette.
+func certificateTagColor(class string) pdfColor {
+	switch class {
+	case "tag hot":
+		return colorWarning
+	case "tag danger":
+		return colorDanger
+	case "tag ok":
+		return colorAccent
+	default:
+		return colorMuted
+	}
+}
+
 // The endpoint table trades two columns for transport visibility: RFB and
 // Passwordless collapse into one STATE column ("no auth", "weak", "rfb", or
 // "open") and SECURITY carries the advertised security types. The widths sum
@@ -901,6 +1046,16 @@ func drawTableRow(pdf *pdfType, r Result, y float64) {
 	security := sanitizePDFText(securitySummary(r.SecurityTypes))
 	if security == "" {
 		security = "-"
+	}
+	// Certificate state is appended to the security cell; fitCellText in the
+	// cell loop shortens the combined value when the column is too narrow.
+	if certificate := r.Certificate; certificate != nil {
+		if certificate.SelfSigned {
+			security += " · self-signed"
+		}
+		if certificate.Expired {
+			security += " · expired"
+		}
 	}
 
 	cells := []string{

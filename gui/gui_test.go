@@ -736,6 +736,134 @@ func TestSnapshotExposesTransportAndRetryData(t *testing.T) {
 	}
 }
 
+// TestFindingIncludesCertificate guards the dashboard certificate evidence:
+// a TLS finding must expose the peer certificate, including the self-signed
+// and expiry markers the transport column renders.
+func TestFindingIncludesCertificate(t *testing.T) {
+	notAfter := time.Date(2027, 3, 1, 12, 30, 0, 0, time.UTC)
+	f := toFinding(report.Result{
+		IP:            "192.0.2.10",
+		Port:          5901,
+		Open:          true,
+		RFB:           true,
+		TLS:           true,
+		SecurityTypes: []string{"VeNCrypt"},
+		Certificate: &report.Certificate{
+			Version:     "TLS 1.3",
+			CipherSuite: "TLS_AES_128_GCM_SHA256",
+			Subject:     "CN=vnc-appliance",
+			Issuer:      "CN=vnc-appliance",
+			NotAfter:    notAfter,
+			Fingerprint: "AA:BB:CC",
+			SelfSigned:  true,
+		},
+	})
+
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal finding: %v", err)
+	}
+	var decoded struct {
+		Certificate struct {
+			Subject     string `json:"subject"`
+			Issuer      string `json:"issuer"`
+			NotAfter    string `json:"not_after"`
+			Version     string `json:"version"`
+			Cipher      string `json:"cipher"`
+			Fingerprint string `json:"fingerprint"`
+			SelfSigned  bool   `json:"self_signed"`
+			Expired     bool   `json:"expired"`
+			Verified    bool   `json:"verified"`
+		} `json:"certificate"`
+		SecurityTypes []string `json:"security_types"`
+		TLS           bool     `json:"tls"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode finding: %v", err)
+	}
+	cert := decoded.Certificate
+	if !cert.SelfSigned {
+		t.Error("certificate.self_signed = false, want true")
+	}
+	if cert.Verified {
+		t.Error("certificate.verified = true for a self-signed certificate, want false")
+	}
+	if cert.Expired {
+		t.Error("certificate.expired = true, want false")
+	}
+	if cert.Issuer == "" {
+		t.Error("certificate.issuer is empty, want the certificate issuer")
+	}
+	if cert.NotAfter == "" {
+		t.Fatal("certificate.not_after is empty, want an expiry timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339, cert.NotAfter); err != nil {
+		t.Errorf("certificate.not_after = %q is not RFC3339: %v", cert.NotAfter, err)
+	}
+	if cert.Subject != "CN=vnc-appliance" || cert.Fingerprint != "AA:BB:CC" {
+		t.Errorf("certificate = %+v, want subject and fingerprint preserved", cert)
+	}
+	if cert.Version != "TLS 1.3" || cert.Cipher != "TLS_AES_128_GCM_SHA256" {
+		t.Errorf("certificate = %+v, want version and cipher preserved", cert)
+	}
+	if !decoded.TLS || len(decoded.SecurityTypes) != 1 {
+		t.Errorf("finding = %s, want the existing tls and security_types fields kept", raw)
+	}
+}
+
+// TestFindingWithoutCertificateOmitsIt keeps the payload clean for clear-text
+// RFB: no certificate object should appear at all.
+func TestFindingWithoutCertificateOmitsIt(t *testing.T) {
+	f := toFinding(report.Result{IP: "192.0.2.11", Port: 5900, Open: true, RFB: true})
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal finding: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode finding: %v", err)
+	}
+	if _, ok := decoded["certificate"]; ok {
+		t.Errorf("clear-text finding carries a certificate key: %s", raw)
+	}
+}
+
+// TestSnapshotCountsSelfSigned guards the counter strip: only findings with a
+// self-signed certificate are counted.
+func TestSnapshotCountsSelfSigned(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	srv.run.findings = []finding{
+		toFinding(report.Result{
+			IP: "192.0.2.12", Port: 5900, Open: true, RFB: true, TLS: true,
+			Certificate: &report.Certificate{Subject: "CN=one", Issuer: "CN=one", SelfSigned: true},
+		}),
+		toFinding(report.Result{
+			IP: "192.0.2.13", Port: 5900, Open: true, RFB: true,
+		}),
+	}
+
+	snap := srv.snapshot()
+	if snap.SelfSigned != 1 {
+		t.Errorf("SelfSigned = %d, want 1", snap.SelfSigned)
+	}
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	value, ok := decoded["self_signed"]
+	if !ok {
+		t.Fatal("snapshot JSON is missing self_signed")
+	}
+	var count int
+	if err := json.Unmarshal(value, &count); err != nil || count != 1 {
+		t.Errorf("self_signed = %s, want 1", value)
+	}
+}
+
 // TestDashboardElementIDsExist keeps the embedded script and markup in sync:
 // every element the script looks up must exist on the page.
 func TestDashboardElementIDsExist(t *testing.T) {

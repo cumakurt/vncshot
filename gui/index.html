@@ -618,6 +618,7 @@
       <div class="counter"><div class="k">Open ports</div><div class="v" id="cOpen">0</div></div>
       <div class="counter"><div class="k">RFB services</div><div class="v" id="cRfb">0</div></div>
       <div class="counter good"><div class="k">TLS services</div><div class="v" id="cTls">0</div></div>
+      <div class="counter hot"><div class="k">Self-signed certs</div><div class="v" id="cSelfSigned">0</div></div>
       <div class="counter hot"><div class="k">Passwordless</div><div class="v" id="cNoAuth">0</div></div>
       <div class="counter hot"><div class="k">Weak creds</div><div class="v" id="cWeak">0</div></div>
       <div class="counter good"><div class="k">Screenshots</div><div class="v" id="cShots">0</div></div>
@@ -707,6 +708,7 @@
     $("cOpen").textContent = s.summary.open || 0;
     $("cRfb").textContent = s.summary.rfb || 0;
     $("cTls").textContent = s.summary.tls_services || 0;
+    $("cSelfSigned").textContent = s.self_signed || 0;
     $("cNoAuth").textContent = s.summary.passwordless || 0;
     $("cWeak").textContent = s.summary.weak_credentials || 0;
     $("cShots").textContent = s.summary.screenshots || 0;
@@ -951,6 +953,25 @@
     if (authorized) authorized.checked = false;
   }
 
+  // certMarker renders the compact certificate line under the transport cell.
+  // Subject, issuer and fingerprint go into the tooltip, so the dashboard
+  // keeps the screenshot modal as the only dialog.
+  function certMarker(cert) {
+    var flags = [];
+    if (cert.self_signed) flags.push("self-signed");
+    if (cert.expired) flags.push("expired");
+    if (cert.verified) flags.push("verified");
+    if (!flags.length) flags.push("certificate");
+    var cls = (cert.expired || cert.self_signed) ? "tag hot" : (cert.verified ? "tag ok" : "tag");
+    var text = flags.join(" · ");
+    if (cert.not_after) text += " · " + cert.not_after.slice(0, 10);
+    var tip = [];
+    if (cert.subject) tip.push("subject: " + cert.subject);
+    if (cert.issuer) tip.push("issuer: " + cert.issuer);
+    if (cert.fingerprint) tip.push("sha256: " + cert.fingerprint);
+    return '<span class="' + cls + '" title="' + esc(tip.join("\n")) + '">' + esc(text) + "</span>";
+  }
+
   function renderFindings(s) {
     var host = $("findingsHost");
     var rows = s.findings || [];
@@ -981,6 +1002,9 @@
       var transportCell = transport ? esc(transport) : '<span class="mono">—</span>';
       if (f.tls) {
         transportCell += ' <span class="tag ok">tls</span>';
+      }
+      if (f.certificate) {
+        transportCell += "<br>" + certMarker(f.certificate);
       }
       var latency = (f.duration_ms || 0) + " ms";
       if (f.attempts > 1) {

@@ -1,6 +1,7 @@
 package scanner_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/des"
@@ -1072,5 +1073,108 @@ func TestRunClampsWorkerPool(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("Run returned %d results, want 1", len(results))
+	}
+}
+
+// TestHandshakeRetryOnDroppedConnection guards the retry policy for failures
+// that happen after the TCP connect: a server that resets the first handshake
+// and answers the second must still be inventoried, while a protocol error
+// must not be retried.
+func TestHandshakeRetryOnDroppedConnection(t *testing.T) {
+	var mu sync.Mutex
+	served := 0
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				mu.Lock()
+				n := served
+				served++
+				mu.Unlock()
+
+				if n == 0 {
+					// First handshake: drop the connection right after the
+					// banner so the client sees a transient failure.
+					conn.Write([]byte("RFB 003.008\n"))
+					return
+				}
+				// Second attempt: behave like a normal passwordless server.
+				_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+				r := bufio.NewReader(conn)
+				conn.Write([]byte("RFB 003.008\n"))
+				if _, err := io.ReadFull(r, make([]byte, 12)); err != nil {
+					return
+				}
+				conn.Write([]byte{1, 1})
+				if _, err := io.ReadFull(r, make([]byte, 1)); err != nil {
+					return
+				}
+				conn.Write([]byte{0, 0, 0, 0})
+				if _, err := io.ReadFull(r, make([]byte, 1)); err != nil {
+					return
+				}
+				var init []byte
+				init = append(init, 0, 2, 0, 2)
+				init = append(init, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0)
+				init = append(init, 0, 0, 0, 5)
+				init = append(init, []byte("retry")...)
+				conn.Write(init)
+				for {
+					var typ [1]byte
+					if _, err := io.ReadFull(r, typ[:]); err != nil {
+						return
+					}
+					switch typ[0] {
+					case 0:
+						io.ReadFull(r, make([]byte, 19))
+					case 2:
+						var hdr [3]byte
+						io.ReadFull(r, hdr[:])
+						count := binary.BigEndian.Uint16(hdr[1:3])
+						io.ReadFull(r, make([]byte, int(count)*4))
+					case 3:
+						io.ReadFull(r, make([]byte, 9))
+						frame := []byte{0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0}
+						frame = append(frame, make([]byte, 2*2*4)...)
+						conn.Write(frame)
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	results, err := scanner.Run(context.Background(),
+		[]scanner.Target{{IP: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port}},
+		scanner.Options{
+			ConnectTimeout: 2 * time.Second,
+			VNCTimeout:     2 * time.Second,
+			Workers:        1,
+			MaxRetries:     1,
+			ScreenshotDir:  t.TempDir(),
+		})
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Run returned %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.RFB || !r.Passwordless {
+		t.Errorf("result = %+v, want a passwordless RFB finding after the retry", r)
+	}
+	if r.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2 (one retry)", r.Attempts)
 	}
 }

@@ -45,6 +45,7 @@ previous-run history, all on loopback.*
   - [Manifest](#manifest)
   - [Baseline comparison](#baseline-comparison)
   - [Webhook notifications](#webhook-notifications)
+  - [Maintenance and retention](#maintenance-and-retention)
 - [Exit codes](#exit-codes)
 - [Performance tuning](#performance-tuning)
 - [Troubleshooting](#troubleshooting)
@@ -64,15 +65,22 @@ previous-run history, all on loopback.*
 ## Features
 
 - Linux only; both the CLI and the GUI must run as root
-- Scan single IPs, CIDR blocks, IPv4 ranges, or a file of targets
+- Scan single IPs, CIDR blocks, IPv4 ranges, a file of targets, or a target
+  list from standard input (`-file -`)
+- `-dry-run` prints the expanded scope without sending a packet
 - Concurrent worker pool with configurable rate limiting and per-host caps
 - RFB 3.3 / 3.7 / 3.8 handshake, passwordless (`None`) detection and
   weak-password detection
+- TLS and VeNCrypt probing (`TLSNone`, `TLSVnc`) with peer certificate
+  evidence for every established encrypted session
 - Framebuffer capture to PNG for passwordless and weak-password endpoints
 - Read-only probing: one frame is requested and the session is closed
 - JSON + self-contained HTML report (base64 thumbnails, filter, modal)
 - In-process PDF report export (no external tools required)
 - CSV export with a stable column order for spreadsheets and pipelines
+- Report redaction (`-redact`) and preview-only HTML (`-thumb-only`) for
+  sharing evidence without the secrets or the full-resolution frames
+- Run retention (`-keep`, `-prune`) with guarded deletion and a dry-run mode
 - Security-type inventory: every finding records the advertised
   `security_types` and a `tls` flag
 - Baseline comparison against a previous run (new, resolved and changed findings)
@@ -80,7 +88,7 @@ previous-run history, all on loopback.*
 - Optional webhook notification when a run has new findings or exposed hosts
 - Flag defaults from a config file (`-config`) and `VNCSHOT_*` environment variables
 - Deterministic, sorted results so repeated scans can be compared directly
-- One TCP connection per target and bounded per-host concurrency
+- One TCP connection per attempt and bounded per-host concurrency
 - Local web GUI (`-gui`) with live progress, report links and a previous-run history
 - `-version` prints build information without requiring root
 - Graceful Ctrl+C shutdown with partial results
@@ -186,9 +194,15 @@ sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
 sudo vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
 sudo vncshot -target 10.0.0.1-50 -out-dir /root/assessments
 sudo vncshot -target 192.168.1.0/24 -word-list /root/passwords.txt
+sudo vncshot -target 10.0.0.0/16 -dry-run
+cat hosts.txt | sudo vncshot -file - -ports 5900
+sudo vncshot -target 192.168.1.0/24 -redact -thumb-only
+sudo vncshot -target 10.0.0.0/16 -source-addr 10.1.2.3
 sudo vncshot -target 192.168.1.0/24 -baseline /usr/local/vncshot/20261020-090000
 sudo vncshot -target 10.0.0.0/24 -manifest -webhook https://hooks.example.test/vncshot
 sudo vncshot -target 192.168.1.0/24 -config /root/vncshot.conf
+sudo vncshot -target 192.168.1.0/24 -keep 30
+sudo vncshot -prune 30 -prune-dry-run
 sudo vncshot -gui
 vncshot -version
 ```
@@ -202,13 +216,14 @@ injects the release version at build time.
 |------|---------|-------------|
 | `-version` | `false` | Print build information and exit (does not require root) |
 | `-target` | | Single IP, CIDR, or range (`192.168.1.1`, `192.168.1.0/24`, `192.168.1.1-50`) |
-| `-file` | | File with IPs/CIDRs/ranges, one per line (`#` comments allowed) |
+| `-file` | | File with IPs/CIDRs/ranges, one per line (`#` comments allowed); `-` reads standard input |
 | `-ports` | `5900` | Port list/ranges (`5900,5901-5910`) |
 | `-timeout` | `1s` | TCP connect timeout |
 | `-vnc-timeout` | `15s` | RFB handshake/capture timeout |
 | `-workers` | `150` | Concurrent scan workers (maximum 4096) |
 | `-rate` | `200` | Max new connections per second (`0` = unlimited, maximum 100000) |
-| `-retries` | `1` | Extra connect attempts for transient failures (`0` = none) |
+| `-retries` | `1` | Extra attempts for transient failures, before and after the TCP connect (`0` = none) |
+| `-source-addr` | `""` | Local IP to bind probes to; empty or `auto` uses the route table |
 | `-out-dir` | `/usr/local/vncshot` | Root directory for timestamped scan folders |
 | `-output` | `<run-dir>/vncshot_report.json` | JSON report path |
 | `-html` | `<run-dir>/vncshot_report.html` | HTML report path |
@@ -216,6 +231,12 @@ injects the release version at build time.
 | `-csv` | `<run-dir>/vncshot_report.csv` | CSV report path |
 | `-baseline` | | Previous run directory; findings are compared with it |
 | `-manifest` | `false` | Write `<run-dir>/manifest.json` with SHA-256 digests of every artifact |
+| `-redact` | `false` | Replace captured passwords with `REDACTED` in JSON/HTML/PDF |
+| `-thumb-only` | `false` | Embed only the preview image, not the full-resolution capture, in HTML |
+| `-keep` | `0` | Keep only the newest n run folders after a scan (`0` = keep all) |
+| `-prune` | `0` | Delete all but the newest n run folders and exit (`0` = disabled) |
+| `-prune-dry-run` | `false` | With `-prune` (or with `-keep` alone) list what would be removed and delete nothing |
+| `-dry-run` | `false` | Expand the scope, print targets/hosts/ports/password candidates and exit without sending a packet |
 | `-webhook` | | POST a JSON summary to this URL when a run has new findings or exposed hosts |
 | `-config` | | Config file with flag defaults (JSON or flat `key: value` YAML) |
 | `-no-pdf` | `false` | Skip PDF generation |
@@ -231,6 +252,21 @@ injects the release version at build time.
 | `-gui-no-browser` | `false` | Do not open the GUI in a browser automatically |
 
 The `-gui-*` flags only apply together with `-gui`.
+
+`-prune` turns the invocation into a maintenance command: it needs no target,
+deletes all but the newest n run folders below `-out-dir` and exits, so it can be
+scheduled on its own. The root check still applies, because the default report
+root is `/usr/local/vncshot`, but no authorization prompt is shown for a prune
+or a dry run. `-prune-dry-run` either previews that command (with `-prune`, or
+alone together with `-keep`) or, in the GUI, previews the retention pass of the
+next scan. On its own, without a positive `-prune` or `-keep` value, it exits
+with an error because there is no policy to preview. Both `-keep 0` and
+`-prune 0` mean "disabled"; an explicitly given `-prune 0` is rejected as a
+mistake rather than silently ignored.
+
+`-dry-run` expands the target and port inputs, prints the scope and exits before
+any packet is sent or any directory is created. It neither prompts for
+authorization nor needs `-yes`, but the startup root check still applies.
 
 `-h` prints the same flag reference and exits `0`. An unknown flag prints
 `flag provided but not defined: <name>` followed by the usage text and exits `2`.
@@ -290,13 +326,16 @@ Password testing is enabled by default. Every RFB endpoint first gets a
 discovery connection that reads the advertised security types without
 sending a credential:
 
-* If the server offers the `None` security type, the host is reported as
-  passwordless and its framebuffer is captured.
-* If the server requires VNC authentication, each candidate password is tried
-  on its own short-lived connection. The first accepted password is recorded,
-  and the host is captured exactly like a passwordless one.
-* Servers that offer only other security types (for example TLS or VeNCrypt)
-  are reported as RFB services without a password attempt.
+* If the server offers the `None` security type, or the `TLS` type (18, which
+  is `None` over TLS), the host is reported as passwordless and its framebuffer
+  is captured.
+* If the server requires VNC authentication — directly or through the VeNCrypt
+  `TLSVnc` subtype — each candidate password is tried on its own short-lived
+  connection. The first accepted password is recorded, and the host is captured
+  exactly like a passwordless one.
+* Servers that offer only security types this client does not implement (for
+  example `SASL`, `Plain`, or a VeNCrypt `X509*` subtype) are reported as RFB
+  services without a password attempt.
 
 Candidates come from the built-in weak-password list (about 30 common VNC
 passwords, including the empty password) plus, optionally, `-word-list`.
@@ -340,6 +379,14 @@ CSV reports and the manifest `0600`, so only the owner can read them. Treat a
 run directory as sensitive evidence: do not copy it to shared storage or attach
 it to a ticket without redaction.
 
+`-redact` removes the secret value before the JSON, HTML and PDF artifacts are
+written: every captured password becomes `REDACTED`, while the finding, its
+`password_source` and the weak-credential counters stay visible. The CSV export
+has no password column, so it is unaffected, and certificate evidence is not a
+secret and is kept. `-thumb-only` complements it by embedding only the preview
+image in the HTML report, which keeps a large inventory shareable as one file;
+the full-resolution PNGs stay in the run folder.
+
 ## Connection and transport
 
 ### Security types and TLS
@@ -361,29 +408,92 @@ other types are treated as clear text. A server that advertises both `None`
 and an encrypted type still gets `tls: true`, even though the probe takes the
 weaker `None` path.
 
+The probe completes an encrypted session on three paths:
+
+| Path | Security type | Credential |
+|------|---------------|------------|
+| `TLS` | type 18, defined as `None` over TLS | none |
+| VeNCrypt `TLSNone` | subtype 257 | none |
+| VeNCrypt `TLSVnc` | subtype 258 | VNC authentication inside TLS |
+
+An encrypted path is preferred over plain VNC authentication: both yield either
+a passwordless capture or a certificate that identifies the endpoint, which
+plain VNC authentication cannot provide. TLS 1.0 and 1.1 handshakes are accepted
+so old appliances can still be inventoried; `tls_version` reports what was
+actually negotiated.
+
+Other VeNCrypt subtypes are not implemented: `Plain`, `TLSPlain`, the `X509*`
+family, `TLSSASL`, `X509SASL` and the `Ident` family. When a server offers only
+those, the posture is recorded and no session is attempted, so the endpoint
+appears as an RFB service without a capture or certificate.
+
+Some appliances advertise TLS or VeNCrypt but cannot complete the encrypted
+negotiation, or expect a subtype this client does not implement. When the
+security-type list was already read, the probe retries once over the clear-text
+types the server also advertises, and any password candidates use that
+clear-text path. A failure before the type list is left to the retry policy
+described below.
+
+When a TLS session is established, the result carries a `certificate` object:
+
+| Field | Meaning |
+|-------|---------|
+| `tls_version` | Negotiated protocol version, for example `TLS 1.2` |
+| `cipher_suite` | Negotiated cipher suite name |
+| `subject`, `issuer` | Textual distinguished names |
+| `not_before`, `not_after` | Validity boundaries in UTC |
+| `dns_names` | DNS subject alternative names |
+| `sha256_fingerprint` | SHA-256 of the DER certificate, colon-separated hex |
+| `self_signed` | Subject and issuer are identical |
+| `expired` | `not_after` is in the past at scan time |
+| `verified` | The chain validated against the system roots |
+
+The probe records the certificate instead of trusting it: the TLS client runs
+with `InsecureSkipVerify`, so an appliance certificate never aborts the scan.
+`verified` is computed independently against the system roots and covers chain
+trust only, not whether the certificate matches the scanned address. A
+self-signed appliance certificate therefore reports `self_signed: true` and
+`verified: false`; that is evidence about the endpoint's trust posture, not a
+failed probe. An unverified certificate that is not self-signed is rendered as
+`untrusted` in the reports.
+
 The summary includes a `tls_services` counter (JSON key `tls_services`, HTML
-and PDF label `TLS services`, GUI counter `TLS services`). The HTML endpoint
-table adds a Security column, the PDF endpoint table adds a `SECURITY` column
-and a `Transport` row in each finding card, and the GUI findings table adds a
-Transport column. Both `security_types` and `tls` are omitted from JSON when
-empty or false.
+and PDF label `TLS services`, GUI counter `TLS services`) and a
+`self_signed_certs` counter (HTML, PDF and GUI label `Self-signed certs`) that
+counts established TLS sessions whose peer certificate names itself as its
+issuer. The HTML endpoint table adds a Security column with the certificate
+state, the PDF endpoint table adds a `SECURITY` column and a `Transport` row in
+each finding card, and the GUI findings table adds a Transport column with a
+certificate marker. Both `security_types` and `tls` are omitted from JSON when
+empty or false, and `certificate` is omitted when no TLS session was
+established.
 
 ### Retry and per-host limits
 
-* A probe uses exactly one TCP connection: the dial that establishes the
+* A probe uses one TCP connection per attempt: the dial that establishes the
   connectivity result is the same connection that performs the RFB handshake
   and the single frame capture. There is no separate openness dial followed by
-  a second handshake dial.
+  a second handshake dial; a retry is a new attempt with a new connection.
 * Password candidates are the exception: each candidate is tried on its own
   short-lived connection, as described under password testing.
-* The scanner's retry policy allows at most one retry of a transient connect
-  failure, with jittered exponential backoff starting at 150 ms (the first
-  retry waits 150–225 ms). Timeouts, `ECONNRESET`, `EPIPE` and `EHOSTUNREACH`
-  are treated as transient; `ECONNREFUSED` is definitive and never retried.
+* The scanner's retry policy allows at most one retry, with jittered
+  exponential backoff starting at 150 ms (the first retry waits 150–225 ms).
+  The same `-retries` budget covers both sides of the TCP connect:
+  * Before the connect, timeouts, `ECONNRESET`, `EPIPE` and `EHOSTUNREACH` are
+    transient; `ECONNREFUSED` is definitive and never retried.
+  * After the connect, a timeout, `ECONNRESET`, `EPIPE`, `EOF` or a truncated
+    read is retried once. A protocol-level answer — a malformed or non-RFB
+    banner, an unsupported encoding, a rejected negotiation — is definitive and
+    is never retried.
   The default budget is one retry; `-retries 0` makes a default scan use a
   single connection attempt per target.
+* A probe that parsed the RFB banner but failed the security negotiation is
+  still reported as an RFB service: `open` and `rfb` are `true`, `error`
+  carries the failure and the evidence collected so far (security types, TLS
+  capability, certificate, server name and geometry) is kept. A port that
+  answered without a parsable banner stays `open: true`, `rfb: false`.
 * `attempts` in the JSON result, the CSV column and the report markers records
-  how many TCP connection attempts were needed. A successful first attempt is
+  how many connection attempts were needed. A successful first attempt is
   `1`; a target that never connected reports `0`; a retried host shows the
   higher count and is marked as retried in the HTML/PDF/GUI output.
 * Per-host concurrency is capped at 2 simultaneous probes per target IP, so a
@@ -393,6 +503,12 @@ empty or false.
   a goroutine plus at least one socket, and beyond 100000 connections per
   second the pacing interval would round to zero, so both limits are rejected
   instead of being silently ignored.
+
+`-source-addr` binds every probe dial to the given local address, including the
+connections used for password candidates. It matters on a multi-homed host
+where the route table would otherwise pick an address outside the assessed
+network. An invalid value is rejected before the run starts; `auto` or an empty
+value keeps the route table's choice.
 
 A cancelled probe is recorded with the cancellation reason, not with the
 socket deadline error it triggers: an operator reading `i/o timeout` would
@@ -404,8 +520,9 @@ otherwise look for a nonexistent network fault.
 
 `-target` accepts a single address, a CIDR block, an inclusive last-octet
 range (`10.0.0.10-20`) or an IPv6 address/CIDR. `-file` reads the same syntax
-one entry per line, with `#` comments and blank lines ignored. Both sources can
-be combined and duplicates are removed. `-ports` accepts a comma-separated
+one entry per line, with `#` comments and blank lines ignored, and `-file -`
+reads the list from standard input instead of a file. Both sources can be
+combined and duplicates are removed. `-ports` accepts a comma-separated
 list of ports and inclusive ranges.
 
 Expansion is bounded so a typo cannot start a massive scan:
@@ -414,10 +531,15 @@ Expansion is bounded so a typo cannot start a massive scan:
 |-------|-------|-----------|
 | Host:port pairs per run | 1,048,576 (2^20) | Rejected with a message to narrow the target or port list |
 | Hosts per single CIDR spec | 65,536 (2^16, i.e. `/16` or longer) | Rejected; split larger blocks into several specs |
+| Hosts read from a file or stdin stream | 1,048,576 (2^20) | Rejected; the stream is not buffered beyond the cap |
 | Word-list entries | 500 | Rejected |
 
 Targets are expanded before any packet is sent, so an invalid input fails
-immediately with no partial scan.
+immediately with no partial scan. `-dry-run` uses the same expansion and prints
+the number of host:port pairs, the unique host count, the port specification,
+the password-candidate count, the report root, the worker/rate settings and the
+first and last target in scan order, then exits without creating a directory or
+opening a socket.
 
 ### Probe pipeline
 
@@ -428,8 +550,11 @@ For every `host:port` pair the worker performs:
 2. **Protocol banner** — read `RFB xxx.yyy`, reply with the best version both
    sides support (3.3, 3.7 or 3.8).
 3. **Security negotiation** — read the advertised types. `None` continues
-   immediately; VNC authentication triggers the candidate loop; anything else
-   stops after recording the posture.
+   immediately; the `TLS` type and the VeNCrypt `TLSNone` subtype establish an
+   encrypted session without a credential; VNC authentication and VeNCrypt
+   `TLSVnc` trigger the candidate loop; anything else stops after recording the
+   posture. A failed encrypted negotiation is retried once over the clear-text
+   types the server also advertises.
 4. **Session init** — `ClientInit`/`ServerInit` yields the desktop name and
    framebuffer geometry (capped at 8192x8192 per side).
 5. **Capture** — request the 32-bit true-colour pixel format, raw encoding,
@@ -449,20 +574,37 @@ sudo vncshot -gui
 
 This starts a local web interface on loopback and prints its session URL to
 the terminal. The form exposes the scan options: target or target file, ports,
-workers, rate, connect and RFB timeouts, report root, JSON/HTML/PDF path
-overrides, screenshot directory, skip PDF and shared session. The run-level
-options `-baseline`, `-manifest`, `-webhook`, `-csv` and `-config` are not part
-of the form; values passed on the launch command line are inherited by scans
-started from the GUI.
+workers, rate, connect and RFB timeouts, report root, JSON/HTML/PDF/CSV path
+overrides, screenshot directory, skip PDF, shared session, manifest, webhook URL
+and a keep-runs count with a prune dry-run toggle. `-config` is not part of the
+form; values passed on the launch command line are inherited by scans started
+from the GUI.
+
+The "Comparison" panel holds a "Previous run" selector. It lists the run folders
+under the report root and selects one as the baseline for the next scan, with
+"No comparison" as the default. A run folder removed by retention silently
+falls back to "No comparison" instead of leaving a baseline that cannot be read.
 
 The "Passwords" panel holds the word list path and the two skip toggles
 (built-in weak-password list, password testing). The status line shows how
 many password candidates the current run will try, and the findings table
 marks hosts reached with a weak credential.
 
-The summary strip includes a `TLS services` counter, and the findings table
-has a Transport column that lists the advertised security types (joined with
-`·`) and adds a `tls` tag for encrypted endpoints.
+The summary strip includes `TLS services` and `Self-signed certs` counters. The
+findings table has a Transport column that lists the advertised security types
+(joined with `·`), adds a `tls` tag for encrypted endpoints, and renders a
+certificate marker when a TLS session was established: `self-signed`,
+`expired` and `verified` as applicable, followed by the expiry date when the
+certificate reports one. Hovering the marker shows the subject, issuer and
+SHA-256 fingerprint; certificates that carry none of those markers are labelled
+`certificate`. After a scan with retention, the dashboard shows
+`Removed N old run(s)` when the pass deleted (or, in a dry run, would delete)
+one or more folders.
+
+Redaction stays a launch-time option: the "Delivery" panel keeps a redaction
+checkbox as a saved preference, but the scan pipeline only honours `-redact`
+given when the GUI was started. Start `sudo vncshot -gui -redact` to redact the
+reports of every scan launched from that dashboard.
 
 The "Previous runs" panel lists the run folders under the report root
 (`GET /api/runs`, newest first, limited to the 100 most recent). Selecting a
@@ -489,6 +631,10 @@ Security properties:
   and must also be sent in the `X-Vncshot-Token` header for state-changing
   requests.
 * The `/files/` endpoint only serves files inside the current run folder.
+* A screenshot directory outside the run folder is rejected before any probe
+  starts, with an error that points at the report root. `/files/` is rooted at
+  the run folder, so captures written elsewhere would render as broken
+  thumbnails; remove the override or point it inside the run folder.
 * The GUI also runs as root, so anyone with the printed URL can drive the
   scanner. Treat the URL and token as credentials.
 * For remote access, keep the loopback bind and forward the port over SSH
@@ -548,6 +694,21 @@ into the binary by `install.sh`, which also creates the directory:
 * `vncshot_report.csv` — flat export of the same result set
 * `manifest.json` — SHA-256 digests of the run artifacts, written only with `-manifest`
 
+`-redact` is applied when the artifacts are written: JSON, HTML and PDF replace
+every captured password with `REDACTED` while keeping the finding, its
+`password_source` and the counters. The CSV export never contained the secret,
+so it is identical with or without the flag, and certificate evidence is not a
+secret and is kept. `-thumb-only` affects the HTML report only: cards keep the
+preview image and the full-resolution data URI is dropped, so a large inventory
+stays shareable as one file; the PNG files, the PDF and the JSON are unchanged.
+
+Certificate evidence appears in the JSON `certificate` object, in the HTML
+"Certificates" section and in the PDF "Certificate evidence" section (subject,
+issuer, validity window, TLS version, cipher and SHA-256 fingerprint), while
+the endpoint tables show the compact trust state and expiry date. The CSV
+records only the `tls` flag and the `security_types` list, because it has a
+fixed flat schema.
+
 The folder name is the local scan start time in `YYYYMMDD-HHMMSS` form (the
 GUI and the baseline comparison rely on this layout). Screenshot names use the
 capture timestamp in the same form, so a run folder is self-describing.
@@ -605,6 +766,7 @@ evidence is a snapshot and never a live session.*
     "passwordless": 1,
     "weak_credentials": 1,
     "tls_services": 1,
+    "self_signed_certs": 1,
     "screenshots": 2,
     "errors": 0
   },
@@ -614,11 +776,22 @@ evidence is a snapshot and never a live session.*
       "port": 5900,
       "open": true,
       "rfb": true,
-      "passwordless": false,
-      "password": "hunter2",
-      "password_source": "word-list",
-      "security_types": ["VNC authentication", "VeNCrypt"],
+      "passwordless": true,
+      "security_types": ["VeNCrypt"],
       "tls": true,
+      "certificate": {
+        "tls_version": "TLS 1.2",
+        "cipher_suite": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+        "subject": "CN=lab-pc",
+        "issuer": "CN=lab-pc",
+        "not_before": "2025-03-04T00:00:00Z",
+        "not_after": "2027-03-04T00:00:00Z",
+        "dns_names": ["lab-pc"],
+        "sha256_fingerprint": "5C:1A:...:9F",
+        "self_signed": true,
+        "expired": false,
+        "verified": false
+      },
       "attempts": 1,
       "server_name": "lab-pc",
       "screen_width": 1920,
@@ -631,26 +804,36 @@ evidence is a snapshot and never a live session.*
 }
 ```
 
+The summary always carries every counter, including `tls_services` and
+`self_signed_certs`; `self_signed_certs` counts established TLS sessions whose
+peer certificate is self-signed, not certificate failures.
+
 Result fields:
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `ip`, `port` | string, int | Target endpoint |
 | `open` | bool | TCP connect succeeded |
-| `rfb` | bool | RFB handshake and session init succeeded |
-| `passwordless` | bool | Server offered `None` and accepted it |
-| `password` | string | Omitted unless a weak credential was accepted; sensitive |
+| `rfb` | bool | RFB banner parsed and session init succeeded; `true` with `error` for a partial finding |
+| `passwordless` | bool | Server offered `None` (or `None` over TLS) and accepted it |
+| `password` | string | Omitted unless a weak credential was accepted; sensitive; `REDACTED` with `-redact` |
 | `password_source` | string | `default` (built-in list) or `word-list` |
 | `auth_locked` | bool | Omitted unless the server blocked further attempts |
 | `security_types` | []string | Advertised type names, omitted when empty |
 | `tls` | bool | Omitted when false |
-| `attempts` | int | TCP attempts used, omitted when zero |
+| `certificate` | object | Peer certificate evidence from an established TLS session, omitted otherwise |
+| `attempts` | int | Connection attempts used, omitted when zero |
 | `server_name` | string | Desktop name from `ServerInit`, omitted when empty |
 | `screen_width`, `screen_height` | int | Framebuffer geometry, omitted when unknown |
 | `screenshot` | string | Absolute path of the PNG, omitted when no capture |
 | `error` | string | Omitted for closed ports; present for partial failures |
 | `duration_ms` | int | Probe duration in milliseconds |
 | `timestamp` | string | RFC 3339 in UTC |
+
+The `certificate` fields are `tls_version`, `cipher_suite`, `subject`, `issuer`,
+`not_before`, `not_after`, `dns_names`, `sha256_fingerprint`, `self_signed`,
+`expired` and `verified`; see [Security types and TLS](#security-types-and-tls)
+for their meaning.
 
 ### CSV format
 
@@ -664,7 +847,8 @@ ip,port,open,rfb,passwordless,weak_password,password_source,tls,security_types,s
 Booleans are written as `yes` or `no`. `security_types` joins the advertised
 type names with `;` so the whole list stays inside one field. `timestamp` is
 RFC 3339 in UTC. Rows are sorted by IP and port, exactly like the other
-artifacts. The file is written `0600` because it can contain credentials.
+artifacts. The file is written `0600` because it records which endpoints accept
+a weak credential.
 
 ### Manifest
 
@@ -725,8 +909,28 @@ A host that changes state appears once under changed, not as both a new and a
 resolved finding. The counts are printed in the CLI summary (baseline, new
 findings, resolved, changed), rendered as a "Changes since baseline" section
 in the HTML and PDF reports, and included in the webhook payload described
-below. The JSON and CSV artifacts always contain the current run only. New
+below. The JSON artifact keeps the current results at the top level and adds a
+`diff` object; the CSV artifact always contains the current run only. New
 findings are also the trigger for the webhook.
+
+The `diff` object carries the compared run folder name, the full results under
+`new` and `resolved`, and the changed endpoints as
+`{addr, reason, before, after}`. The three lists are always present as arrays
+when a comparison ran — an empty list is written as `[]`, never `null` — so a
+pipeline can index them without nil checks. `before` and `after` use the same
+display labels as the reports: `no auth`, `weak`, `rfb`, `open` and `closed`.
+
+```json
+"diff": {
+  "baseline": "20261020-090000",
+  "new": [],
+  "resolved": [],
+  "changed": [
+    { "addr": "192.0.2.10:5900", "reason": "became passwordless",
+      "before": "weak", "after": "no auth" }
+  ]
+}
+```
 
 ### Webhook notifications
 
@@ -745,8 +949,8 @@ The payload is:
   "generated_at": "2026-10-26T20:53:04Z",
   "run_dir": "20261026-205304",
   "summary": { "targets": 254, "open": 3, "rfb": 2, "passwordless": 1,
-               "weak_credentials": 1, "tls_services": 1, "screenshots": 2,
-               "errors": 0 },
+               "weak_credentials": 1, "tls_services": 1, "self_signed_certs": 1,
+               "screenshots": 2, "errors": 0 },
   "new_findings": [
     { "ip": "192.0.2.10", "port": 5900, "open": true, "rfb": true,
       "passwordless": false, "password_source": "word-list", "tls": false,
@@ -767,6 +971,51 @@ carry access tokens. `new_findings` is empty when no baseline was requested.
 A delivery failure is a warning, not a failed scan: the CLI prints
 `warning: webhook notification failed: ...` on stderr after the summary, the
 artifacts remain intact, and the exit status still reflects the scan itself.
+
+### Maintenance and retention
+
+Run folders hold credentials and captured desktops, so unused history should not
+accumulate on the assessment host. `-keep n` applies retention to the report
+root after a successful scan: it keeps the newest n run folders (the run that
+just finished included) and deletes the rest. `-prune n` does the same as a
+standalone maintenance command and exits, so it can run without a target.
+
+```bash
+# keep the 30 newest runs, nightly
+0 3 * * * /usr/local/bin/vncshot -prune 30 -yes >/dev/null 2>&1
+```
+
+```bash
+# preview the nightly prune without deleting anything
+sudo vncshot -prune 30 -prune-dry-run
+
+# apply the policy after every scan of a range
+sudo vncshot -target 10.0.0.0/24 -keep 30
+```
+
+Deletion is deliberately narrow and fails safe:
+
+* A count of zero or less never deletes anything: `-keep 0` disables retention
+  for scans, and an explicit `-prune 0` is rejected instead of being read as
+  "delete everything". A negative `-keep` also disables retention, while
+  `-prune` rejects any non-positive count.
+* Dangerous report roots are refused: `/`, `/root`, `/home`, `/tmp`, `/usr`,
+  `/var` and the current user's home directory.
+* A symlinked report root is refused rather than followed.
+* Only directories directly below the report root whose name parses as a run
+  folder (`YYYYMMDD-HHMMSS`) are candidates. Plain files, unrelated directories
+  and symlinked entries in the report root are never treated as runs, and
+  linked content is not measured or counted.
+* A retention failure is reported as `warning: retention failed: ...` and does
+  not turn a completed scan into a failed one; the artifacts and exit status
+  still describe the scan.
+
+With `-prune-dry-run` the command prints `would remove` and the same per-run
+listing (name, start time, file count, size) without deleting anything. After a
+scan, the CLI prints `retention: removed N old run(s)` when the policy deleted
+folders. In the GUI, the keep-runs count and the prune dry-run toggle apply to
+scans started from the dashboard, and the dashboard shows
+`Removed N old run(s)` after the pass.
 
 ## Exit codes
 
@@ -798,7 +1047,8 @@ Memory use is dominated by captured frames: one RGBA buffer per in-flight
 capture (up to `-workers`) plus the thumbnails embedded in the HTML report.
 Scanning tens of thousands of ports with `-workers 500` is possible but the
 HTML report grows quickly because every capture is base64-embedded; use
-`-no-pdf` and lower worker counts for very large inventories.
+`-thumb-only` to keep only the previews, `-no-pdf` and lower worker counts for
+very large inventories. `-redact` does not change the size.
 
 ## Troubleshooting
 
@@ -825,6 +1075,13 @@ The TCP port answered but the service did not complete an RFB handshake. It is
 reported with the protocol error in `error` so a non-VNC service on 5900 is
 visible rather than silently treated as closed.
 
+**A host shows `rfb: true` together with `error`**
+The RFB banner was parsed, so the endpoint is an RFB service, but the session
+could not be established. `error` carries the reason and the evidence collected
+before the failure (security types, TLS capability, certificate) is kept. Check
+the advertised security types: a VeNCrypt subtype this probe does not implement
+(for example `X509Vnc`) is reported as posture only, without a session attempt.
+
 **`auth_locked: true`**
 The server returned `SecurityResult` status 2. Remaining candidates were
 abandoned to avoid locking the account further; investigate manually.
@@ -837,21 +1094,38 @@ cookie was never set. Reopen the full printed URL.
 The scan and all artifacts are intact; only the notification failed. Check DNS,
 TLS trust and the receiver, then replay from the stored JSON if needed.
 
+**`warning: retention failed: ...`**
+The scan and its artifacts are intact; only the old-run cleanup failed. The
+message names the refused root or the directory that could not be removed.
+Common causes are a report root on a read-only mount, a symlinked root, or a
+root from the refused list (`/`, `/root`, `/home`, `/tmp`, `/usr`, `/var`).
+Fix the root, or run the retention again with `-prune`.
+
+**`refusing to prune report root ...` / `report root ... does not exist`**
+`-prune` only works on a report root that exists and is a real directory. Pass
+the same `-out-dir` the scans used, and do not point it at a system directory.
+
+**`screenshot directory must be inside the run folder`**
+The GUI rejects a `-screenshot-dir` (or form value) outside the run folder,
+because `/files/` cannot serve it. Remove the override or point it inside the
+report root.
+
 **HTML report is huge**
-Every capture is embedded as base64. Use `-no-pdf` and fewer workers, or split
-the scan into smaller runs.
+Every capture is embedded as base64. Use `-thumb-only` to embed only the
+previews, add `-no-pdf`, and lower the worker count or split the scan into
+smaller runs.
 
 ## Package layout
 
 ```
 main.go        CLI flags, root check, GUI bootstrap
-app/           scan session, artifact layout, baseline diff, manifest, webhook
+app/           scan session, artifact layout, baseline diff, manifest, retention, webhook
 config/        flag defaults from a config file and VNCSHOT_* environment variables
 gui/           embedded web UI (index.html + HTTP server)
 scanner/       target expansion, worker pool, rate limiting, retry and per-host limits
-vnc/           RFB 3.3/3.7/3.8 client, None-auth and weak-password auth, raw capture
+vnc/           RFB 3.3/3.7/3.8 client, None-auth and weak-password auth, TLS/VeNCrypt, raw capture
 screenshot/    PNG persistence
-report/        Result model, JSON/HTML/PDF/CSV exporters, embedded PDF font
+report/        Result model, JSON/HTML/PDF/CSV exporters, certificate evidence, embedded PDF font
 ```
 
 ## Dependencies
@@ -877,10 +1151,12 @@ shellcheck -S warning install.sh
 The test suite runs entirely offline: RFB endpoints are simulated in-process,
 so no VNC server or network access is required. Coverage includes the
 handshake for RFB 3.3/3.7/3.8, DES authentication against an independent
-implementation, passwordless and weak-password capture, lockout handling, a
-wire-level assertion that no input or clipboard messages are ever sent, the
-GUI API and its token/traversal guards, CSV/manifest/baseline/webhook
-behaviour, and the report renderers.
+implementation, passwordless and weak-password capture, lockout handling, TLS
+and VeNCrypt sessions with certificate evidence and the clear-text fallback, a
+wire-level assertion that no input or clipboard messages are ever sent, target
+input from files and standard input, the retention guards, redaction and
+thumbnail policy, the GUI API and its token/traversal guards,
+CSV/manifest/baseline/webhook behaviour, and the report renderers.
 
 CI runs on Linux (`.github/workflows/ci.yml`) for every push to `main`, every
 pull request and manual dispatches. It checks `gofmt -l .`, runs `go vet ./...`,

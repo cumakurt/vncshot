@@ -52,12 +52,12 @@ type Certificate struct {
 	// Fingerprint is the SHA-256 digest of the DER certificate.
 	Fingerprint string `json:"sha256_fingerprint,omitempty"`
 	// SelfSigned is true when the certificate names itself as its issuer.
-	SelfSigned bool `json:"self_signed,omitempty"`
+	SelfSigned bool `json:"self_signed"`
 	// Expired is true when NotAfter is in the past at scan time.
-	Expired bool `json:"expired,omitempty"`
+	Expired bool `json:"expired"`
 	// Verified is true only when the chain validated against the system
 	// roots, so a self-signed certificate reports false.
-	Verified bool `json:"verified,omitempty"`
+	Verified bool `json:"verified"`
 }
 
 // Summary aggregates the counters shown at the top of the reports.
@@ -69,9 +69,13 @@ type Summary struct {
 	// WeakCredentials counts hosts reached with a weak password.
 	WeakCredentials int `json:"weak_credentials"`
 	// TLS counts RFB services that offer an encrypted security type.
-	TLS         int `json:"tls_services"`
-	Screenshots int `json:"screenshots"`
-	Errors      int `json:"errors"`
+	TLS int `json:"tls_services"`
+	// SelfSignedCerts counts established TLS sessions whose peer certificate
+	// names itself as its issuer. This is the normal case for VNC appliances,
+	// so the counter describes the trust posture rather than a failure.
+	SelfSignedCerts int `json:"self_signed_certs"`
+	Screenshots     int `json:"screenshots"`
+	Errors          int `json:"errors"`
 }
 
 // Summarize counts the outcomes in results.
@@ -92,6 +96,9 @@ func Summarize(results []Result) Summary {
 		}
 		if r.TLS {
 			s.TLS++
+		}
+		if r.Certificate != nil && r.Certificate.SelfSigned {
+			s.SelfSignedCerts++
 		}
 		if r.Screenshot != "" {
 			s.Screenshots++

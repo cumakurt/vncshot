@@ -43,8 +43,13 @@ const appName = "vncshot"
 // installed directory tree always agree.
 var reportBaseDir = "/usr/local/vncshot"
 
-// version is injected at build time (-ldflags "-X main.version=...").
-var version = "dev"
+// version, commit and buildDate are injected at build time via -ldflags.
+// They appear in -version so a bug report pins an exact build.
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
 
 type config struct {
 	target        string
@@ -195,7 +200,7 @@ func parseFlags() (config, error) {
 	flag.DurationVar(&cfg.vncTimeout, "vnc-timeout", 15*time.Second, "per-operation RFB handshake/capture timeout")
 	flag.IntVar(&cfg.workers, "workers", 150, "concurrent scan workers")
 	flag.IntVar(&cfg.rate, "rate", 200, "max new connections per second (0 = unlimited)")
-	flag.IntVar(&cfg.retries, "retries", 1, "extra connect attempts for transient failures (0 = none)")
+	flag.IntVar(&cfg.retries, "retries", 1, "extra attempts on transient connect or handshake failures (0 = none, max 1)")
 	flag.StringVar(&cfg.sourceAddr, "source-addr", "", "local IP to bind probes to (default: route table)")
 	flag.StringVar(&cfg.outDir, "out-dir", reportBaseDir, "root directory for timestamped report folders")
 	flag.StringVar(&cfg.output, "output", "", "JSON report path (default <run-dir>/"+appName+"_report.json)")
@@ -262,7 +267,8 @@ func parseFlags() (config, error) {
 }
 
 func versionText() string {
-	return fmt.Sprintf("%s %s (%s/%s, %s)", appName, version, runtime.GOOS, runtime.GOARCH, runtime.Version())
+	return fmt.Sprintf("%s %s (commit %s, built %s, %s/%s, %s)",
+		appName, version, commit, buildDate, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }
 
 func printUsage(w io.Writer) {
@@ -465,7 +471,7 @@ func runDryRun(cfg config) error {
 	fmt.Fprintf(os.Stderr, "dry run: nothing will be sent\n")
 	fmt.Fprintf(os.Stderr, "targets:            %d host:port pairs\n", plan.Targets)
 	fmt.Fprintf(os.Stderr, "unique hosts:       %d\n", plan.Hosts)
-	fmt.Fprintf(os.Stderr, "ports:              %s\n", cfg.ports)
+	fmt.Fprintf(os.Stderr, "ports:              %d (%s)\n", plan.Ports, cfg.ports)
 	fmt.Fprintf(os.Stderr, "password candidates:%d\n", plan.Credentials)
 	fmt.Fprintf(os.Stderr, "report root:        %s\n", cfg.outDir)
 	fmt.Fprintf(os.Stderr, "workers:            %d | rate: %s\n", cfg.workers, rateText(cfg.rate))

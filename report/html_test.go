@@ -671,9 +671,131 @@ func TestResizeNearestMinimumHeight(t *testing.T) {
 	}
 }
 
+// TestWriteHTMLCertificateSection covers the certificate evidence section: a
+// self-signed appliance certificate is rendered as evidence, and a verified
+// certificate is distinguished from it.
+func TestWriteHTMLCertificateSection(t *testing.T) {
+	notBefore := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	notAfter := time.Date(2027, 3, 4, 0, 0, 0, 0, time.UTC)
+
+	t.Run("self-signed", func(t *testing.T) {
+		results := []Result{{
+			IP:            "192.0.2.200",
+			Port:          5900,
+			Open:          true,
+			RFB:           true,
+			TLS:           true,
+			SecurityTypes: []string{"VeNCrypt"},
+			Certificate: &Certificate{
+				Version:     "TLS 1.3",
+				CipherSuite: "TLS_AES_256_GCM_SHA384",
+				Subject:     "CN=vnc-appliance.local",
+				Issuer:      "CN=vnc-appliance.local",
+				NotBefore:   notBefore,
+				NotAfter:    notAfter,
+				Fingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99" +
+					":AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+				SelfSigned: true,
+			},
+		}}
+
+		path := filepath.Join(t.TempDir(), "report.html")
+		if err := WriteHTML(path, results); err != nil {
+			t.Fatalf("WriteHTML: %v", err)
+		}
+		html := readHTML(t, path)
+
+		mustContain(t, html, "<h2>Certificates</h2>", "certificate section heading")
+		mustContain(t, html, "CN=vnc-appliance.local", "certificate subject and issuer")
+		mustContain(t, html, "AA:BB:CC:DD:EE:FF", "SHA-256 fingerprint")
+		mustContain(t, html, "TLS 1.3", "TLS version")
+		mustContain(t, html, "TLS_AES_256_GCM_SHA384", "cipher suite")
+		mustContain(t, html, "2026-03-04 → 2027-03-04", "validity window")
+		mustContain(t, html, `>self-signed<`, "self-signed tag")
+		mustContain(t, html,
+			`<div class="label">Self-signed certs</div><div class="value">1</div>`,
+			"self-signed certificate counter")
+	})
+
+	t.Run("verified", func(t *testing.T) {
+		results := []Result{{
+			IP:   "192.0.2.201",
+			Port: 5900,
+			Open: true,
+			RFB:  true,
+			TLS:  true,
+			Certificate: &Certificate{
+				Version:   "TLS 1.2",
+				Subject:   "CN=vnc.example.com",
+				Issuer:    "CN=Example CA",
+				NotBefore: notBefore,
+				NotAfter:  notAfter,
+				Verified:  true,
+			},
+		}}
+
+		path := filepath.Join(t.TempDir(), "report.html")
+		if err := WriteHTML(path, results); err != nil {
+			t.Fatalf("WriteHTML: %v", err)
+		}
+		html := readHTML(t, path)
+
+		mustContain(t, html, `>verified<`, "verified tag")
+		mustContain(t, html,
+			`<div class="label">Self-signed certs</div><div class="value">0</div>`,
+			"self-signed counter for a verified certificate")
+		mustNotContain(t, html, `>self-signed<`, "self-signed tag on a verified certificate")
+	})
+}
+
+func TestWriteHTMLEmptyCertificateOmitted(t *testing.T) {
+	results := []Result{
+		{IP: "192.0.2.210", Port: 5900, Open: true, RFB: true},
+	}
+
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	mustNotContain(t, html, "<h2>Certificates</h2>", "certificate section without certificates")
+	mustContain(t, html,
+		`<div class="label">Self-signed certs</div><div class="value">0</div>`,
+		"empty self-signed counter")
+}
+
+func TestWriteHTMLExpiredCertificate(t *testing.T) {
+	results := []Result{{
+		IP:   "192.0.2.220",
+		Port: 5900,
+		Open: true,
+		RFB:  true,
+		TLS:  true,
+		Certificate: &Certificate{
+			Subject:    "CN=expired.local",
+			Issuer:     "CN=expired.local",
+			NotAfter:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+			SelfSigned: true,
+			Expired:    true,
+		},
+	}}
+
+	path := filepath.Join(t.TempDir(), "report.html")
+	if err := WriteHTML(path, results); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := readHTML(t, path)
+
+	mustContain(t, html, `class="tag danger">expired</span>`, "danger tag for an expired certificate")
+	mustContain(t, html, ">expired<", "expired marker")
+	mustNotContain(t, html, "expires 2025-01-01", "duplicate expiry note")
+}
+
 // TestWriteHTMLTimestampsAreLabelledUTC guards the report against ambiguous
 // times: the JSON and PDF use UTC, the screenshot file names use the local
 // clock, so the HTML must say which clock it shows.
+
 func TestWriteHTMLTimestampsAreLabelledUTC(t *testing.T) {
 	dir := t.TempDir()
 	pngPath := filepath.Join(dir, "frame.png")

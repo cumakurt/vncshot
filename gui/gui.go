@@ -106,13 +106,31 @@ type finding struct {
 	AuthLocked    bool     `json:"auth_locked,omitempty"`
 	SecurityTypes []string `json:"security_types"`
 	TLS           bool     `json:"tls"`
-	Attempts      int      `json:"attempts"`
-	Open          bool     `json:"open"`
-	RFB           bool     `json:"rfb"`
-	Error         string   `json:"error"`
-	DurationMs    int64    `json:"duration_ms"`
-	Screenshot    string   `json:"screenshot"`
-	Timestamp     string   `json:"timestamp"`
+	// Certificate carries the peer certificate evidence for the transport
+	// column; nil for clear-text or non-TLS findings.
+	Certificate *certificateView `json:"certificate,omitempty"`
+	Attempts    int              `json:"attempts"`
+	Open        bool             `json:"open"`
+	RFB         bool             `json:"rfb"`
+	Error       string           `json:"error"`
+	DurationMs  int64            `json:"duration_ms"`
+	Screenshot  string           `json:"screenshot"`
+	Timestamp   string           `json:"timestamp"`
+}
+
+// certificateView is the dashboard subset of report.Certificate. Only the
+// fields the transport column and its tooltip render are carried, so the live
+// SSE payload stays small during a scan.
+type certificateView struct {
+	Subject     string `json:"subject"`
+	Issuer      string `json:"issuer"`
+	NotAfter    string `json:"not_after"`
+	Version     string `json:"version"`
+	Cipher      string `json:"cipher"`
+	Fingerprint string `json:"fingerprint"`
+	SelfSigned  bool   `json:"self_signed"`
+	Expired     bool   `json:"expired"`
+	Verified    bool   `json:"verified"`
 }
 
 // runInfo is one entry of the run history shown in the dashboard.
@@ -139,6 +157,9 @@ type snapshot struct {
 	Summary     report.Summary `json:"summary"`
 	RunDir      string         `json:"run_dir"`
 	Credentials int            `json:"credentials"`
+	// SelfSigned counts findings whose established TLS session presented a
+	// certificate that names itself as its issuer.
+	SelfSigned int `json:"self_signed"`
 	// On-disk paths stay server-side; the dashboard uses report_links.
 	JSON         string            `json:"-"`
 	HTML         string            `json:"-"`
@@ -950,6 +971,7 @@ func (s *server) snapshotLocked() snapshot {
 		Summary:     s.run.summary,
 		RunDir:      s.run.runDir,
 		Credentials: s.run.credentials,
+		SelfSigned:  countSelfSigned(s.run.findings),
 		JSON:        s.run.jsonPath,
 		HTML:        s.run.htmlPath,
 		PDF:         s.run.pdfPath,
@@ -1015,6 +1037,17 @@ func (s *server) artifactLink(path string) string {
 		return ""
 	}
 	return "/files/" + filepath.ToSlash(rel)
+}
+
+// countSelfSigned returns how many findings carry a self-signed certificate.
+func countSelfSigned(findings []finding) int {
+	count := 0
+	for _, f := range findings {
+		if f.Certificate != nil && f.Certificate.SelfSigned {
+			count++
+		}
+	}
+	return count
 }
 
 // sortedFindingsLocked returns the findings in the same deterministic order
@@ -1214,6 +1247,7 @@ func toFinding(r report.Result) finding {
 		AuthLocked:    r.AuthLocked,
 		SecurityTypes: append([]string(nil), r.SecurityTypes...),
 		TLS:           r.TLS,
+		Certificate:   certificateViewOf(r.Certificate),
 		Attempts:      r.Attempts,
 		Open:          r.Open,
 		RFB:           r.RFB,
@@ -1221,6 +1255,29 @@ func toFinding(r report.Result) finding {
 		DurationMs:    r.DurationMs,
 		Screenshot:    r.Screenshot,
 		Timestamp:     r.Timestamp.UTC().Format("2006-01-02 15:04:05"),
+	}
+}
+
+// certificateViewOf projects the report certificate onto the dashboard view,
+// keeping an unset expiry empty rather than emitting the zero timestamp.
+func certificateViewOf(cert *report.Certificate) *certificateView {
+	if cert == nil {
+		return nil
+	}
+	notAfter := ""
+	if !cert.NotAfter.IsZero() {
+		notAfter = cert.NotAfter.UTC().Format(time.RFC3339)
+	}
+	return &certificateView{
+		Subject:     cert.Subject,
+		Issuer:      cert.Issuer,
+		NotAfter:    notAfter,
+		Version:     cert.Version,
+		Cipher:      cert.CipherSuite,
+		Fingerprint: cert.Fingerprint,
+		SelfSigned:  cert.SelfSigned,
+		Expired:     cert.Expired,
+		Verified:    cert.Verified,
 	}
 }
 

@@ -24,6 +24,7 @@ const RedactedValue = "REDACTED"
 // apply returns the result set with secrets removed when redaction is on.
 // Counters are computed from the original results by the callers, so a
 // redacted report still shows how many hosts were reachable.
+// Certificates are evidence, not secrets, so redaction leaves them untouched.
 func (o Options) apply(results []Result) []Result {
 	if !o.Redact {
 		return results

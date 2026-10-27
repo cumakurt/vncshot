@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -214,8 +215,16 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 		}
 
 		if !errors.Is(err, vnc.ErrConnect) {
-			// The TCP connect succeeded, so the port is open; the service
-			// just did not speak usable RFB.
+			// The TCP connect succeeded, so the port is open. A reset or a
+			// dropped handshake is often a transient server hiccup, so one
+			// retry is allowed here too; a protocol error (malformed banner,
+			// unsupported encoding) is definitive and is not retried.
+			if ctx.Err() == nil && attempt <= maxRetries && isTransientHandshakeError(err) {
+				if waitErr := sleepCtx(ctx, retryDelay(backoff, attempt)); waitErr == nil {
+					continue
+				}
+			}
+
 			res.Open = true
 			res.Attempts = attempt
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -224,9 +233,24 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 				// timeout") would make an operator chase a phantom network
 				// problem, so the real cause is recorded instead.
 				res.Error = ctxErr.Error()
-			} else {
-				res.Error = err.Error()
+				return res
 			}
+
+			if vncRes != nil && vncRes.SawBanner {
+				// The banner was parsed, so the endpoint definitely speaks
+				// RFB: keep the partial evidence (security types, TLS
+				// capability, server name) and record why the session could
+				// not be established.
+				res.RFB = true
+				res.SecurityTypes = vncRes.SecurityTypeNames
+				res.TLS = vncRes.TLS
+				res.Passwordless = vncRes.Passwordless
+				res.ServerName = vncRes.ServerName
+				res.ScreenWidth = vncRes.Width
+				res.ScreenHeight = vncRes.Height
+				res.Certificate = certificateOf(vncRes)
+			}
+			res.Error = err.Error()
 			return res
 		}
 
@@ -264,21 +288,7 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 	res.AuthLocked = vncRes.AuthLocked
 	res.SecurityTypes = vncRes.SecurityTypeNames
 	res.TLS = vncRes.TLS
-	if info := vncRes.TLSInfo; info != nil {
-		res.Certificate = &report.Certificate{
-			Version:     info.Version,
-			CipherSuite: info.CipherSuite,
-			Subject:     info.Subject,
-			Issuer:      info.Issuer,
-			NotBefore:   info.NotBefore,
-			NotAfter:    info.NotAfter,
-			DNSNames:    append([]string(nil), info.DNSNames...),
-			Fingerprint: info.Fingerprint,
-			SelfSigned:  info.SelfSigned,
-			Expired:     info.Expired,
-			Verified:    info.Verified,
-		}
-	}
+	res.Certificate = certificateOf(vncRes)
 	res.ServerName = vncRes.ServerName
 	res.ScreenWidth = vncRes.Width
 	res.ScreenHeight = vncRes.Height
@@ -345,6 +355,23 @@ func isTransientConnectError(err error) bool {
 		errors.Is(err, syscall.EHOSTUNREACH)
 }
 
+// isTransientHandshakeError reports whether a failure that happened after the
+// TCP connect can reasonably succeed on a retry: a dropped connection or a
+// timeout. Anything else is a protocol-level answer and is not retried.
+func isTransientHandshakeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF)
+}
+
 // retryDelay returns the jittered exponential backoff before the next
 // attempt. attempt is 1-based, so the first retry waits
 // [base, base*1.5].
@@ -381,5 +408,26 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
+	}
+}
+
+// certificateOf converts the client's TLS evidence into the report shape.
+func certificateOf(res *vnc.Result) *report.Certificate {
+	if res == nil || res.TLSInfo == nil {
+		return nil
+	}
+	info := res.TLSInfo
+	return &report.Certificate{
+		Version:     info.Version,
+		CipherSuite: info.CipherSuite,
+		Subject:     info.Subject,
+		Issuer:      info.Issuer,
+		NotBefore:   info.NotBefore,
+		NotAfter:    info.NotAfter,
+		DNSNames:    append([]string(nil), info.DNSNames...),
+		Fingerprint: info.Fingerprint,
+		SelfSigned:  info.SelfSigned,
+		Expired:     info.Expired,
+		Verified:    info.Verified,
 	}
 }

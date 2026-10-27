@@ -170,6 +170,9 @@ type rowData struct {
 	PasswordSource string
 	Security       string
 	TLS            bool
+	CertState      string
+	CertStateClass string
+	CertValidity   string
 	ServerName     string
 	Dimensions     string
 	Screenshot     string
@@ -180,12 +183,26 @@ type rowData struct {
 	SearchIndex    string
 }
 
+// certificateEntryData is one dossier entry in the certificate section.
+type certificateEntryData struct {
+	Addr        string
+	Subject     string
+	Issuer      string
+	Window      string
+	Fingerprint string
+	TLS         string
+	Cipher      string
+	Tags        []certificateTag
+	SearchIndex string
+}
+
 type htmlData struct {
-	GeneratedAt string
-	Summary     Summary
-	Cards       []cardData
-	Rows        []rowData
-	Diff        *htmlDiffData
+	GeneratedAt  string
+	Summary      Summary
+	Cards        []cardData
+	Rows         []rowData
+	Certificates []certificateEntryData
+	Diff         *htmlDiffData
 }
 
 // diffRowData is one line of a baseline comparison group.
@@ -290,6 +307,22 @@ func WriteHTMLWithOptions(path string, results []Result, opts Options) error {
 			})
 		}
 
+		// Certificates are evidence from an established TLS session, so they
+		// are listed even when the port is not otherwise reported as open.
+		if cert := r.Certificate; cert != nil {
+			doc.Certificates = append(doc.Certificates, certificateEntryData{
+				Addr:        r.Addr(),
+				Subject:     certificateFieldValue(cert.Subject),
+				Issuer:      certificateFieldValue(cert.Issuer),
+				Window:      certificateWindow(cert),
+				Fingerprint: certificateFieldValue(certificateFingerprint(cert)),
+				TLS:         certificateFieldValue(cert.Version),
+				Cipher:      certificateFieldValue(cert.CipherSuite),
+				Tags:        certificateTags(cert),
+				SearchIndex: r.Addr() + " certificate " + certificateFieldValue(cert.Subject),
+			})
+		}
+
 		// Closed ports are summarised in the counters; listing every one
 		// would drown the table on large ranges.
 		if !r.Open {
@@ -307,6 +340,9 @@ func WriteHTMLWithOptions(path string, results []Result, opts Options) error {
 			PasswordSource: credentialSourceLabel(r.PasswordSource),
 			Security:       securitySummary(r.SecurityTypes),
 			TLS:            r.TLS,
+			CertState:      certificateStateLabel(r.Certificate),
+			CertStateClass: certificateStateClass(r.Certificate),
+			CertValidity:   certificateValidityLine(r.Certificate),
 			ServerName:     r.ServerName,
 			Dimensions:     dims,
 			// The HTML report is shareable, so it shows only the capture
@@ -621,7 +657,7 @@ h1 {
 /* Stat strip ----------------------------------------------------------- */
 .stat-strip {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(9, 1fr);
   border-bottom: 1px solid var(--rule);
 }
 .stat {
@@ -831,6 +867,83 @@ h2 {
   border-color: var(--accent-soft);
   background: var(--accent-soft);
   color: var(--accent);
+}
+.tag.danger {
+  border-color: #EBC6C2;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+/* Certificate evidence ------------------------------------------------- */
+.cert-list {
+  border-top: 1px solid var(--hairline);
+}
+.cert-entry {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.cert-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 18px;
+}
+.cert-addr {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.cert-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cert-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 6px 28px;
+  margin: 11px 0 0;
+}
+.cert-fact {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+}
+.cert-fact dt,
+.cert-key {
+  flex: 0 0 62px;
+  font: 600 9px/1.5 var(--sans);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cert-fact dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  word-break: break-word;
+}
+.cert-hash-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 7px;
+}
+.cert-hash {
+  min-width: 0;
+  color: var(--ink-soft);
+  word-break: break-all;
+}
+.cert-line {
+  margin-top: 4px;
+}
+.cert-validity {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
 /* Baseline comparison -------------------------------------------------- */
 .diff-groups {
@@ -1102,6 +1215,7 @@ footer a:hover { border-bottom-color: var(--accent); }
   <div class="stat"><div class="label">Open ports</div><div class="value">{{.Summary.Open}}</div></div>
   <div class="stat"><div class="label">RFB services</div><div class="value">{{.Summary.RFB}}</div></div>
   <div class="stat{{if .Summary.TLS}} good{{end}}"><div class="label">TLS services</div><div class="value">{{.Summary.TLS}}</div></div>
+  <div class="stat"><div class="label">Self-signed certs</div><div class="value">{{.Summary.SelfSignedCerts}}</div></div>
   <div class="stat alert"><div class="label">Passwordless</div><div class="value">{{.Summary.Passwordless}}</div></div>
   <div class="stat{{if .Summary.WeakCredentials}} alert{{end}}"><div class="label">Weak creds</div><div class="value">{{.Summary.WeakCredentials}}</div></div>
   <div class="stat good"><div class="label">Screenshots</div><div class="value">{{.Summary.Screenshots}}</div></div>
@@ -1204,6 +1318,33 @@ footer a:hover { border-bottom-color: var(--accent); }
   </section>
   {{end}}
 
+  {{if .Certificates}}
+  <section class="section" aria-label="Certificate evidence">
+    <div class="section-head">
+      <h2>Certificates</h2>
+      <span class="section-note">Peer certificate evidence from established TLS sessions</span>
+    </div>
+    <div class="cert-list">
+      {{range .Certificates}}
+      <div class="cert-entry" data-search="{{.SearchIndex}}">
+        <div class="cert-head">
+          <span class="cert-addr">{{.Addr}}</span>
+          <span class="cert-tags">{{range .Tags}}<span class="{{.Class}}">{{.Label}}</span>{{end}}</span>
+        </div>
+        <dl class="cert-facts">
+          <div class="cert-fact"><dt>Subject</dt><dd>{{.Subject}}</dd></div>
+          <div class="cert-fact"><dt>Issuer</dt><dd>{{.Issuer}}</dd></div>
+          <div class="cert-fact"><dt>Valid</dt><dd class="mono">{{.Window}}</dd></div>
+          <div class="cert-fact"><dt>TLS</dt><dd>{{.TLS}}</dd></div>
+          <div class="cert-fact"><dt>Cipher</dt><dd>{{.Cipher}}</dd></div>
+        </dl>
+        <div class="cert-hash-row"><span class="cert-key">SHA-256</span><span class="cert-hash mono">{{.Fingerprint}}</span></div>
+      </div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
   <section class="section">
     <div class="section-head">
       <h2>Open endpoints</h2>
@@ -1225,7 +1366,7 @@ footer a:hover { border-bottom-color: var(--accent); }
             <td class="mono">{{.Port}}</td>
             <td class="{{if .RFB}}yes{{else}}no{{end}}">{{if .RFB}}yes{{else}}no{{end}}</td>
             <td class="{{if .Passwordless}}yes{{else}}no{{end}}">{{if .Passwordless}}yes{{else}}no{{end}}</td>
-            <td>{{if .Security}}{{.Security}}{{else}}<span class="no">—</span>{{end}}{{if .TLS}} <span class="tag tls">tls</span>{{end}}</td>
+            <td>{{if .Security}}{{.Security}}{{else}}<span class="no">—</span>{{end}}{{if .TLS}} <span class="tag tls">tls</span>{{end}}{{if .CertState}}<div class="cert-line"><span class="{{.CertStateClass}}">{{.CertState}}</span>{{if .CertValidity}} <span class="cert-validity">{{.CertValidity}}</span>{{end}}</div>{{end}}</td>
             <td>{{if .Password}}<span class="tag hot">weak</span> <span class="mono">{{.Password}}</span> <span class="cred-source">{{.PasswordSource}}</span>{{else if .AuthLocked}}<span class="tag">locked out</span>{{else}}<span class="no">—</span>{{end}}</td>
             <td>{{.ServerName}}</td>
             <td class="mono">{{.Dimensions}}</td>
