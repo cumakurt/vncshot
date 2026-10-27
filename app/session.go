@@ -48,7 +48,17 @@ type Config struct {
 	Output        string
 	HTML          string
 	PDF           string
+	CSV           string
 	ScreenshotDir string
+
+	// Baseline points at a previous run directory; results are compared with
+	// it so the report can show new and resolved findings.
+	Baseline string
+	// WebhookURL receives a POST when a completed scan contains new
+	// findings or weak credentials.
+	WebhookURL string
+	// Manifest writes a checksum manifest for the run artifacts.
+	Manifest bool
 }
 
 // Progress reports scan advancement to a caller-supplied observer.
@@ -82,7 +92,12 @@ type Outcome struct {
 	JSON    string
 	HTML    string
 	PDF     string
-	ShotDir string
+	CSV     string
+	// Manifest is the checksum manifest path, when one was requested.
+	Manifest string
+	ShotDir  string
+	// Diff is the baseline comparison, nil when no baseline was requested.
+	Diff *Diff
 }
 
 // Prepare validates the request, expands targets and creates the run folder.
@@ -244,4 +259,24 @@ func resolveArtifactPath(value, runDir, fallback string) string {
 		return value
 	}
 	return filepath.Join(runDir, value)
+}
+
+// Diff summarises how a run compares with a baseline run.
+type Diff struct {
+	// Baseline is the run directory that was compared against.
+	Baseline string
+	// New lists findings that were not present in the baseline.
+	New []report.Result
+	// Resolved lists baseline findings that no longer appear.
+	Resolved []report.Result
+	// Changed lists findings whose risk changed (for example a host that
+	// now accepts a weak password).
+	Changed []Change
+}
+
+// Change describes a finding whose state differs from the baseline.
+type Change struct {
+	Before report.Result
+	After  report.Result
+	Reason string
 }

@@ -15,7 +15,16 @@ type Result struct {
 	PasswordSource string `json:"password_source,omitempty"`
 	// AuthLocked records that the server refused further authentication
 	// attempts, so the operator knows the word list was cut short.
-	AuthLocked   bool      `json:"auth_locked,omitempty"`
+	AuthLocked bool `json:"auth_locked,omitempty"`
+	// SecurityTypes lists the RFB security types the server advertised, as
+	// human-readable names (for example "VNC authentication", "VeNCrypt").
+	SecurityTypes []string `json:"security_types,omitempty"`
+	// TLS is true when the server offers an encrypted security type, i.e.
+	// the session can be confidential rather than clear-text.
+	TLS bool `json:"tls,omitempty"`
+	// Attempts is how many TCP connection attempts were needed, which
+	// exposes flaky hosts that only answered after a retry.
+	Attempts     int       `json:"attempts,omitempty"`
 	ServerName   string    `json:"server_name,omitempty"`
 	ScreenWidth  int       `json:"screen_width,omitempty"`
 	ScreenHeight int       `json:"screen_height,omitempty"`
@@ -33,8 +42,10 @@ type Summary struct {
 	Passwordless int `json:"passwordless"`
 	// WeakCredentials counts hosts reached with a weak password.
 	WeakCredentials int `json:"weak_credentials"`
-	Screenshots     int `json:"screenshots"`
-	Errors          int `json:"errors"`
+	// TLS counts RFB services that offer an encrypted security type.
+	TLS         int `json:"tls_services"`
+	Screenshots int `json:"screenshots"`
+	Errors      int `json:"errors"`
 }
 
 // Summarize counts the outcomes in results.
@@ -52,6 +63,9 @@ func Summarize(results []Result) Summary {
 		}
 		if r.Password != "" {
 			s.WeakCredentials++
+		}
+		if r.TLS {
+			s.TLS++
 		}
 		if r.Screenshot != "" {
 			s.Screenshots++
