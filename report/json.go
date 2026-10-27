@@ -19,6 +19,15 @@ type Document struct {
 	Summary     Summary       `json:"summary"`
 	Results     []Result      `json:"results"`
 	Diff        *diffDocument `json:"diff,omitempty"`
+	// ResumedFrom names the run folder this scan continued, so a resumed
+	// run stays traceable to the scan it was interrupted from.
+	ResumedFrom string `json:"resumed_from,omitempty"`
+}
+
+// DocumentOptions carries the metadata a caller wants recorded alongside the
+// results. It is separate from Options because it does not change rendering.
+type DocumentOptions struct {
+	ResumedFrom string
 }
 
 // diffDocument is the JSON-friendly view of a baseline comparison. New and
@@ -52,6 +61,11 @@ func WriteJSON(path string, results []Result) error {
 // WriteJSONWithOptions saves the result set together with the optional
 // baseline comparison, applying the redaction requested by opts.
 func WriteJSONWithOptions(path string, results []Result, opts Options) error {
+	return WriteJSONDocument(path, results, opts, DocumentOptions{})
+}
+
+// WriteJSONDocument writes the report with extra document metadata.
+func WriteJSONDocument(path string, results []Result, opts Options, docOpts DocumentOptions) error {
 	diff := normalizedDiff(opts.redactDiff(opts.Diff))
 
 	doc := Document{
@@ -59,8 +73,9 @@ func WriteJSONWithOptions(path string, results []Result, opts Options) error {
 		Tool:        "vncshot",
 		// Counters describe the findings that were actually observed, so
 		// they are computed before redaction replaces the secret values.
-		Summary: Summarize(results),
-		Results: opts.apply(results),
+		Summary:     Summarize(results),
+		Results:     opts.apply(results),
+		ResumedFrom: docOpts.ResumedFrom,
 	}
 	if diff != nil {
 		doc.Diff = buildDiffDocument(diff)
