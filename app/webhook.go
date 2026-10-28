@@ -99,6 +99,7 @@ type webhookFinding struct {
 	TLS            bool   `json:"tls"`
 	ServerName     string `json:"server_name,omitempty"`
 	Error          string `json:"error,omitempty"`
+	Accepted       bool   `json:"accepted,omitempty"`
 }
 
 // webhookWeakCredential names a host reached with a weak password without
@@ -107,6 +108,22 @@ type webhookWeakCredential struct {
 	IP             string `json:"ip"`
 	Port           int    `json:"port"`
 	PasswordSource string `json:"password_source"`
+	// Accepted records that the operator has already approved this finding,
+	// so a receiver can separate new risk from known-approved noise.
+	Accepted bool `json:"accepted,omitempty"`
+}
+
+// webhookCertEntry mirrors the trust posture of one TLS peer. Only the
+// subject SHA-256 fingerprint travels: the subject text itself is
+// server-selected input that must not be echoed wholesale.
+type webhookCertEntry struct {
+	IP            string `json:"ip"`
+	Port          int    `json:"port"`
+	SubjectSHA256 string `json:"subject_sha256"`
+	SelfSigned    bool   `json:"self_signed"`
+	Expired       bool   `json:"expired"`
+	// ExpiresAt is the certificate not-after time, RFC3339 UTC.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // webhookPayload builds the JSON body for a completed scan. The run directory
@@ -125,6 +142,7 @@ func webhookPayload(out Outcome, version string) map[string]any {
 				TLS:            r.TLS,
 				ServerName:     r.ServerName,
 				Error:          r.Error,
+				Accepted:       r.Accepted,
 			})
 		}
 	}
@@ -138,7 +156,26 @@ func webhookPayload(out Outcome, version string) map[string]any {
 			IP:             r.IP,
 			Port:           r.Port,
 			PasswordSource: r.PasswordSource,
+			Accepted:       r.Accepted,
 		})
+	}
+
+	certificates := make([]webhookCertEntry, 0)
+	for _, r := range out.Results {
+		if !r.TLS || r.Certificate == nil {
+			continue
+		}
+		entry := webhookCertEntry{
+			IP:            r.IP,
+			Port:          r.Port,
+			SubjectSHA256: r.Certificate.Fingerprint,
+			SelfSigned:    r.Certificate.SelfSigned,
+			Expired:       r.Certificate.Expired,
+		}
+		if !r.Certificate.NotAfter.IsZero() {
+			entry.ExpiresAt = r.Certificate.NotAfter.UTC().Format(time.RFC3339)
+		}
+		certificates = append(certificates, entry)
 	}
 
 	return map[string]any{
@@ -149,6 +186,7 @@ func webhookPayload(out Outcome, version string) map[string]any {
 		"summary":          out.Summary,
 		"new_findings":     newFindings,
 		"weak_credentials": weakCredentials,
+		"certificates":     certificates,
 	}
 }
 

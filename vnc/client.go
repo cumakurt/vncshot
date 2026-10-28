@@ -30,8 +30,17 @@ type Options struct {
 	Passwords []Credential
 	// LocalAddr binds the client socket to this source address. The zero
 	// value leaves the choice to the operating system. It applies to every
-	// dial the probe makes, including password-candidate connections.
+	// dial the probe makes, including password-candidate connections. It
+	// has no effect when a proxy is configured.
 	LocalAddr net.IP
+	// ProxyURL routes the probe through a SOCKS5 proxy:
+	// socks5://[user:pass@]host[:port] or
+	// socks5h://[user:pass@]host[:port]. With socks5:// the probe resolves
+	// the target hostname locally and sends the resolved IP to the proxy;
+	// with socks5h:// the proxy resolves the hostname, which matters when
+	// the scanner cannot resolve internal DNS names. The port defaults to
+	// 1080. Empty means direct connection.
+	ProxyURL string
 	// InsecureTLS states that certificate verification must not abort the
 	// probe, which is also the default: the certificate is recorded and its
 	// verification outcome is reported instead of being enforced. The field
@@ -292,11 +301,7 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 // probeOnce runs one complete RFB session. An empty credential means the
 // caller only wants the security-type discovery step.
 func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) (*Result, error) {
-	dialer := net.Dialer{Timeout: opts.ConnectTimeout}
-	if opts.LocalAddr != nil {
-		dialer.LocalAddr = &net.TCPAddr{IP: opts.LocalAddr}
-	}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, err := dialTarget(ctx, addr, opts)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", &connectError{err: err})
 	}
@@ -335,6 +340,23 @@ func probeOnce(ctx context.Context, addr string, opts Options, cred Credential) 
 		}
 	}
 	return c.result, nil
+}
+
+// dialTarget establishes the probe's TCP connection, either directly or
+// through the SOCKS5 proxy configured in opts.ProxyURL. With no proxy the
+// behaviour is byte-for-byte the previous direct dial, including the
+// LocalAddr binding.
+func dialTarget(ctx context.Context, addr string, opts Options) (net.Conn, error) {
+	if opts.ProxyURL != "" {
+		// Note: LocalAddr does not apply to the proxy path; the source
+		// address binding only concerns direct dials.
+		return dialProxy(ctx, opts.ProxyURL, "tcp", addr, opts.ConnectTimeout)
+	}
+	dialer := net.Dialer{Timeout: opts.ConnectTimeout}
+	if opts.LocalAddr != nil {
+		dialer.LocalAddr = &net.TCPAddr{IP: opts.LocalAddr}
+	}
+	return dialer.DialContext(ctx, "tcp", addr)
 }
 
 // discoveryTypes returns the advertised security types learned so far.

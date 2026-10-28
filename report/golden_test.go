@@ -64,7 +64,8 @@ var (
 // goldenResults is the single inventory exercised by every exporter: a
 // passwordless host with a capture, a weak-password host with a capture, an
 // authenticated host without one, a closed port, a self-signed TLS host, a
-// host that requires a client certificate, and a host that needed a retry.
+// host that requires a client certificate, a host that needed a retry, and
+// a TLS host whose certificate expires inside the warning window.
 func goldenResults() []Result {
 	base := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 
@@ -171,6 +172,36 @@ func goldenResults() []Result {
 			DurationMs:    311,
 			Attempts:      2,
 			Timestamp:     base.Add(6 * time.Minute),
+		},
+		// The final fixture exercises the expiry posture: its certificate
+		// expires 20 days after the fixed base clock, inside the default
+		// -cert-warn window of 30 days measured against that clock, which is
+		// the condition the caller turns into ExpiresSoon. The flags are
+		// caller-supplied (see Result.ExpiresSoon), so the fixture sets them
+		// explicitly instead of re-deriving them at render time. NotBefore
+		// and NotAfter are fixed dates so the golden stays stable.
+		{
+			IP:            "198.51.100.80",
+			Port:          5900,
+			Open:          true,
+			RFB:           true,
+			SecurityTypes: []string{"VeNCrypt"},
+			TLS:           true,
+			ServerName:    "Legacy console",
+			DurationMs:    97,
+			Timestamp:     base.Add(7 * time.Minute),
+			ExpiresSoon:   true,
+			Certificate: &Certificate{
+				Version:     "TLS 1.2",
+				CipherSuite: "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+				Subject:     "CN=legacy-console.example.net",
+				Issuer:      "CN=legacy-console.example.net",
+				NotBefore:   time.Date(2025, 11, 26, 0, 0, 0, 0, time.UTC),
+				NotAfter:    time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC),
+				Fingerprint: "51:A0:1B:3E:D8:22:F0:FA:57:40:9A:C0:44:11:F0:1A:" +
+					"83:C0:7A:0E:C6:0A:AA:02:1B:0A:AA:17:0D:41:B0:EE",
+				SelfSigned: true,
+			},
 		},
 	}
 }

@@ -52,6 +52,10 @@ type Options struct {
 	// LocalAddr binds probes to a specific source address. Nil uses the
 	// routing table's choice.
 	LocalAddr net.IP
+	// ProxyURL routes probes through a SOCKS5 proxy:
+	// socks5://[user:pass@]host[:port] or socks5h://... (the proxy resolves
+	// target hostnames). Empty connects directly.
+	ProxyURL string
 	// ShowProgress enables the terminal progress bar.
 	ShowProgress bool
 	// OnProgress, when set, is called once per completed probe. It runs on
@@ -203,6 +207,7 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 		Shared:         opts.Shared,
 		Passwords:      opts.Passwords,
 		LocalAddr:      opts.LocalAddr,
+		ProxyURL:       opts.ProxyURL,
 	}
 
 	var vncRes *vnc.Result

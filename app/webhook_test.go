@@ -221,6 +221,77 @@ func TestWebhookPayloadWithoutBaselineUsesEmptyList(t *testing.T) {
 	}
 }
 
+func TestWebhookPayloadCertificatesAndAccepted(t *testing.T) {
+	expires := time.Date(2026, 12, 31, 12, 0, 0, 0, time.UTC)
+	out := Outcome{
+		Summary: report.Summary{Targets: 3, Open: 3, RFB: 3, TLS: 2},
+		Results: []report.Result{
+			{
+				IP: "10.0.0.1", Port: 5900, Open: true, RFB: true, TLS: true,
+				Certificate: &report.Certificate{
+					Fingerprint: "00aa11",
+					SelfSigned:  true,
+					Expired:     false,
+					NotAfter:    expires,
+				},
+			},
+			{
+				IP: "10.0.0.2", Port: 5900, Open: true, RFB: true, TLS: true,
+				Password:    "hunter2",
+				Accepted:    true,
+				Certificate: &report.Certificate{Fingerprint: "bb22cc", Expired: true},
+			},
+			// Clear-text peer: no TLS, hence no certificates entry.
+			{IP: "10.0.0.3", Port: 5900, Open: true, RFB: true},
+		},
+	}
+
+	data, err := json.Marshal(webhookPayload(out, "1.4.5"))
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+
+	certificates, ok := decoded["certificates"].([]any)
+	if !ok || len(certificates) != 2 {
+		t.Fatalf("certificates = %v, want two entries for the TLS peers", decoded["certificates"])
+	}
+	certificate, _ := certificates[0].(map[string]any)
+	for key, value := range map[string]any{
+		"ip":             "10.0.0.1",
+		"port":           float64(5900),
+		"subject_sha256": "00aa11",
+		"self_signed":    true,
+		"expired":        false,
+		"expires_at":     "2026-12-31T12:00:00Z",
+	} {
+		if certificate[key] != value {
+			t.Errorf("certificate entry %s = %v, want %v", key, certificate[key], value)
+		}
+	}
+	if _, ok := certificates[1].(map[string]any)["expires_at"]; ok {
+		t.Error("a peer with an unset not-after time got an expires_at")
+	}
+}
+
+func TestWebhookPayloadFindingShowsAccepted(t *testing.T) {
+	accepted := report.Result{
+		IP: "10.0.0.9", Port: 5900, Open: true, RFB: true, Passwordless: true, Accepted: true,
+	}
+	out := Outcome{Diff: &Diff{New: []report.Result{accepted}}}
+
+	data, err := json.Marshal(webhookPayload(out, "dev"))
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if !strings.Contains(string(data), `"accepted":true`) {
+		t.Errorf("accepted finding is not marked on the payload: %s", data)
+	}
+}
+
 func TestShouldNotifyWebhook(t *testing.T) {
 	tests := []struct {
 		name string

@@ -896,7 +896,7 @@ func drawCertificateEntry(pdf *pdfType, r Result, y float64) float64 {
 	pdf.SetXY(marginX, y+4.5)
 	pdf.CellFormat(contentWidth, 6.5, fitCellText(pdf, sanitizePDFText(r.Addr()), contentWidth), "", 0, "L", false, 0, "")
 
-	drawCertificateTags(pdf, certificateTags(certificate), marginX, y+12)
+	drawCertificateTags(pdf, resultCertificateTags(r), marginX, y+12)
 
 	colorHairline.draw(pdf)
 	pdf.SetLineWidth(0.2)

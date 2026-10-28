@@ -318,7 +318,7 @@ func WriteHTMLWithOptions(path string, results []Result, opts Options) error {
 				Fingerprint: certificateFieldValue(certificateFingerprint(cert)),
 				TLS:         certificateFieldValue(cert.Version),
 				Cipher:      certificateFieldValue(cert.CipherSuite),
-				Tags:        certificateTags(cert),
+				Tags:        resultCertificateTags(r),
 				SearchIndex: r.Addr() + " certificate " + certificateFieldValue(cert.Subject),
 			})
 		}

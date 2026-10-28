@@ -124,19 +124,46 @@
       ],
       "server_name": "Lab workstation",
       "timestamp": "2026-10-26T12:06:00Z"
+    },
+    {
+      "certificate": {
+        "cipher_suite": "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+        "expired": false,
+        "issuer": "CN=legacy-console.example.net",
+        "not_after": "2026-11-15T00:00:00Z",
+        "not_before": "2025-11-26T00:00:00Z",
+        "self_signed": true,
+        "sha256_fingerprint": "51:A0:1B:3E:D8:22:F0:FA:57:40:9A:C0:44:11:F0:1A:83:C0:7A:0E:C6:0A:AA:02:1B:0A:AA:17:0D:41:B0:EE",
+        "subject": "CN=legacy-console.example.net",
+        "tls_version": "TLS 1.2",
+        "verified": false
+      },
+      "duration_ms": 97,
+      "expires_soon": true,
+      "ip": "198.51.100.80",
+      "open": true,
+      "passwordless": false,
+      "port": 5900,
+      "rfb": true,
+      "security_types": [
+        "VeNCrypt"
+      ],
+      "server_name": "Legacy console",
+      "timestamp": "2026-10-26T12:07:00Z",
+      "tls": true
     }
   ],
   "summary": {
     "accepted_findings": 0,
     "errors": 1,
     "expiring_soon": 0,
-    "open": 6,
+    "open": 7,
     "passwordless": 1,
-    "rfb": 6,
+    "rfb": 7,
     "screenshots": 2,
-    "self_signed_certs": 1,
-    "targets": 7,
-    "tls_services": 2,
+    "self_signed_certs": 2,
+    "targets": 8,
+    "tls_services": 3,
     "weak_credentials": 1
   },
   "tool": "vncshot"

@@ -79,6 +79,26 @@ func certificateTags(c *Certificate) []certificateTag {
 	return tags
 }
 
+// expiringSoonTag is the badge for a certificate the caller flagged as
+// expiring inside the warning window. It uses the warning palette, one step
+// below the expired danger tag, because the certificate is still valid.
+func expiringSoonTag() certificateTag {
+	return certificateTag{"expires soon", "tag hot"}
+}
+
+// resultCertificateTags extends certificateTags with the expiry warning.
+// The flag lives on the result rather than on the certificate because
+// whether a certificate is "expiring soon" depends on the caller's clock
+// and warning window, not on the certificate alone. A result without a
+// certificate renders no tags at all, so the flag alone never produces one.
+func resultCertificateTags(r Result) []certificateTag {
+	tags := certificateTags(r.Certificate)
+	if r.Certificate == nil || !r.ExpiresSoon {
+		return tags
+	}
+	return append(tags, expiringSoonTag())
+}
+
 // certificateValidityLine returns the compact trailing note used next to the
 // state badge, for example "expires 2027-03-04". An expired certificate
 // already carries the expired marker, so no duplicate date is appended.

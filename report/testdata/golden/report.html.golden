@@ -644,17 +644,17 @@ footer a:hover { border-bottom-color: var(--accent); }
   </div>
   <div class="masthead-meta">
     <div class="meta-row"><span class="meta-key">Generated</span><span class="meta-value mono"><GENERATED_AT></span></div>
-    <div class="meta-row"><span class="meta-key">Probes</span><span class="meta-value mono">7</span></div>
+    <div class="meta-row"><span class="meta-key">Probes</span><span class="meta-value mono">8</span></div>
     <div class="meta-row"><span class="meta-key">Use</span><span class="meta-value">Authorized assessments only</span></div>
   </div>
 </header>
 
 <section class="stat-strip" aria-label="Scan summary">
-  <div class="stat"><div class="label">Targets</div><div class="value">7</div></div>
-  <div class="stat"><div class="label">Open ports</div><div class="value">6</div></div>
-  <div class="stat"><div class="label">RFB services</div><div class="value">6</div></div>
-  <div class="stat good"><div class="label">TLS services</div><div class="value">2</div></div>
-  <div class="stat"><div class="label">Self-signed certs</div><div class="value">1</div></div>
+  <div class="stat"><div class="label">Targets</div><div class="value">8</div></div>
+  <div class="stat"><div class="label">Open ports</div><div class="value">7</div></div>
+  <div class="stat"><div class="label">RFB services</div><div class="value">7</div></div>
+  <div class="stat good"><div class="label">TLS services</div><div class="value">3</div></div>
+  <div class="stat"><div class="label">Self-signed certs</div><div class="value">2</div></div>
   <div class="stat alert"><div class="label">Passwordless</div><div class="value">1</div></div>
   <div class="stat alert"><div class="label">Weak creds</div><div class="value">1</div></div>
   <div class="stat good"><div class="label">Screenshots</div><div class="value">2</div></div>
@@ -737,6 +737,21 @@ footer a:hover { border-bottom-color: var(--accent); }
           <div class="cert-fact"><dt>Cipher</dt><dd>TLS_AES_256_GCM_SHA384</dd></div>
         </dl>
         <div class="cert-hash-row"><span class="cert-key">SHA-256</span><span class="cert-hash mono">3F:1A:9C:7E:5B:20:D4:88:11:6C:AF:02:E7:35:91:4B:6D:08:C2:74:9E:15:AB:63:F0:2D:87:5C:19:B4:6E:40</span></div>
+      </div>
+      
+      <div class="cert-entry" data-search="198.51.100.80:5900 certificate CN=legacy-console.example.net">
+        <div class="cert-head">
+          <span class="cert-addr">198.51.100.80:5900</span>
+          <span class="cert-tags"><span class="tag hot">self-signed</span><span class="tag hot">expires soon</span></span>
+        </div>
+        <dl class="cert-facts">
+          <div class="cert-fact"><dt>Subject</dt><dd>CN=legacy-console.example.net</dd></div>
+          <div class="cert-fact"><dt>Issuer</dt><dd>CN=legacy-console.example.net</dd></div>
+          <div class="cert-fact"><dt>Valid</dt><dd class="mono">2025-11-26 → 2026-11-15</dd></div>
+          <div class="cert-fact"><dt>TLS</dt><dd>TLS 1.2</dd></div>
+          <div class="cert-fact"><dt>Cipher</dt><dd>TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384</dd></div>
+        </dl>
+        <div class="cert-hash-row"><span class="cert-key">SHA-256</span><span class="cert-hash mono">51:A0:1B:3E:D8:22:F0:FA:57:40:9A:C0:44:11:F0:1A:83:C0:7A:0E:C6:0A:AA:02:1B:0A:AA:17:0D:41:B0:EE</span></div>
       </div>
       
     </div>
@@ -847,6 +862,21 @@ footer a:hover { border-bottom-color: var(--accent); }
             <td class="err"></td>
             <td class="mono">311 ms <span class="retried">retried ×2</span></td>
             <td class="mono">2026-10-26 12:06:00</td>
+          </tr>
+          
+          <tr data-search="198.51.100.80 5900 authenticated open Legacy console VeNCrypt tls">
+            <td class="mono">198.51.100.80</td>
+            <td class="mono">5900</td>
+            <td class="yes">yes</td>
+            <td class="no">no</td>
+            <td>VeNCrypt <span class="tag tls">tls</span><div class="cert-line"><span class="tag hot">self-signed</span> <span class="cert-validity">expires 2026-11-15</span></div></td>
+            <td><span class="no">—</span></td>
+            <td>Legacy console</td>
+            <td class="mono"></td>
+            <td class="mono">.</td>
+            <td class="err"></td>
+            <td class="mono">97 ms</td>
+            <td class="mono">2026-10-26 12:07:00</td>
           </tr>
           
         </tbody>
