@@ -433,7 +433,7 @@ func runPrune(cfg config) error {
 		return err
 	}
 
-	removed, err := app.PruneRuns(root, keep, cfg.pruneDryRun)
+	removed, err := app.PruneRuns(root, keep, cfg.pruneDryRun, cfg.resume)
 	if err != nil {
 		return err
 	}

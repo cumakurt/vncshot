@@ -111,7 +111,12 @@ func runUsage(dir string) (int64, int, error) {
 // PruneRuns keeps the newest keep runs below root and removes the remaining
 // run directories. With dryRun it reports what it would remove and deletes
 // nothing. keep must be positive so a zero value can never wipe history.
-func PruneRuns(root string, keep int, dryRun bool) (removed []RunInfo, err error) {
+//
+// protect names run directories that must survive pruning even when they are
+// old enough to fall in the removed set. Callers pass the resume source so a
+// continued run never loses the evidence the resumed report still points at;
+// entries may be given as bare run directory names or full paths.
+func PruneRuns(root string, keep int, dryRun bool, protect ...string) (removed []RunInfo, err error) {
 	if keep < 0 {
 		return nil, fmt.Errorf("keep must not be negative")
 	}
@@ -138,6 +143,9 @@ func PruneRuns(root string, keep int, dryRun bool) (removed []RunInfo, err error
 	stale := runs[keep:]
 	removed = make([]RunInfo, 0, len(stale))
 	for _, run := range stale {
+		if protectedNames(protect)[run.Name] {
+			continue
+		}
 		removed = append(removed, run)
 		if dryRun {
 			continue
@@ -148,6 +156,22 @@ func PruneRuns(root string, keep int, dryRun bool) (removed []RunInfo, err error
 		}
 	}
 	return removed, nil
+}
+
+// protectedNames resolves protect entries to run directory names. Full paths
+// are reduced to their base name only when it parses as a run folder name,
+// which is the identity ListRuns reports; anything else cannot match a run
+// directory and is ignored.
+func protectedNames(protect []string) map[string]bool {
+	names := make(map[string]bool, len(protect))
+	for _, entry := range protect {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		names[filepath.Base(filepath.Clean(entry))] = true
+	}
+	return names
 }
 
 // resolveRetentionRoot validates the report root before anything is removed.
@@ -204,5 +228,11 @@ func resolveRetentionRoot(root string) (string, error) {
 // RetainRuns applies the session's configured retention policy to the report
 // root that holds this session's run directory.
 func (s *Session) RetainRuns() (removed []RunInfo, err error) {
-	return PruneRuns(s.ReportRoot(), s.config.KeepRuns, s.config.PruneDryRun)
+	protect := []string(nil)
+	if s.config.ResumeDir != "" {
+		// The resume source keeps the screenshots and evidence the resumed
+		// report still references, so it must survive retention.
+		protect = append(protect, s.config.ResumeDir)
+	}
+	return PruneRuns(s.ReportRoot(), s.config.KeepRuns, s.config.PruneDryRun, protect...)
 }
