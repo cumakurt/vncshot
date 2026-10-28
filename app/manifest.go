@@ -144,7 +144,10 @@ func hashRunDir(runDir string) ([]ManifestEntry, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == ManifestFilename {
+		// The manifest excludes itself, and the detached signature is
+		// written after the manifest covers the other files, so neither can
+		// appear in its own file list.
+		if rel == ManifestFilename || rel == ManifestSignatureFilename {
 			return nil
 		}
 		entry, err := hashFile(path, rel)

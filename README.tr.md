@@ -42,8 +42,11 @@ geçmişi; tümü loopback üzerinde.*
 - [Çıktılar](#çıktılar)
   - [JSON şeması](#json-şeması)
   - [CSV biçimi](#csv-biçimi)
+  - [SARIF çıktısı](#sarif-çıktısı)
   - [Manifest dosyası](#manifest-dosyası)
+  - [Manifest imzalama ve doğrulama](#manifest-imzalama-ve-doğrulama)
   - [Temel karşılaştırma](#temel-karşılaştırma)
+  - [Bulgularda başarısızlık (-fail-on)](#bulgularda-başarısızlık--fail-on)
   - [Webhook bildirimleri](#webhook-bildirimleri)
   - [Kabul ve hariç tutma listeleri](#kabul-ve-hariç-tutma-listeleri)
   - [Sertifika süre takibi](#sertifika-süre-takibi)
@@ -84,6 +87,8 @@ geçmişi; tümü loopback üzerinde.*
 - JSON + kendi kendine yeten HTML raporu (gömülü küçük görseller, filtre, modal)
 - Süreç içinde PDF raporu (harici araç gerekmez)
 - Elektronik tablolar ve ardışık düzenler için sabit sütun düzenli CSV çıktısı
+- CI/SAST panoları için kararlı kural kimlikli ve deterministik sıralı
+  SARIF 2.1.0 çıktısı (`-sarif`)
 - Delili sırlar veya tam çözünürlüklü kareler olmadan paylaşmak için rapor
   redaksiyonu (`-redact`) ve yalnızca önizlemeli HTML (`-thumb-only`)
 - Denetimli silme ve deneme moduyla tarama klasörü saklama (`-keep`, `-prune`)
@@ -91,6 +96,11 @@ geçmişi; tümü loopback üzerinde.*
   `tls` bayrağını kaydeder
 - Önceki taramayla temel karşılaştırma (yeni, çözülen ve değişen bulgular)
 - Delil bütünlüğü için her çıktının SHA-256 manifesti (`-manifest`)
+- Manifest imzalama (`-sign-key`) ve çevrimdışı doğrulama
+  (`-verify-manifest`): ed25519 ile kopyalanan delil klasörleri her makinede
+  kanıtlanabilir kalır
+- CI çıkış kodu denetimi (`-fail-on`): istenen bulgu kategorilerinden biri
+  mevcutsa tarama `3` koduyla başarısız olur
 - Tamamlanınca bildirim: webhook, Slack, SMTP e-posta ve syslog CEF olayları
   (`-webhook`, `-slack-url`, `-mail-server`, `-syslog`)
 - Bilinen bulgular için kabul listesi (`-accept`) ve hiç temas edilmeyecek
@@ -265,8 +275,11 @@ sırasında gömer.
 | `-html` | `<run-dir>/vncshot_report.html` | HTML rapor yolu |
 | `-pdf` | `<run-dir>/vncshot_report.pdf` | PDF rapor yolu (süreç içinde üretilir) |
 | `-csv` | `<run-dir>/vncshot_report.csv` | CSV rapor yolu |
+| `-sarif` | | SARIF 2.1.0 rapor yolu (ayarlandığında varsayılan `<run-dir>/vncshot_report.sarif`) |
 | `-baseline` | | Önceki tarama dizini; bulgular bununla karşılaştırılır |
 | `-manifest` | `false` | Her çıktının SHA-256 özetlerini içeren `<run-dir>/manifest.json` yaz |
+| `-sign-key` | | Manifesti imzalayan ed25519 PKCS#8 özel anahtarı; dosya yokken `0600` izniyle üretilir (`-manifest` gerektirir) |
+| `-fail-on` | | İstenen bulgu kategorilerinden biri eşleşirse `3` koduyla çık: `new`, `resolved`, `changed`, `passwordless`, `weak`, `self-signed`, `cert-expiring` (virgülle ayrılmış) |
 | `-redact` | `false` | Yakalanan parolaları JSON/HTML/PDF içinde `REDACTED` ile değiştir |
 | `-thumb-only` | `false` | HTML içinde yalnızca önizleme görselini göm, tam çözünürlüklü yakalamayı gömme |
 | `-keep` | `0` | Taramadan sonra yalnızca en yeni n tarama klasörünü tut (`0` = hepsini tut) |
@@ -299,6 +312,8 @@ sırasında gömer.
 | `-metrics-addr` | | Prometheus metin metriklerini bu adreste sun (loopback kullanın) |
 | `-interval` | `0s` | Turlar arasında bu kadar bekleyerek sürekli yeniden tara; her tur bir öncekiyle karşılaştırılır |
 | `-selfcheck` | `false` | Ortamı doğrula (root, rapor kökü, TLS kökleri, tarayıcı, saat, loopback, disk) ve çık |
+| `-verify-manifest` | | Bu tarama dizininin imzalı manifestini ve her çıktısını doğrula, sonra çık (root gerekmez) |
+| `-pub-key` | | `-verify-manifest` için açık anahtar (varsayılan `<sign-key>.pub`) |
 
 `-gui-*` bayrakları yalnızca `-gui` ile birlikte anlamlıdır.
 
@@ -901,6 +916,34 @@ olarak RFC 3339 biçimindedir. Satırlar, diğer çıktılarda olduğu gibi IP v
 porta göre sıralanır. Dosya, hangi uç noktaların zayıf bir parolayı kabul
 ettiğini kaydettiği için `0600` izniyle yazılır.
 
+### SARIF çıktısı
+
+`-sarif <yol>`, bulguların CI panoları, GitHub code scanning entegrasyonları
+ve SAST araçları tarafından alınabilmesi için bir
+[SARIF](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+2.1.0 JSON günlüğü yazar. Göreli yollar tarama dizini içinde oluşturulur;
+varsayılan dosya adı `vncshot_report.sarif`'tir. Dosya manifestten önce
+yazılır, böylece `-manifest` onu da kapsar.
+
+Bulgular kararlı kural kimliklerine eşlenir:
+
+| Kural kimliği | Düzey | Koşul |
+|---------------|-------|-------|
+| `passwordless-vnc` | `error` | Uç nokta kimlik doğrulama olmadan bağlantı kabul ediyor (`None` güvenlik tipi) |
+| `weak-credentials` | `error` | Uç nokta zayıf veya parola listesinden bir parolayı kabul ediyor |
+| `tls-self-signed` | `warning` | Kurulan TLS oturumu kendi imzalı sertifika sunuyor |
+| `certificate-expiring` | `warning` | Eş sertifika `-cert-warn` penceresi içinde bitiyor |
+
+Her bulgu için bir SARIF sonucu üretilir; aynı anda hem kendi imzalı hem de
+süresi yaklaşan bir sertifikaya sahip uç nokta iki sonuç üretir. Mesajlar uç
+noktayı adlandırır (örneğin `VNC endpoint 10.0.0.5:5900 accepts connections
+without authentication (security type None)`) ama yakalanan parolanın kendisini
+asla içermez. `runs[].tool.driver` bloğu `vncshot` araç adını, derleme
+sürümünü ve proje adresini kaydeder; `rules[]` her atıfta bulunulan kuralı
+kısaca tanımlar. Sonuçlar sunucu ve porta göre sıralanır; böylece aynı sonuç
+kümesi için tekrarlanan taramalar bayt düzeyinde aynı günlüğü üretir. Temiz bir
+tarama, boş `results` dizisiyle geçerli SARIF üretir.
+
 ### Manifest dosyası
 
 `-manifest`, diğer tüm çıktılardan sonra `<run-dir>/manifest.json` dosyasını
@@ -930,6 +973,41 @@ Amaç delil bütünlüğüdür: bir denetçi klasörü yeniden özetleyip her bo
 Kodu, bir tarama klasörünü yeniden özetleyip eksik, fazla veya değişmiş ilk
 dosyayı bildiren bir doğrulama yardımcısı (`app.VerifyManifest`) içerir; bu
 yardımcı CLI bayrağı olarak sunulmaz.
+
+### Manifest imzalama ve doğrulama
+
+`-sign-key <yol>`, manifesti ed25519 ile imzalar. Anahtar PEM PKCS#8 biçiminde
+olmalıdır; dosya mevcut değilse anahtar çifti anında üretilir: özel anahtar
+`<yol>` yoluna `0600` moduyla, açık anahtar `<yol>.pub` yoluna yazılır ve bir
+bildirim yazdırılır. İmzalama, manifest kesinleştikten sonra yapılır; böylece
+`<run-dir>/manifest.sig` her zaman yazıldığı hâliyle `manifest.json`
+baytlarını kapsar — bu, base64 kodlu bir ed25519 imzasıdır.
+
+İmzalanacak manifest yoksa imzalama anlamsızdır; bu nedenle `-sign-key` için
+`-manifest` gereklidir. İmza dosyası, diğer tüm çıktılar gibi `0600`
+olarak yazılır.
+
+`-verify-manifest <run-dir>`, çevrimdışı bir komuttur (`-prune` gibi tarama
+başlatmadan çıkar ve root gerektirmez): `manifest.json` üzerindeki ed25519
+imzasını doğrular ve ardından onda listelenen her çıktıyı yeniden özetler.
+Açık anahtar `-pub-key <yol>` ile verilir; `-sign-key` verildiyse varsayılan
+`<sign-key>.pub`'dur. Komut, tarama dizini ve anahtar dosyası dışında hiçbir
+şey okumaz; böylece bir değerlendirici, kopyalanmış bir delil klasörünü tarama
+ortamı çoktan kaybolmuş olsa bile herhangi bir makinede doğrulayabilir. Çıkış,
+başarıda `0`, herhangi bir hatada `1` olur ve ilk başarısız çıktı stderr'de
+adlandırılır:
+
+```bash
+sudo vncshot -target 192.168.1.0/24 -manifest -sign-key /root/vncshot-signing.pem
+# açık anahtarı inceleyiciye verin; bu makinede root gerekmez:
+sudo cat /root/vncshot-signing.pem.pub > vncshot-signing.pem.pub
+vncshot -verify-manifest /usr/local/vncshot/20261028-120000 -pub-key vncshot-signing.pem.pub
+# -> manifest signature and artifacts verified: /usr/local/vncshot/20261028-120000
+```
+
+Özel anahtarı tarama yapan makinede tutun ve `.pub` dosyasını inceleyicilere
+dağıtın: onunla herkes, manifestin ve tek bir çıktı baytının bile taramadan
+sonra değişmediğini kanıtlayabilir.
 
 ### Temel karşılaştırma
 
@@ -983,6 +1061,45 @@ raporlarla aynı görüntüleme etiketlerini kullanır: `no auth`, `weak`, `rfb`
   ]
 }
 ```
+
+### Bulgularda başarısızlık (-fail-on)
+
+Bulgular veridir, araç arızası değil: tamamlanan bir tarama, raporları ve
+bildirimleri önce üretildiği için her zaman `0` ile çıkar. Sert bir sinyale
+ihtiyaç duyan ardışık düzenler `-fail-on` ile bir tane ekleyebilir; virgülle
+ayrılmış bulgu kategorileri listesi, her rapor yazıldıktan sonra çalışmanın
+`3` koduyla çıkmasını sağlar:
+
+```bash
+sudo vncshot -target 192.168.1.0/24 -fail-on passwordless,new -yes
+```
+
+Kabul edilen kategoriler (büyük/küçük harf duyarsız, yinelenenler yok sayılır):
+
+| Kategori | Eşleştiği durum |
+|----------|-----------------|
+| `passwordless` | `passwordless: true` olan herhangi bir sonuç |
+| `weak` | Zayıf (dahili liste veya `-word-list`) bir parola kabul eden herhangi bir sonuç |
+| `self-signed` | Eş sertifikası kendi imzalı olan herhangi bir TLS sonucu |
+| `cert-expiring` | `-cert-warn` penceresi içinde süresi biten herhangi bir sertifika |
+| `new` | Temel karşılaştırması yeni bulgular bildirirse (`-baseline` gerektirir) |
+| `resolved` | Temel karşılaştırması çözülen bulgular bildirirse (`-baseline` gerektirir) |
+| `changed` | Temel karşılaştırması değişen bulgular bildirirse (`-baseline` gerektirir) |
+
+`new`, `resolved` ve `changed` iki taramayı karşılaştırdığı için `-baseline`
+gerektirir (ya da önceki turu otomatik olarak temel alan `-interval`); ikisi de
+verilmezse bayrak birleşimi, hiçbir paket gönderilmeden ayrıştırma aşamasında
+reddedilir. Bir veya daha fazla kategori eşleştiğinde şu biçimde bir özet
+satırı
+
+```
+fail-on matched: passwordless (2 passwordless host(s)), new (3 new finding(s))
+```
+
+stderr'e yazdırılır ve süreç `3` ile çıkar. `-interval` ile birlikte kontrol her
+tur için değerlendirilir: eşleşen ilk tur döngüyü durdurur ve `3` ile çıkar.
+`-interval`, `-baseline` ile birleştirilemediği için bu kategoriler otomatik
+tur bazlı karşılaştırmaya dayanır.
 
 ### Webhook bildirimleri
 
@@ -1209,11 +1326,13 @@ davrandığında veya yeni bir kurulumda ilk taramadan önce kullanın.
 | `0` | Tarama tamamlandı, yardım yazdırıldı veya `-version` yazdırıldı |
 | `1` | Yapılandırma, yetki, hedef, G/Ç veya rapor hatası |
 | `2` | Bilinmeyen komut satırı bayrağı (flag paketi kullanım hatası) |
+| `3` | `-fail-on` istenen en az bir bulgu kategorisinde eşleşti; tüm raporlar önce yazıldı |
 | `130` | Ctrl+C veya SIGTERM ile kesildi; kısmi sonuçlar yazıldı |
 
-Açık uç nokta bulan tamamlanmış bir tarama yine `0` ile çıkar: bulgular veridir,
-araç arızası değil. Bir ardışık düzenin bulgu üzerine başarısız olması
-gerekiyorsa JSON özetini veya webhook'u kullanın.
+Açık uç nokta bulan tamamlanmış bir tarama, `-fail-on` istenmedikçe yine `0`
+ile çıkar: bulgular veridir, araç arızası değil. Bir ardışık düzenin bulgu
+üzerinde başarısız olması gerekiyorsa `-fail-on`, JSON özeti veya webhook'u
+kullanın.
 
 ## Performans ayarı
 
@@ -1307,13 +1426,13 @@ taramayı daha küçük çalıştırmalara bölün.
 
 ```
 main.go        CLI bayrakları, root kontrolü, GUI başlatma
-app/           tarama oturumu, çıktı düzeni, temel farkı, manifest, saklama, webhook
+app/           tarama oturumu, çıktı düzeni, temel farkı, manifest, imzalama, fail-on, saklama, webhook
 config/        yapılandırma dosyası ve VNCSHOT_* ortam değişkenlerinden bayrak varsayılanları
 gui/           gömülü web arayüzü (index.html + HTTP sunucusu)
 scanner/       hedef genişletme, worker havuzu, hız sınırı, yeniden deneme ve hedef başına sınırlar
 vnc/           RFB 3.3/3.7/3.8 istemcisi, None-auth ve zayıf parola kimlik doğrulaması, TLS/VeNCrypt, raw yakalama
 screenshot/    PNG kalıcılaştırma
-report/        Sonuç modeli, JSON/HTML/PDF/CSV dışa aktarıcıları, sertifika kanıtı, gömülü PDF yazı tipi
+report/        Sonuç modeli, JSON/HTML/PDF/CSV/SARIF dışa aktarıcıları, sertifika kanıtı, gömülü PDF yazı tipi
 ```
 
 ## Bağımlılıklar

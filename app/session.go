@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -52,10 +53,13 @@ type Config struct {
 	// operator asked for that exact location.
 	OutDirExplicit bool
 
-	Output        string
-	HTML          string
-	PDF           string
-	CSV           string
+	Output string
+	HTML   string
+	PDF    string
+	CSV    string
+	// SARIF, when set, names the SARIF 2.1.0 report path. Empty disables
+	// SARIF output.
+	SARIF         string
 	ScreenshotDir string
 
 	// Baseline points at a previous run directory; results are compared with
@@ -69,6 +73,10 @@ type Config struct {
 	WebhookURL string
 	// Manifest writes a checksum manifest for the run artifacts.
 	Manifest bool
+	// SignKey, when non-nil, is the ed25519 private key used to sign the
+	// manifest. It requires Manifest, and the signature is written as
+	// manifest.sig next to it after the manifest is finalized.
+	SignKey ed25519.PrivateKey
 
 	// SourceAddr binds probes to a specific local address ("", "auto" or an
 	// IP). It matters on multi-homed hosts where the route is ambiguous.
@@ -155,6 +163,8 @@ type Session struct {
 	HTMLPath    string
 	PDFPath     string
 	CSVPath     string
+	// SARIFPath is the SARIF report path, empty when SARIF is disabled.
+	SARIFPath   string
 	ShotDir     string
 	config      Config
 	fallbacked  bool
@@ -193,7 +203,12 @@ type Outcome struct {
 	CSV     string
 	// Manifest is the checksum manifest path, when one was requested.
 	Manifest string
-	ShotDir  string
+	// Signature is the detached manifest signature path, when -sign-key
+	// was configured. It implies Manifest.
+	Signature string
+	// SARIF is the SARIF report path, empty when SARIF was not requested.
+	SARIF   string
+	ShotDir string
 	// Diff is the baseline comparison, nil when no baseline was requested.
 	Diff *Diff
 	// Warning carries non-fatal problems such as a failed webhook
@@ -333,6 +348,9 @@ func Prepare(cfg Config) (*Session, error) {
 		excludedCount:  excludedCount,
 		acceptances:    acceptances,
 		acceptanceFile: cfg.AcceptFile,
+	}
+	if cfg.SARIF != "" {
+		s.SARIFPath = resolveArtifactPath(cfg.SARIF, runDir, "vncshot_report.sarif")
 	}
 	if addr := strings.TrimSpace(cfg.SourceAddr); addr != "" && !strings.EqualFold(addr, "auto") {
 		ip := net.ParseIP(addr)
@@ -491,6 +509,15 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 	if err := report.WriteCSVWithOptions(s.CSVPath, results, reportOpts); err != nil {
 		return out, err
 	}
+	// SARIF is written before the manifest so a manifest covering the run
+	// directory also covers the SARIF artifact. Finding messages never
+	// carry the captured passwords, so redaction has nothing to change.
+	if s.SARIFPath != "" {
+		if err := report.WriteSARIF(s.SARIFPath, results); err != nil {
+			return out, err
+		}
+		out.SARIF = s.SARIFPath
+	}
 
 	if cfg.Manifest {
 		manifestPath, err := WriteManifest(s.RunDir)
@@ -498,6 +525,15 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 			return out, err
 		}
 		out.Manifest = manifestPath
+		// The signature covers the finalized manifest bytes, so it is the
+		// last artifact written for the run.
+		if cfg.SignKey != nil {
+			signaturePath, err := SignManifest(s.RunDir, cfg.SignKey)
+			if err != nil {
+				return out, err
+			}
+			out.Signature = signaturePath
+		}
 	}
 
 	// A receiver outage must never fail a completed scan or hide its
