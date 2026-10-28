@@ -243,6 +243,11 @@ başlatmadan çıkar. `-version` araç adını, derleme sürümünü, GOOS/GOARC
 `vncshot dev (linux/amd64, go1.27.2)`. Yayın sürümünü `install.sh` derleme
 sırasında gömer.
 
+![vncshot konsol çıktısı](docs/screenshots/console.png)
+
+*Laboratuvar sunucularına karşı bir taramanın konsol çıktısı: ilerleme,
+özet ve üretilen rapor dosyaları.*
+
 | Bayrak | Varsayılan | Açıklama |
 |--------|-----------|----------|
 | `-version` | `false` | Derleme bilgisini yazdır ve çık (root gerektirmez) |

@@ -234,6 +234,11 @@ scanning. `-version` prints the tool name, build version, GOOS/GOARCH and Go
 runtime version, for example `vncshot dev (linux/amd64, go1.27.2)`; `install.sh`
 injects the release version at build time.
 
+![vncshot console output](docs/screenshots/console.png)
+
+*Console output of a scan against lab fixtures: progress, summary and the
+generated report files.*
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-version` | `false` | Print build information and exit (does not require root) |
