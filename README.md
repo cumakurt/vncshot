@@ -14,7 +14,7 @@ Use only on networks you own or have explicit written permission to test.
 
 ![vncshot GUI dashboard](docs/screenshots/gui-dashboard.png)
 
-*The local GUI on loopback, in the light theme. The rail lists the working
+*The local GUI, only on your authorized network, in the light theme. The rail lists the working
 views. A finished scan shows progress, severity, the counter strip and that
 scan on the board. Light, Dark and System sit at the bottom of the rail.*
 
@@ -351,7 +351,7 @@ highlights insecure counts and then lists the report files.*
 | `-no-password-check` | `false` | Do not attempt any password. Passwordless hosts are still detected and screenshotted |
 | `-yes` | `false` | Skip the interactive authorization confirmation |
 | `-gui` | `false` | Start the local web GUI instead of a CLI scan |
-| `-gui-host` | `127.0.0.1` | GUI listen address (loopback only) |
+| `-gui-host` | `127.0.0.1` | GUI listen address (only on your authorized network) |
 | `-gui-port` | `0` | GUI listen port (`0` = pick a free port) |
 | `-gui-no-browser` | `false` | Do not open the GUI in a browser automatically |
 | `-proxy` | | SOCKS5 proxy for every probe, `socks5://` (local resolution) or `socks5h://` (proxy resolves); default port 1080 |
@@ -702,7 +702,7 @@ in-flight probes abort and the partial results are still written.
 vncshot -gui
 ```
 
-This starts a local web interface on loopback and prints its session URL to
+This starts a local web interface for use only on your authorized network and prints its session URL to
 the terminal. New scan opens the options for that run: target or target file,
 ports, workers, rate, connect and RFB timeouts, JSON/HTML/PDF/CSV path
 overrides, screenshot directory, skip PDF, shared session, manifest and the
@@ -730,8 +730,10 @@ under the report root and selects one as the baseline for the next scan, with
 "No comparison" as the default. A run folder removed by retention silently
 falls back to "No comparison" instead of leaving a baseline that cannot be read.
 
-The "Passwords" panel holds the word list path and the two skip toggles
-(built-in weak-password list, password testing). The status line shows how
+The "Passwords" panel holds the word list and the two skip toggles
+(built-in weak-password list, password testing). Browse stores a private
+copy of a word list chosen on this computer and fills its path; a path can
+still be typed. The status line shows how
 many password candidates the current run will try, and the findings table
 marks hosts reached with a weak credential.
 

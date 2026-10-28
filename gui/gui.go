@@ -251,7 +251,11 @@ const (
 	// The browser cannot hand the scanner a real path, so the GUI stores a
 	// private copy and the scan reads that copy.
 	maxTargetFileBytes = 256 << 20
-	importDirName      = "imports"
+	// maxWordListBytes caps a word list picked in the browser. The scanner
+	// already refuses more than 500 entries; this bound stops the upload
+	// before that copy is written.
+	maxWordListBytes = 1 << 20
+	importDirName    = "imports"
 	// maxTrendRuns bounds the trend strip window. The cap counts every
 	// candidate folder, including ones whose report cannot be read, so the
 	// payload size stays predictable even in a tree with damaged runs.
@@ -329,7 +333,7 @@ func Run(cfg Config) error {
 
 	fmt.Fprintf(os.Stderr, "\n  vncshot GUI %s\n", cfg.Version)
 	fmt.Fprintf(os.Stderr, "  url:      %s\n", url)
-	fmt.Fprintf(os.Stderr, "  bind:     %s:%d (loopback only)\n", host, addr.Port)
+	fmt.Fprintf(os.Stderr, "  bind:     %s:%d (only on your authorized network)\n", host, addr.Port)
 	fmt.Fprintf(os.Stderr, "  token:    %s\n", token)
 	fmt.Fprintf(os.Stderr, "  reports:  %s\n\n", cfg.Scan.OutDir)
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop the GUI.\n\n")
@@ -375,6 +379,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
 	mux.HandleFunc("/api/feed", s.guard(s.handleFeed))
 	mux.HandleFunc("/api/target-file", s.guard(s.handleTargetFile))
+	mux.HandleFunc("/api/word-list", s.guard(s.handleWordList))
 	mux.HandleFunc("/api/scans", s.guard(s.handleScans))
 	mux.HandleFunc("/api/scans/", s.guard(s.handleScanRoute))
 	mux.HandleFunc("/files/", s.guard(s.handleFiles))
@@ -614,6 +619,17 @@ func listRunFiles(runDir string) []string {
 	return files
 }
 
+// importCopy describes one browser upload stored under the report root.
+type importCopy struct {
+	maxBytes int64
+	fallback string
+	tooLarge string
+	invalid  string
+	required string
+	empty    string
+	failed   string
+}
+
 // handleTargetFile stores a target list picked in the browser. The scan
 // reads a filesystem path, and a browser file dialog does not provide one,
 // so the bytes are copied under the report root and that path is returned.
@@ -622,76 +638,137 @@ func (s *server) handleTargetFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxTargetFileBytes+1<<20)
+	dest, name, err := s.saveImport(w, r, importCopy{
+		maxBytes: maxTargetFileBytes,
+		fallback: "targets.txt",
+		tooLarge: "target file is larger than 256 MiB",
+		invalid:  "target file is not a valid upload",
+		required: "target file is required",
+		empty:    "target file is empty",
+		failed:   "target file could not be stored",
+	})
+	if err != nil {
+		writeImportError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"path": dest, "name": name})
+}
+
+// handleWordList stores a word list picked in the browser and checks it with
+// the same reader the scan uses, so an empty or oversized list is rejected
+// before a path is handed back.
+func (s *server) handleWordList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	dest, name, err := s.saveImport(w, r, importCopy{
+		maxBytes: maxWordListBytes,
+		fallback: "wordlist.txt",
+		tooLarge: "word list is larger than 1 MiB",
+		invalid:  "word list is not a valid upload",
+		required: "word list is required",
+		empty:    "word list is empty",
+		failed:   "word list could not be stored",
+	})
+	if err != nil {
+		writeImportError(w, err)
+		return
+	}
+	creds, readErr := app.Credentials(app.Config{NoDefaultPasswords: true, WordList: dest})
+	if readErr != nil || len(creds) == 0 {
+		_ = os.Remove(dest)
+		if readErr != nil {
+			if i := strings.Index(readErr.Error(), "exceeds the "); i >= 0 {
+				http.Error(w, "word list "+readErr.Error()[i:], http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "word list could not be read", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "word list is empty", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]string{"path": dest, "name": name})
+}
+
+type importFailure struct {
+	status int
+	msg    string
+}
+
+func (e *importFailure) Error() string { return e.msg }
+
+func writeImportError(w http.ResponseWriter, err error) {
+	var failure *importFailure
+	if errors.As(err, &failure) {
+		http.Error(w, failure.msg, failure.status)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
+// saveImport copies one multipart file into the imports directory. The
+// stored name is a timestamp plus a nonce, so the browser-supplied name
+// cannot escape that directory.
+func (s *server) saveImport(w http.ResponseWriter, r *http.Request, spec importCopy) (string, string, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, spec.maxBytes+1<<20)
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			http.Error(w, "target file is larger than 256 MiB", http.StatusRequestEntityTooLarge)
-			return
+			return "", "", &importFailure{status: http.StatusRequestEntityTooLarge, msg: spec.tooLarge}
 		}
-		http.Error(w, "target file is not a valid upload", http.StatusBadRequest)
-		return
+		return "", "", &importFailure{status: http.StatusBadRequest, msg: spec.invalid}
 	}
 	defer r.MultipartForm.RemoveAll()
 
 	src, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "target file is required", http.StatusBadRequest)
-		return
+		return "", "", &importFailure{status: http.StatusBadRequest, msg: spec.required}
 	}
 	defer src.Close()
 
 	root := s.reportRoot()
 	dir := filepath.Join(root, importDirName)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
-		return
+		return "", "", &importFailure{status: http.StatusInternalServerError, msg: spec.failed}
 	}
-	name := storedTargetName(header.Filename)
-	dest := filepath.Join(dir, name)
+	stored := storedImportName(header.Filename, spec.fallback)
+	dest := filepath.Join(dir, stored)
 	rel, err := filepath.Rel(root, dest)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
-		return
+		return "", "", &importFailure{status: http.StatusInternalServerError, msg: spec.failed}
 	}
 
 	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
-		return
+		return "", "", &importFailure{status: http.StatusInternalServerError, msg: spec.failed}
 	}
-	written, copyErr := io.Copy(out, io.LimitReader(src, maxTargetFileBytes+1))
+	written, copyErr := io.Copy(out, io.LimitReader(src, spec.maxBytes+1))
 	closeErr := out.Close()
-	if copyErr != nil || closeErr != nil || written == 0 || written > maxTargetFileBytes {
+	if copyErr != nil || closeErr != nil || written == 0 || written > spec.maxBytes {
 		_ = os.Remove(dest)
-		if written > maxTargetFileBytes {
-			http.Error(w, "target file is larger than 256 MiB", http.StatusRequestEntityTooLarge)
-			return
+		if written > spec.maxBytes {
+			return "", "", &importFailure{status: http.StatusRequestEntityTooLarge, msg: spec.tooLarge}
 		}
 		if written == 0 && copyErr == nil {
-			http.Error(w, "target file is empty", http.StatusBadRequest)
-			return
+			return "", "", &importFailure{status: http.StatusBadRequest, msg: spec.empty}
 		}
-		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
-		return
+		return "", "", &importFailure{status: http.StatusInternalServerError, msg: spec.failed}
 	}
-
-	writeJSON(w, map[string]string{
-		"path": dest,
-		"name": safeImportBase(header.Filename),
-	})
+	return dest, safeImportBase(header.Filename, spec.fallback), nil
 }
 
-// storedTargetName builds a unique file name that stays inside the import
+// storedImportName builds a unique file name that stays inside the import
 // directory. The operator's original name is only a suffix, never a path.
-func storedTargetName(original string) string {
+func storedImportName(original, fallback string) string {
 	var nonce [4]byte
 	_, _ = rand.Read(nonce[:])
 	stamp := time.Now().UTC().Format("20060102-150405")
-	return stamp + "-" + hex.EncodeToString(nonce[:]) + "-" + safeImportBase(original)
+	return stamp + "-" + hex.EncodeToString(nonce[:]) + "-" + safeImportBase(original, fallback)
 }
 
-func safeImportBase(name string) string {
+func safeImportBase(name, fallback string) string {
 	base := filepath.Base(strings.ReplaceAll(name, "\\", "/"))
 	var b strings.Builder
 	for _, r := range base {
@@ -704,7 +781,7 @@ func safeImportBase(name string) string {
 	}
 	cleaned := strings.Trim(b.String(), "._")
 	if cleaned == "" {
-		return "targets.txt"
+		return fallback
 	}
 	if len(cleaned) > 80 {
 		cleaned = cleaned[:80]

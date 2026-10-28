@@ -14,7 +14,7 @@ Yalnızca sahibi olduğunuz veya açık yazılı izniniz bulunan ağlarda kullan
 
 ![vncshot GUI panosu](docs/screenshots/gui-dashboard.png)
 
-*Yerel GUI, loopback üzerinde, açık tema. Menü çalışan görünümleri listeler.
+*Yerel GUI, yalnızca yetkili ağınızda, açık tema. Menü çalışan görünümleri listeler.
 Bitmiş bir tarama ilerlemeyi, önem derecesini, sayaç şeridini ve taramayı
 panoda gösterir. Açık, Koyu ve Sistem menünün altındadır.*
 
@@ -361,7 +361,7 @@ sayaçları vurgular, ardından rapor yollarını listeler.*
 | `-no-password-check` | `false` | Hiç parola deneme. Parolasız hostlar yine tespit edilir ve ekran görüntüsü alınır |
 | `-yes` | `false` | Etkileşimli yetki onayını atla |
 | `-gui` | `false` | CLI taraması yerine yerel web GUI'sini başlat |
-| `-gui-host` | `127.0.0.1` | GUI dinleme adresi (yalnızca loopback) |
+| `-gui-host` | `127.0.0.1` | GUI dinleme adresi (yalnızca yetkili ağınızda) |
 | `-gui-port` | `0` | GUI dinleme portu (`0` = boş port seç) |
 | `-gui-no-browser` | `false` | GUI'yi tarayıcıda otomatik açma |
 | `-proxy` | | Tüm sondalar için SOCKS5 proxy, `socks5://` (yerel çözümleme) veya `socks5h://` (proxy çözer); varsayılan port 1080 |
@@ -709,7 +709,7 @@ durur ve kısmi sonuçlar yine de yazılır.
 vncshot -gui
 ```
 
-Bu, loopback üzerinde yerel bir web arayüzü başlatır ve oturum URL'sini
+Bu, yalnızca yetkili ağınızda kullanılacak yerel bir web arayüzü başlatır ve oturum URL'sini
 terminale yazdırır. New scan o taramaya ait seçenekleri açar: hedef veya hedef
 dosyası, portlar, worker sayısı, hız, bağlantı ve RFB zaman aşımları,
 JSON/HTML/PDF/CSV yol geçersiz kılmaları, ekran görüntüsü dizini, PDF atlama,
@@ -739,8 +739,10 @@ olarak seçer; varsayılan "No comparison" değeridir. Saklama ile silinmiş bir
 tarama klasörü, okunamayan bir temel bırakmak yerine sessizce "No comparison"
 değerine döner.
 
-"Passwords" paneli word-list yolunu ve iki atlama anahtarını (yerleşik zayıf
-parola listesi, parola testi) barındırır. Durum satırı geçerli taramanın kaç
+"Passwords" paneli sözcük listesini ve iki atlama anahtarını (yerleşik zayıf
+parola listesi, parola testi) barındırır. Gözat, bu bilgisayardan seçilen
+sözcük listesinin özel kopyasını saklar ve yolunu doldurur; yol elle de
+yazılabilir. Durum satırı geçerli taramanın kaç
 parola adayı deneyeceğini gösterir ve bulgu tablosu zayıf kimlik bilgisiyle
 erişilen hostları işaretler.
 

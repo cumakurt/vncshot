@@ -533,7 +533,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "Passwordless detection and its one-frame screenshot always run and\n")
 	fmt.Fprintf(w, "cannot be turned off.\n\n")
 	fmt.Fprintf(w, "-gui starts a local web interface with the same options and live\n")
-	fmt.Fprintf(w, "progress. It listens on loopback only and does not require root.\n\n")
+	fmt.Fprintf(w, "progress. Use it only on your authorized network. It does not require root.\n\n")
 	fmt.Fprintf(w, "Flags:\n")
 	flag.PrintDefaults()
 	fmt.Fprintf(w, "\nDeveloper: Cuma KURT <cumakurt@gmail.com>\n")

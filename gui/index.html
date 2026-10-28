@@ -904,7 +904,7 @@
         <button type="button" data-theme-choice="dark" data-i18n="Dark" aria-pressed="false">Dark</button>
         <button type="button" data-theme-choice="system" data-i18n="System" aria-pressed="false">System</button>
       </div>
-      <p><span data-i18n="Loopback only">Loopback only</span><br>vncshot <span id="version">dev</span></p>
+      <p><span data-i18n="Only on your authorized network">Only on your authorized network</span><br>vncshot <span id="version">dev</span></p>
     </div>
   </aside>
 
@@ -1044,8 +1044,12 @@
         <p class="hint" data-i18n="This check always runs and cannot be turned off.">This check always runs and cannot be turned off.</p>
         <label>
           <span class="lbl" data-i18n="Word list">Word list</span>
-          <input type="text" id="word_list" placeholder="/home/operator/wordlist.txt (one per line)" data-i18n-placeholder="word list path">
+          <span class="file-pick">
+            <input type="text" id="word_list" placeholder="/home/operator/wordlist.txt (one per line)" data-i18n-placeholder="word list path">
+            <button type="button" class="btn btn-ghost" id="wordListBrowse" data-i18n="Browse">Browse</button>
+          </span>
         </label>
+        <input type="file" id="wordListPicker" class="file-picker" tabindex="-1" aria-label="Word list" data-i18n-aria="Word list">
         <label class="check">
           <input type="checkbox" id="no_default_passwords">
           <span data-i18n="Skip the built-in weak-password list">Skip the built-in weak-password list</span>
@@ -1270,7 +1274,7 @@
     </div>
     <div id="view-about" class="view">
       <div class="masthead"><div><h1 data-i18n="About">About</h1></div></div>
-      <p>vncshot <span id="aboutVersion">dev</span> <span data-i18n="is a local RFB survey bench. It listens on loopback and does not require root.">is a local RFB survey bench. It listens on loopback and does not require root.</span></p>
+      <p>vncshot <span id="aboutVersion">dev</span> <span data-i18n="is a local RFB survey bench. Use it only on your authorized network. It does not require root.">is a local RFB survey bench. Use it only on your authorized network. It does not require root.</span></p>
       <p class="hint" data-i18n="Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.">Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.</p>
     </div>
     <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true"
@@ -1523,7 +1527,7 @@
     "Jobs": "İşler",
     "Light": "Açık",
     "Dark": "Koyu",
-    "Loopback only": "Yalnızca yerel bağlantı",
+    "Only on your authorized network": "Yalnızca yetkili ağınızda",
     "Rail": "Menü",
     "Search": "Ara",
     "Scans": "Taramalar",
@@ -1637,7 +1641,7 @@
     "Live log paused": "Canlı kayıt duraklatıldı",
     "Endpoints in the selected scan. Choosing one opens its detail.": "Seçilen taramadaki uç noktalar. Birini seçince ayrıntısı açılır.",
     "No hosts yet.": "Henüz host yok.",
-    "is a local RFB survey bench. It listens on loopback and does not require root.": "yerel bir RFB inceleme aracıdır. Yalnızca bu makinede dinler ve root gerekmez.",
+    "is a local RFB survey bench. Use it only on your authorized network. It does not require root.": "yerel bir RFB inceleme aracıdır. Yalnızca yetkili ağınızda kullanın. Root gerekmez.",
     "Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.": "Klavye: Ctrl+K veya Cmd+K aramayı açar. ? kısayolları listeler. G ardından D, F, H, S veya N geçiş yapar.",
     "open full size": "tam boyutta aç",
     "Captured framebuffer": "Yakalanan ekran",
@@ -1666,6 +1670,8 @@
     "Target file": "Hedef dosyası",
     "Browse": "Gözat",
     "Target file ready": "Hedef dosyası hazır",
+    "Word list ready": "Sözcük listesi hazır",
+    "word list was not stored": "Sözcük listesi kaydedilemedi",
     "target file was not stored": "Hedef dosyası kaydedilemedi",
     "Ports": "Portlar",
     "Workers": "İşçi",
@@ -2852,16 +2858,13 @@
   $("newScan").addEventListener("click", openScanSetup);
   $("newScanRail").addEventListener("click", openScanSetup);
   $("scanSetupClose").addEventListener("click", closeScanSetup);
-  $("fileBrowse").addEventListener("click", function () {
-    $("filePicker").click();
-  });
-  $("filePicker").addEventListener("change", function () {
-    var picked = $("filePicker").files && $("filePicker").files[0];
-    $("filePicker").value = "";
+  function uploadPickedFile(picker, url, fieldId, readyKey, missingKey, fallbackName) {
+    var picked = picker.files && picker.files[0];
+    picker.value = "";
     if (!picked) return;
     var body = new FormData();
-    body.append("file", picked, picked.name || "targets.txt");
-    fetch("/api/target-file", {
+    body.append("file", picked, picked.name || fallbackName);
+    fetch(url, {
       method: "POST",
       headers: { "X-Vncshot-Token": token },
       body: body
@@ -2869,14 +2872,26 @@
       if (!res.ok) return res.text().then(function (msg) { throw new Error(msg.trim() || res.statusText); });
       return res.json();
     }).then(function (doc) {
-      if (!doc || !doc.path) throw new Error(t("target file was not stored"));
-      $("file").value = doc.path;
+      if (!doc || !doc.path) throw new Error(t(missingKey));
+      $(fieldId).value = doc.path;
       saveForm();
-      toast(t("Target file ready"));
+      toast(t(readyKey));
     }).catch(function (err) {
       $("errorBox").classList.remove("hidden");
       $("errorBox").textContent = err.message;
     });
+  }
+  $("fileBrowse").addEventListener("click", function () {
+    $("filePicker").click();
+  });
+  $("filePicker").addEventListener("change", function () {
+    uploadPickedFile($("filePicker"), "/api/target-file", "file", "Target file ready", "target file was not stored", "targets.txt");
+  });
+  $("wordListBrowse").addEventListener("click", function () {
+    $("wordListPicker").click();
+  });
+  $("wordListPicker").addEventListener("change", function () {
+    uploadPickedFile($("wordListPicker"), "/api/word-list", "word_list", "Word list ready", "word list was not stored", "wordlist.txt");
   });
 
   $("form").addEventListener("submit", function (ev) {

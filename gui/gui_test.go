@@ -930,6 +930,102 @@ func TestTargetFileBrowseStoresAPrivateCopy(t *testing.T) {
 
 func postTargetFile(t *testing.T, client *http.Client, base, name, content string, headers map[string]string) (*http.Response, []byte) {
 	t.Helper()
+	return postUpload(t, client, base+"/api/target-file", name, content, headers)
+}
+
+func TestWordListBrowseStoresAPrivateCopy(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded html: %v", err)
+	}
+	html := string(page)
+	if !strings.Contains(html, `id="wordListBrowse"`) || !strings.Contains(html, `id="wordListPicker"`) {
+		t.Fatal("word list field has no browse control")
+	}
+	if !strings.Contains(html, `"/api/word-list"`) {
+		t.Fatal("word list browse does not upload to /api/word-list")
+	}
+
+	root := t.TempDir()
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, body := postUpload(t, client, ts.URL+"/api/word-list", "../../secrets.txt", "alpha\n# skip\n\nbeta\n", auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload = %d, body %s", resp.StatusCode, body)
+	}
+	var stored struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &stored); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	if stored.Name != "secrets.txt" {
+		t.Fatalf("stored name = %q, want the base name only", stored.Name)
+	}
+	rel, err := filepath.Rel(root, stored.Path)
+	if err != nil || !strings.HasPrefix(rel, "imports"+string(os.PathSeparator)) {
+		t.Fatalf("stored path %q is not under imports", stored.Path)
+	}
+	data, err := os.ReadFile(stored.Path)
+	if err != nil {
+		t.Fatalf("read stored word list: %v", err)
+	}
+	if string(data) != "alpha\n# skip\n\nbeta\n" {
+		t.Fatalf("stored content = %q", data)
+	}
+	info, err := os.Stat(stored.Path)
+	if err != nil {
+		t.Fatalf("stat stored word list: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("stored mode = %o, want 0600", info.Mode().Perm())
+	}
+
+	resp, body = postUpload(t, client, ts.URL+"/api/word-list", "empty.txt", "# only a comment\n", auth)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("comment-only upload = %d, want 400 (%s)", resp.StatusCode, body)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "imports"))
+	if err != nil {
+		t.Fatalf("read imports: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("imports has %d files after a rejected list, want 1", len(entries))
+	}
+
+	var tooMany strings.Builder
+	for i := 0; i < 501; i++ {
+		tooMany.WriteString("pw\n")
+	}
+	resp, body = postUpload(t, client, ts.URL+"/api/word-list", "huge.txt", tooMany.String(), auth)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "exceeds the 500-entry limit") {
+		t.Fatalf("over-limit upload = %d, body %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), root) {
+		t.Fatalf("over-limit error leaks the report root: %s", body)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/word-list", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Vncshot-Token", testToken)
+	got, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET word list: %v", err)
+	}
+	got.Body.Close()
+	if got.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET word list = %d, want 405", got.StatusCode)
+	}
+}
+
+func postUpload(t *testing.T, client *http.Client, target, name, content string, headers map[string]string) (*http.Response, []byte) {
+	t.Helper()
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 	part, err := writer.CreateFormFile("file", name)
@@ -942,7 +1038,7 @@ func postTargetFile(t *testing.T, client *http.Client, base, name, content strin
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, base+"/api/target-file", &buf)
+	req, err := http.NewRequest(http.MethodPost, target, &buf)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
