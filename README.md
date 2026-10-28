@@ -108,6 +108,8 @@ previous-run history, all on loopback.*
   summary counters
 - Scheduled scanning (`-interval`) with automatic per-round baselines and a
   Prometheus metrics endpoint (`-metrics-addr`)
+- Optional systemd timer installed by `install.sh --systemd`, with all scan
+  options in `/etc/vncshot/scan.conf`
 - SOCKS5 proxy support (`-proxy`) for reaching isolated segments through a
   jumphost
 - Environment self-check (`-selfcheck`) for new deployments
@@ -167,6 +169,7 @@ go build -o vncshot .
 ./install.sh -y               # non-interactive
 ./install.sh --build-only     # skip dependency installation
 ./install.sh --no-install-bin # build only; do not install system-wide
+./install.sh --systemd        # also install and enable the daily systemd timer
 ```
 
 `install.sh` detects the Linux distribution's package manager (apt, dnf,
@@ -206,6 +209,54 @@ sudo rm -rf /usr/local/vncshot     # deletes every captured report and screensho
 
 Remove `~/.cache/vncshot-install` as well if you want to drop the cached Go
 tarball downloaded by `install.sh`.
+
+### Scheduled scanning with systemd
+
+`install.sh --systemd` turns the scan into a systemd timer. After the usual
+build and install it writes `/etc/systemd/system/vncshot.service`,
+`/etc/systemd/system/vncshot.timer` and an example configuration at
+`/etc/vncshot/scan.conf`, then enables the timer:
+
+```bash
+sudo ./install.sh --systemd                   # daily at 03:30
+sudo ./install.sh --systemd 'Mon..Fri 04:00'  # custom OnCalendar expression
+```
+
+All scan options come from `/etc/vncshot/scan.conf`, an environment file the
+service loads with `EnvironmentFile=`. Every `VNCSHOT_*` variable maps to a
+flag (`-target` becomes `VNCSHOT_TARGET`, `-ports` becomes
+`VNCSHOT_PORTS`, `-word-list` becomes `VNCSHOT_WORD_LIST`); the generated
+file ships with commented examples, and `VNCSHOT_ARGS` passes extra
+command-line arguments through verbatim. The unit runs the scan with
+`-yes`, which skips the interactive authorization confirmation — make sure
+the configured targets are authorized before enabling the timer. The timer
+uses `Persistent=true`, so a missed run (host powered off) is started on
+the next boot.
+
+Next steps:
+
+```bash
+sudoedit /etc/vncshot/scan.conf        # set VNCSHOT_TARGET and friends
+systemctl restart vncshot.timer        # pick up configuration changes
+systemctl list-timers vncshot.timer    # check the next scheduled run
+```
+
+The operation is idempotent: re-running `--systemd` regenerates the unit
+files and never overwrites an existing non-empty `scan.conf`. A malformed
+`OnCalendar` expression is rejected up front when `systemd-analyze` is
+available, and a failing `systemctl` call only warns — the units stay in
+place and the timer can be enabled manually. The systemd paths can be
+redirected for staged installs with `SYSTEMD_UNIT_DIR` and
+`VNCSHOT_CONF_DIR`.
+
+To stop the timer and remove the generated units (the binary, the reports
+and `/etc/vncshot/scan.conf` are kept):
+
+```bash
+sudo ./install.sh --systemd-uninstall
+```
+
+`--uninstall` also removes the units when they are present.
 
 ## Privileges
 
