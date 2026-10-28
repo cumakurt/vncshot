@@ -735,6 +735,16 @@ against the run the dashboard is serving (`POST /api/diff`) and opens a
 and changed endpoints. The panel has a close button and is hidden whenever
 another run becomes current.
 
+The dashboard follows the operating system colour scheme: the light "paper"
+theme has an automatic dark variant driven by a `prefers-color-scheme` block
+over the same CSS token set, with no toggle and no JavaScript. Findings
+thumbnails open an in-page lightbox (Esc, backdrop click or the Close button
+dismisses it; focus returns to the thumbnail) instead of navigating to the raw
+file, and the lightbox keeps a "open full size" link for copy/download use.
+Keyboard focus rings are drawn for every control, the status pill and the
+activity feed announce changes with `aria-live`, and activity lines are
+coloured by event severity.
+
 Form values survive a page reload in `localStorage` (target, ports, timeouts,
 output paths, password options and the other form fields). The authorization
 checkbox is deliberately never persisted and must be ticked again for every

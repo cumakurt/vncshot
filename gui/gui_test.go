@@ -1510,3 +1510,46 @@ func TestDashboardWiresTrendsAndCompare(t *testing.T) {
 		t.Error("compareGroup does not write textContent")
 	}
 }
+
+// TestDashboardVisualAffordances guards the visual layer added for the
+// design pass: the balanced counter strip, the screenshot lightbox, the
+// automatic dark theme and the accessibility hooks.
+func TestDashboardVisualAffordances(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded html: %v", err)
+	}
+	html := string(page)
+
+	cases := []struct {
+		name string
+		need string
+	}{
+		// Nine counters must not wrap into a lone full-width cell, so the
+		// column count is explicit and only divisors of nine are used.
+		{"counter strip uses nine columns", "grid-template-columns: repeat(9, minmax(0, 1fr))"},
+		{"counter strip degrades to three columns", "grid-template-columns: repeat(3, minmax(0, 1fr))"},
+		// Lightbox dialog with an explicit close affordance.
+		{"lightbox container", `id="lightbox"`},
+		{"lightbox is a modal dialog", `aria-modal="true"`},
+		{"lightbox image", `id="lightboxImage"`},
+		{"lightbox caption", `id="lightboxCaption"`},
+		{"lightbox keeps the raw file reachable", `id="lightboxOpen"`},
+		// Accessibility hooks.
+		{"status is announced", `aria-live="polite"`},
+		{"focus ring for keyboard users", ":focus-visible"},
+		// Automatic dark theme driven by the existing token set.
+		{"automatic dark scheme", "@media (prefers-color-scheme: dark)"},
+	}
+	for _, tc := range cases {
+		if !strings.Contains(html, tc.need) {
+			t.Errorf("%s: index.html is missing %q", tc.name, tc.need)
+		}
+	}
+
+	// Every surface colour must come from a token so the dark variant can
+	// override it; a hardcoded white panel would stay bright on dark.
+	if strings.Contains(html, "background: #fff;") {
+		t.Error("index.html still hardcodes a white background instead of var(--panel)")
+	}
+}

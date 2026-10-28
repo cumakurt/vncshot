@@ -744,6 +744,16 @@ panonun sunduğu taramayla karşılaştırır (`POST /api/diff`) ve bulguların
 `Baseline <temel> → <hedef>` panelini açar. Panelde bir kapatma düğmesi vardır
 ve başka bir tarama geçerli hale geldiğinde gizlenir.
 
+Panel, işletim sisteminin renk şemasını izler: açık "paper" temasının, aynı
+CSS değişken kümesi üzerinden `prefers-color-scheme` bloğuyla otomatik bir
+koyu varyantı vardır; anahtar ve JavaScript gerekmez. Bulgu küçük
+görüntüleri ham dosyaya gitmek yerine sayfa içi bir lightbox açar (Esc,
+arka plana tıklama veya Kapat düğmesi kapatır; odak küçük görüntüye döner)
+ve lightbox kopyalama/indirme için "tam boyut aç" bağlantısını korur. Her
+denetim için klavye odak halkası çizilir, durum rozeti ve etkinlik akışı
+değişiklikleri `aria-live` ile bildirir, etkinlik satırları olay önem
+derecesine göre renklendirilir.
+
 Form değerleri sayfa yenilenmesinden sonra `localStorage` içinde korunur
 (hedef, portlar, zaman aşımları, çıktı yolları, parola seçenekleri ve diğer
 form alanları). Yetki onay kutusu bilinçli olarak asla saklanmaz ve her tarama

@@ -18,9 +18,52 @@
     --warn-soft: #fdf1e0;
     --danger: #a3312a;
     --radius: 4px;
+    /* Surfaces and hairlines live in tokens so the dark variant can swap the
+       whole palette without touching component rules. */
+    --panel: #fff;
+    --row-hover: #fdfbf7;
+    --row-line: #eee8e0;
+    --dot-line: #e8e1d7;
+    --ok-border: #bcd9d3;
+    --hot-border: #f0d3ab;
+    --danger-soft: #fbeeec;
+    --danger-border: #e8c9c5;
+    --warn-ink: #7c4512;
+    --overlay: rgba(16, 22, 26, 0.82);
+    --shadow: rgba(20, 26, 30, 0.22);
     --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
     --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  /* Dark variant: same structure, inverted paper. The accent, warning and
+     danger hues keep their meaning but are lifted for contrast on a dark
+     ground so badges and counters stay readable. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #14181c;
+      --paper-2: #1a1f24;
+      --ink: #e6ecf0;
+      --ink-soft: #b3c0c8;
+      --muted: #8695a0;
+      --rule: #2f3a42;
+      --accent: #5ec9b6;
+      --accent-soft: #16302c;
+      --warn: #e8a45c;
+      --warn-soft: #332414;
+      --danger: #e8877d;
+      --panel: #191e23;
+      --row-hover: #1f262c;
+      --row-line: #262f36;
+      --dot-line: #2b353d;
+      --ok-border: #2c5a52;
+      --hot-border: #5c4322;
+      --danger-soft: #3a2220;
+      --danger-border: #6a3a35;
+      --warn-ink: #f0c9a0;
+      --overlay: rgba(6, 9, 11, 0.88);
+      --shadow: rgba(0, 0, 0, 0.55);
+    }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -81,7 +124,7 @@
   }
   input[type="text"], input[type="number"], select {
     width: 100%;
-    background: #fff;
+    background: var(--panel);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
     padding: 7px 9px;
@@ -213,18 +256,18 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     border: 1px solid var(--rule);
-    background: #fff;
+    background: var(--panel);
     color: var(--muted);
   }
   .pill .dot {
     width: 7px; height: 7px; border-radius: 50%;
     background: var(--muted);
   }
-  .pill.running { border-color: #bcd9d3; background: var(--accent-soft); color: var(--accent); }
+  .pill.running { border-color: var(--ok-border); background: var(--accent-soft); color: var(--accent); }
   .pill.running .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
-  .pill.completed { border-color: #bcd9d3; background: var(--accent-soft); color: var(--accent); }
+  .pill.completed { border-color: var(--ok-border); background: var(--accent-soft); color: var(--accent); }
   .pill.completed .dot { background: var(--accent); }
-  .pill.failed, .pill.cancelled { border-color: #e8c9c5; background: #fbeeec; color: var(--danger); }
+  .pill.failed, .pill.cancelled { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
   .pill.failed .dot, .pill.cancelled .dot { background: var(--danger); }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
@@ -251,21 +294,31 @@
     font-family: var(--mono);
   }
 
+  /* Nine counters. auto-fit produced an 8 + 1 wrap where ERRORS spanned the
+     entire second row, leaving a lone full-width cell. Only 1, 3 and 9 divide
+     nine evenly, so the strip uses nine columns on desktop (one clean row)
+     and three below 900px (three clean rows) — never an empty filler cell.
+     The 1px gap over a rule-coloured background draws the separators in both
+     directions without per-cell border bookkeeping. */
   .counters {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 0;
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+    gap: 1px;
     border: 1px solid var(--rule);
     border-radius: var(--radius);
-    background: #fff;
+    background: var(--rule);
     margin: 24px 0;
     overflow: hidden;
   }
   .counter {
-    padding: 14px 16px;
-    border-right: 1px solid var(--rule);
+    padding: 14px 12px;
+    background: var(--panel);
+    min-width: 0;
+    overflow-wrap: break-word;
   }
-  .counter:last-child { border-right: 0; }
+  @media (max-width: 900px) {
+    .counters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
   .counter .k {
     font-size: 10px;
     text-transform: uppercase;
@@ -284,16 +337,20 @@
   /* Trend strip: one column per previous run, stacked passwordless + weak
      bars, clickable to open the run. */
   .trend-strip {
+    /* Centred and allowed to grow: with a single run a left-pinned column
+       left a wide empty panel, so the columns share the strip instead. */
     display: flex;
     align-items: flex-end;
+    justify-content: center;
     gap: 6px;
     overflow-x: auto;
     padding: 12px 10px;
     border: 1px solid var(--rule);
     border-radius: var(--radius);
-    background: #fff;
+    background: var(--panel);
     min-height: 108px;
   }
+  .trend-col { flex: 0 1 88px; }
   .trend-col {
     display: flex;
     flex-direction: column;
@@ -341,7 +398,7 @@
   .btn-mini {
     border: 1px solid var(--rule);
     border-radius: var(--radius);
-    background: #fff;
+    background: var(--panel);
     padding: 3px 9px;
     font-size: 10.5px;
     font-weight: 600;
@@ -378,7 +435,7 @@
     align-items: baseline;
     gap: 10px;
     padding: 4px 0;
-    border-bottom: 1px dotted #e8e1d7;
+    border-bottom: 1px dotted var(--dot-line);
     color: var(--ink-soft);
   }
   .compare-groups .none { color: var(--muted); font-size: 12px; }
@@ -411,8 +468,8 @@
     padding: 8px 10px;
     border-bottom: 1px solid var(--rule);
   }
-  td { padding: 8px 10px; border-bottom: 1px solid #eee8e0; vertical-align: middle; }
-  tr:hover td { background: #fdfbf7; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--row-line); vertical-align: middle; }
+  tr:hover td { background: var(--row-hover); }
   .mono { font-family: var(--mono); font-size: 11.5px; }
   .tag {
     display: inline-block;
@@ -423,10 +480,21 @@
     color: var(--ink-soft);
     border: 1px solid var(--rule);
   }
-  .tag.hot { background: var(--warn-soft); border-color: #f0d3ab; color: var(--warn); }
-  .tag.ok { background: var(--accent-soft); border-color: #bcd9d3; color: var(--accent); }
+  .tag.hot { background: var(--warn-soft); border-color: var(--hot-border); color: var(--warn); }
+  .tag.ok { background: var(--accent-soft); border-color: var(--ok-border); color: var(--accent); }
   a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-  .shot-link { display: inline-block; }
+  /* Keyboard focus is visible everywhere, not just in text inputs. The
+     :not(:focus-visible) reset keeps a mouse click from drawing the ring. */
+  a:focus-visible,
+  button:focus-visible,
+  .run-name:focus-visible,
+  .trend-col:focus-visible,
+  .shot-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+  .shot-link { display: inline-block; border-radius: 2px; }
   .shot-link img {
     height: 34px;
     width: 54px;
@@ -434,14 +502,70 @@
     border: 1px solid var(--rule);
     border-radius: 2px;
     display: block;
+    transition: border-color .12s ease;
   }
+  .shot-link:hover img { border-color: var(--accent); }
+
+  /* Screenshot lightbox: the dashboard mirrors the modal of the HTML report
+     so a capture can be inspected without leaving the page. */
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    background: var(--overlay);
+  }
+  .lightbox-figure {
+    margin: 0;
+    max-width: min(1180px, 96vw);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .lightbox-figure img {
+    max-width: 100%;
+    max-height: calc(92vh - 74px);
+    object-fit: contain;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--panel);
+    box-shadow: 0 18px 60px var(--shadow);
+  }
+  .lightbox-bar {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    font-size: 12px;
+    color: #e9eef2;
+  }
+  .lightbox-bar .lightbox-caption { font-family: var(--mono); }
+  .lightbox-actions { display: flex; gap: 8px; flex: none; }
+  .lightbox-actions a,
+  .lightbox-actions button {
+    border: 1px solid rgba(255, 255, 255, .35);
+    background: rgba(255, 255, 255, .08);
+    color: #eef4f7;
+    border-radius: var(--radius);
+    padding: 5px 11px;
+    font: 600 11.5px/1.4 var(--sans);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .lightbox-actions a:hover,
+  .lightbox-actions button:hover { background: rgba(255, 255, 255, .18); }
+  body.lightbox-open { overflow: hidden; }
   .empty {
     border: 1px dashed var(--rule);
     border-radius: var(--radius);
     padding: 26px;
     color: var(--muted);
     font-size: 13px;
-    background: #fff;
+    background: var(--panel);
   }
   .log {
     list-style: none;
@@ -456,17 +580,21 @@
     display: flex;
     gap: 12px;
     padding: 5px 0;
-    border-bottom: 1px dotted #e8e1d7;
+    border-bottom: 1px dotted var(--dot-line);
     color: var(--ink-soft);
   }
   .log li time { color: var(--muted); flex: none; }
+  /* Event severity: the scanner sends a kind string per event, so the feed
+     colours those kinds instead of inventing a new wire field. */
+  .log li.lvl-warn span { color: var(--warn); }
+  .log li.lvl-error span { color: var(--danger); }
   .reports { display: flex; flex-wrap: wrap; gap: 10px; }
   .report-link {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     border: 1px solid var(--rule);
-    background: #fff;
+    background: var(--panel);
     border-radius: var(--radius);
     padding: 9px 14px;
     font-size: 12.5px;
@@ -483,16 +611,16 @@
   }
   .notice {
     background: var(--warn-soft);
-    border: 1px solid #f0d3ab;
-    color: #7c4512;
+    border: 1px solid var(--hot-border);
+    color: var(--warn-ink);
     border-radius: var(--radius);
     padding: 10px 14px;
     font-size: 12.5px;
     margin: 14px 0;
   }
   .error-box {
-    background: #fbeeec;
-    border: 1px solid #e8c9c5;
+    background: var(--danger-soft);
+    border: 1px solid var(--danger-border);
     color: var(--danger);
     border-radius: var(--radius);
     padding: 10px 14px;
@@ -696,7 +824,9 @@
     </div>
 
     <div class="status-line">
-      <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">idle</span></span>
+      <span class="pill" id="statusPill" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span><span id="statusText">idle</span>
+      </span>
       <span id="elapsed">—</span>
       <span id="rateLine"></span>
       <span id="credLine"></span>
@@ -732,7 +862,9 @@
         <h2>Run trend</h2>
         <span class="hint">passwordless + weak credentials per run · click a column to open it</span>
       </div>
-      <div class="trend-strip" id="trendStrip"><div class="empty">No run history yet.</div></div>
+      <div class="trend-strip" id="trendStrip" role="list" aria-label="Findings per run">
+        <div class="empty">No run history yet.</div>
+      </div>
     </div>
 
     <div class="block" id="reportsBlock">
@@ -768,7 +900,21 @@
         <h2>Activity</h2>
         <span class="hint">live events from the scanner</span>
       </div>
-      <ul class="log" id="log"><li><time>—</time><span>waiting for a scan</span></li></ul>
+      <ul class="log" id="log" aria-live="polite"><li><time>—</time><span>waiting for a scan</span></li></ul>
+    </div>
+
+    <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true"
+         aria-label="Captured framebuffer" aria-describedby="lightboxCaption">
+      <figure class="lightbox-figure">
+        <div class="lightbox-bar">
+          <span class="lightbox-caption" id="lightboxCaption"></span>
+          <span class="lightbox-actions">
+            <a id="lightboxOpen" href="#" target="_blank" rel="noopener">open full size</a>
+            <button type="button" id="lightboxClose">Close</button>
+          </span>
+        </div>
+        <img id="lightboxImage" alt="">
+      </figure>
     </div>
 
     <div class="disclaimer">
@@ -1061,6 +1207,13 @@
   // renderTrends draws one column per run, older runs on the left so the
   // strip reads like a timeline. The bars stack the weak (warn) and
   // passwordless (danger) counts, scaled against the busiest run.
+  // trendClock turns the YYYYMMDD-HHMMSS folder suffix into HH:MM. The full
+  // name stays in the tooltip; the axis label only needs the clock.
+  function trendClock(name) {
+    var m = /-(\d{2})(\d{2})\d{2}$/.exec(String(name || ""));
+    return m ? m[1] + ":" + m[2] : String(name || "").slice(-6);
+  }
+
   function renderTrends() {
     var strip = $("trendStrip");
     if (!trendRuns || !trendRuns.length) {
@@ -1081,6 +1234,7 @@
       var col = document.createElement("button");
       col.type = "button";
       col.className = "trend-col";
+      col.setAttribute("role", "listitem");
       col.title = run.name + ": " + total + " insecure (" + pwless +
         " passwordless, " + weak + " weak), " + (run.targets || 0) +
         " targets, " + (run.errors || 0) + " errors";
@@ -1103,11 +1257,11 @@
       seg("weak", weak);
       seg("pwless", pwless);
 
-      // The timestamp is YYYYMMDD-HHMMSS; the clock part keeps the axis
+      // The folder name is YYYYMMDD-HHMMSS; the clock part keeps the axis
       // readable while the full name stays in the tooltip.
       var name = document.createElement("span");
       name.className = "trend-name";
-      name.textContent = String(run.name).slice(-6);
+      name.textContent = trendClock(run.name);
 
       col.appendChild(count);
       col.appendChild(bar);
@@ -1261,6 +1415,42 @@
     return '<span class="' + cls + '" title="' + esc(tip.join("\n")) + '">' + esc(text) + "</span>";
   }
 
+  // shotCaption builds the accessible name and lightbox caption for one
+  // capture: endpoint plus desktop geometry, never a bare "screenshot".
+  function shotCaption(f) {
+    var parts = ["screenshot of " + (f.addr || "unknown endpoint")];
+    if (f.server_name) parts.push(f.server_name);
+    if (f.dimensions) parts.push(f.dimensions);
+    return parts.join(" · ");
+  }
+
+  // Lightbox state: the element that opened it receives focus back on close.
+  var lightboxOpener = null;
+
+  function openLightbox(src, caption, opener) {
+    var box = $("lightbox");
+    $("lightboxImage").src = src;
+    $("lightboxImage").alt = caption;
+    $("lightboxCaption").textContent = caption;
+    $("lightboxOpen").href = src;
+    box.classList.remove("hidden");
+    document.body.classList.add("lightbox-open");
+    lightboxOpener = opener || null;
+    $("lightboxClose").focus();
+  }
+
+  function closeLightbox() {
+    var box = $("lightbox");
+    if (box.classList.contains("hidden")) return;
+    box.classList.add("hidden");
+    $("lightboxImage").removeAttribute("src");
+    document.body.classList.remove("lightbox-open");
+    if (lightboxOpener && typeof lightboxOpener.focus === "function") {
+      lightboxOpener.focus();
+    }
+    lightboxOpener = null;
+  }
+
   function renderFindings(s) {
     var host = $("findingsHost");
     var rows = s.findings || [];
@@ -1299,8 +1489,13 @@
       if (f.attempts > 1) {
         latency += ' <span class="tag">×' + f.attempts + "</span>";
       }
+      // The thumbnail opens the in-page lightbox; the raw file stays
+      // reachable from the lightbox toolbar for copy/download workflows.
       var shot = f.screenshot
-        ? '<a class="shot-link" href="' + f.screenshot + '" target="_blank" rel="noopener"><img src="' + f.screenshot + '" alt="screenshot"></a>'
+        ? '<button type="button" class="shot-link" data-shot="' + esc(f.screenshot) +
+          '" data-caption="' + esc(shotCaption(f)) +
+          '" aria-label="Enlarge ' + esc(shotCaption(f)) + '">' +
+          '<img src="' + esc(f.screenshot) + '" alt="' + esc(shotCaption(f)) + '"></button>'
         : '<span class="mono">—</span>';
       tr.innerHTML = "<td class=\"mono\">" + esc(f.addr) + "</td>" +
         "<td>" + stateCell + "</td>" +
@@ -1328,10 +1523,22 @@
       t.textContent = new Date(e.at).toLocaleTimeString();
       var span = document.createElement("span");
       span.textContent = "[" + e.kind + "] " + e.message;
+      // Severity is derived from the event kind the server already sends:
+      // warnings and failures are the only kinds a reader must not miss.
+      var level = eventLevel(e.kind);
+      if (level) li.className = "lvl-" + level;
       li.appendChild(t);
       li.appendChild(span);
       list.appendChild(li);
     });
+  }
+
+  // eventLevel maps the scanner's event kind strings to a visual level.
+  function eventLevel(kind) {
+    var k = String(kind || "").toLowerCase();
+    if (k.indexOf("warn") !== -1) return "warn";
+    if (k.indexOf("error") !== -1 || k.indexOf("fail") !== -1) return "error";
+    return "";
   }
 
   function esc(v) {
@@ -1462,6 +1669,22 @@
   });
 
   $("compareClose").addEventListener("click", hideCompare);
+
+  // One delegated listener covers every thumbnail, including rows rendered
+  // by later scan updates.
+  $("findingsHost").addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".shot-link");
+    if (!btn || !btn.dataset.shot) return;
+    openLightbox(btn.dataset.shot, btn.dataset.caption || "", btn);
+  });
+  $("lightboxClose").addEventListener("click", closeLightbox);
+  $("lightbox").addEventListener("click", function (ev) {
+    // A click on the backdrop, but not inside the figure, dismisses.
+    if (ev.target === $("lightbox")) closeLightbox();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") closeLightbox();
+  });
 
   loadForm();
   loadHistory();
