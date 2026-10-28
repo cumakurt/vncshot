@@ -1389,6 +1389,12 @@
   var currentLang = "en";
   var currentView = "scans";
   var pendingDelete = "";
+  // Captures which live job or history folder the dashboard Delete confirm
+  // was opened for, so a later selectScan/openRun cannot retarget Yes.
+  var pendingDashboardDelete = null;
+  // Bumped when the user changes the selected scan or opens history so a
+  // late /api/runs/open response cannot overwrite the newer view.
+  var viewSeq = 0;
   var lastRunDir = null;
   var lastFindingKey = "";
   var lastLogKey = "";
@@ -1430,7 +1436,17 @@
     // to remove that folder; gating the button on activeID made the click a no-op.
     var folder = displayedRunName();
     $("deleteScan").disabled = !(activeID || folder);
-    if (!activeID && !folder && $("deleteScanAsk")) $("deleteScanAsk").classList.add("hidden");
+    if (!activeID && !folder) hideDeleteConfirm();
+  }
+
+  function hideDeleteConfirm() {
+    pendingDashboardDelete = null;
+    if ($("deleteScanAsk")) $("deleteScanAsk").classList.add("hidden");
+  }
+
+  function closeHostDrawer() {
+    openHostFinding = null;
+    if ($("hostDrawer")) $("hostDrawer").classList.add("hidden");
   }
 
   function displayedRunName() {
@@ -2082,18 +2098,27 @@
   }
 
   function openRun(name) {
+    closeScanSetup();
+    hideDeleteConfirm();
+    closeHostDrawer();
+    var seq = ++viewSeq;
     api("/api/runs/open", { method: "POST", body: JSON.stringify({ name: name }) })
       .then(function (res) {
         if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
         return api("/api/state").then(function (stateRes) { return stateRes.json(); }).then(function (snap) {
+          if (seq !== viewSeq) return;
           activeID = "";
           viewingHistory = true;
           showView("scans");
           render(snap);
         });
       })
-      .then(loadHistory)
+      .then(function () {
+        if (seq !== viewSeq) return;
+        return loadHistory();
+      })
       .catch(function (err) {
+        if (seq !== viewSeq) return;
         $("errorBox").classList.remove("hidden");
         $("errorBox").textContent = err.message;
       });
@@ -2331,11 +2356,14 @@
   // must be re-confirmed every time. The target file path is also omitted:
   // a leftover import from the previous scan would merge with a typed
   // target and silently expand the next job to millions of hosts.
+  // Absolute artifact overrides (screenshot_dir, output, html, pdf, csv)
+  // are omitted too: a leftover path under the report root can dump a new
+  // run's files into an older folder.
   // Storage failures (private mode) are ignored so the dashboard keeps working.
   var FORM_STORAGE_KEY = "vncshot.form.v1";
   var formFields = [
     "target", "ports", "workers", "rate", "timeout_ms", "vnc_timeout_ms",
-    "out_dir", "output", "html", "pdf", "csv", "screenshot_dir", "no_pdf",
+    "out_dir", "no_pdf",
     "manifest", "keep_runs", "prune_dry_run", "shared", "word_list",
     "no_default_passwords", "no_password_check", "baseline", "webhook"
   ];
@@ -2679,7 +2707,9 @@
   function renderLog(s) {
     var list = $("log");
     var events = s.events || [];
-    if (logPaused) return;
+    // Pause freezes appends for the current run, but a scan switch must still
+    // replace the DOM so another job's events are not left on screen.
+    if (logPaused && (s.run_dir || "") === (lastRunDir || "")) return;
     var query = ($("logSearch") && $("logSearch").value || "").toLowerCase();
     var key = String(events.length) + ":" + query;
     if (key === lastLogKey) return;
@@ -2887,12 +2917,19 @@
     if ($("filePicker")) $("filePicker").value = "";
   }
 
+  function clearArtifactOverrides() {
+    ["screenshot_dir", "output", "html", "pdf", "csv"].forEach(function (id) {
+      if ($(id)) $(id).value = "";
+    });
+  }
+
   function openScanSetup() {
     showView("scans", "wizard");
     applyProfileDefaults();
     // Each new scan starts without the previous target file, so a typed
     // host cannot merge with a leftover import path.
     clearTargetFile();
+    clearArtifactOverrides();
     lockPasswordlessCapture();
     setWizardStep(1);
     $("form").classList.remove("hidden");
@@ -2935,8 +2972,11 @@
   }
 
   function selectScan(id) {
+    viewSeq++;
     viewingHistory = false;
     closeScanSetup();
+    hideDeleteConfirm();
+    closeHostDrawer();
     activeID = id;
     var snap = scans[id];
     if (snap) render(snap);
@@ -3004,17 +3044,25 @@
   }
 
   function applyFeed(frame) {
+    var snapshotsRefreshed = false;
     if (frame.snapshots) {
       scans = {};
       frame.snapshots.forEach(function (snap) {
         if (snap && snap.id) scans[snap.id] = snap;
       });
+      snapshotsRefreshed = true;
     }
     if (frame.profile) rememberProfile(frame.profile);
     if (frame.version) $("version").textContent = frame.version;
     if (frame.jobs) renderMenu(frame.jobs);
     if (frame.update) rememberScan(frame.update);
-    if (!viewingHistory && !activeID && menuJobs.length && scans[menuJobs[0].id]) {
+    // After an SSE reconnect the menu cards refresh from jobs/snapshots, but
+    // rememberScan only paints when a matching update arrives. Re-render the
+    // selected scan from the snapshot cache so a completed-during-disconnect
+    // job does not leave the panel stuck on "running".
+    if (!viewingHistory && activeID && snapshotsRefreshed && scans[activeID]) {
+      render(scans[activeID]);
+    } else if (!viewingHistory && !activeID && menuJobs.length && scans[menuJobs[0].id]) {
       activeID = menuJobs[0].id;
       render(scans[activeID]);
     }
@@ -3181,21 +3229,24 @@
   });
 
   $("deleteScan").addEventListener("click", function () {
-    if (!activeID && !displayedRunName()) return;
+    var folder = displayedRunName();
+    if (!activeID && !folder) return;
+    pendingDashboardDelete = activeID ? { id: activeID } : { folder: folder };
     $("deleteScanAsk").classList.remove("hidden");
   });
   $("deleteScanNo").addEventListener("click", function () {
-    $("deleteScanAsk").classList.add("hidden");
+    hideDeleteConfirm();
   });
   $("deleteScanYes").addEventListener("click", function () {
-    var folder = displayedRunName();
-    if (!activeID && !folder) return;
-    $("deleteScanAsk").classList.add("hidden");
-    if (!activeID) {
-      commitDeleteRun(folder);
+    var pending = pendingDashboardDelete;
+    hideDeleteConfirm();
+    if (!pending) return;
+    if (pending.folder) {
+      commitDeleteRun(pending.folder);
       return;
     }
-    var id = activeID;
+    if (!pending.id) return;
+    var id = pending.id;
     api("/api/scans/" + encodeURIComponent(id), { method: "DELETE" })
       .then(function (res) {
         if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
@@ -3391,10 +3442,7 @@
   $("openPalette").addEventListener("click", openPalette);
   $("paletteInput").addEventListener("input", function () { paintPalette($("paletteInput").value); });
   $("paletteBackdrop").addEventListener("click", closePalette);
-  $("hostDrawerClose").addEventListener("click", function () {
-    openHostFinding = null;
-    $("hostDrawer").classList.add("hidden");
-  });
+  $("hostDrawerClose").addEventListener("click", closeHostDrawer);
   $("shortcutClose").addEventListener("click", function () { $("shortcutHelp").classList.add("hidden"); });
   $("wizardSteps").addEventListener("click", function (ev) {
     var step = ev.target.getAttribute && ev.target.getAttribute("data-step");

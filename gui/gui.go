@@ -907,9 +907,30 @@ func samePath(a, b string) bool {
 	return filepath.Clean(aa) == filepath.Clean(bb)
 }
 
+// anyJobActive reports that a multi-scan job is running or paused. History
+// open must not overwrite the legacy snapshot while those jobs own the UI.
+func (s *server) anyJobActive() bool {
+	s.jobsMu.Lock()
+	jobs := make([]*runState, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		jobs = append(jobs, job)
+	}
+	s.jobsMu.Unlock()
+	for _, job := range jobs {
+		job.mu.Lock()
+		active := job.status == statusRunning || job.status == statusPaused
+		job.mu.Unlock()
+		if active {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *server) runDirectoryBusy(dir string) bool {
 	s.run.mu.Lock()
-	legacy := s.run.status == statusRunning && samePath(s.run.runDir, dir)
+	legacy := (s.run.status == statusRunning || s.run.status == statusPaused) &&
+		samePath(s.run.runDir, dir)
 	s.run.mu.Unlock()
 	if legacy {
 		return true
@@ -922,9 +943,20 @@ func (s *server) runDirectoryBusy(dir string) bool {
 	s.jobsMu.Unlock()
 	for _, job := range jobs {
 		job.mu.Lock()
-		busy := job.status == statusRunning && samePath(job.runDir, dir)
+		active := job.status == statusRunning || job.status == statusPaused
+		match := samePath(job.runDir, dir)
+		if !match {
+			for _, evidence := range job.evidence {
+				if samePath(evidence, dir) {
+					match = true
+					break
+				}
+			}
+		}
 		job.mu.Unlock()
-		if busy {
+		// A paused scan still owns its folder for resume, and a resumed
+		// scan still serves screenshots from earlier evidence folders.
+		if active && match {
 			return true
 		}
 	}
@@ -1182,8 +1214,11 @@ func (s *server) handleRunOpen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.run.mu.Lock()
-	running := s.run.status == statusRunning
+	running := s.run.status == statusRunning || s.run.status == statusPaused
 	s.run.mu.Unlock()
+	if !running {
+		running = s.anyJobActive()
+	}
 	if running {
 		http.Error(w, "a scan is running", http.StatusConflict)
 		return
@@ -1808,11 +1843,19 @@ func (s *server) pushEvent(job *runState, kind, message string) {
 func (s *server) scanConfig(req scanRequest) (app.Config, error) {
 	cfg := s.cfg.Scan
 
-	if strings.TrimSpace(req.Target) == "" && strings.TrimSpace(req.File) == "" {
+	target := strings.TrimSpace(req.Target)
+	file := strings.TrimSpace(req.File)
+	if target == "" && file == "" {
 		return cfg, fmt.Errorf("either a target or a target file is required")
 	}
-	cfg.Target = strings.TrimSpace(req.Target)
-	cfg.File = strings.TrimSpace(req.File)
+	// The GUI scan form is one scope at a time. Accepting both silently
+	// merges them in ParseTargets and makes a typed host look like it
+	// scanned an old leftover target list.
+	if target != "" && file != "" {
+		return cfg, fmt.Errorf("provide either a target or a target file, not both")
+	}
+	cfg.Target = target
+	cfg.File = file
 
 	if req.Ports != "" {
 		cfg.Ports = strings.TrimSpace(req.Ports)

@@ -125,6 +125,32 @@ func TestResumePlan(t *testing.T) {
 			reused:    []string{"192.0.2.1:5900"},
 		},
 		{
+			name: "a timed-out handshake is probed again",
+			previous: []report.Result{
+				{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true, Error: "i/o timeout"},
+				{IP: "192.0.2.2", Port: 5900, Open: true, RFB: true},
+			},
+			remaining: []string{"192.0.2.1:5900", "192.0.2.3:5900"},
+			reused:    []string{"192.0.2.2:5900"},
+		},
+		{
+			name: "passwordless without screenshot is probed again",
+			previous: []report.Result{
+				{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true, Passwordless: true, Error: "i/o timeout"},
+				{IP: "192.0.2.2", Port: 5900, Open: true, RFB: true, Passwordless: true, Screenshot: "shot.png"},
+			},
+			remaining: []string{"192.0.2.1:5900", "192.0.2.3:5900"},
+			reused:    []string{"192.0.2.2:5900"},
+		},
+		{
+			name: "weak password without screenshot is probed again",
+			previous: []report.Result{
+				{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true, Password: "secret", PasswordSource: "wordlist", Error: "read raw pixels: EOF"},
+			},
+			remaining: []string{"192.0.2.1:5900", "192.0.2.2:5900", "192.0.2.3:5900"},
+			reused:    nil,
+		},
+		{
 			name:      "empty previous run scans everything",
 			previous:  nil,
 			remaining: []string{"192.0.2.1:5900", "192.0.2.2:5900", "192.0.2.3:5900"},

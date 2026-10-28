@@ -400,6 +400,20 @@ func TestScanConfigRejectsNegativeWorkers(t *testing.T) {
 	}
 }
 
+func TestScanConfigRejectsTargetAndFileTogether(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	_, err := srv.scanConfig(scanRequest{
+		Target: "192.0.2.1",
+		File:   "/tmp/targets.txt",
+	})
+	if err == nil {
+		t.Fatal("scanConfig accepted both a target and a target file")
+	}
+	if !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("error = %v, want a not-both message", err)
+	}
+}
+
 func TestScanConfigKeepsEmptyOutDirAsDefault(t *testing.T) {
 	srv, _ := newTestServer(t, Config{Scan: app.Config{OutDir: "/usr/local/vncshot"}})
 	cfg, err := srv.scanConfig(scanRequest{Target: "192.0.2.1"})
@@ -714,6 +728,31 @@ func TestRunOpenConflictsWithRunningScan(t *testing.T) {
 	}
 }
 
+func TestRunOpenConflictsWithActiveMultiScanJob(t *testing.T) {
+	root := t.TempDir()
+	name := "20260202-020202"
+	writeRun(t, root, name, []report.Result{{IP: "192.0.2.1", Port: 5900}}, false, false)
+
+	srv, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	job := &runState{id: "job-1", status: statusRunning, runDir: filepath.Join(root, "live")}
+	srv.jobsMu.Lock()
+	if srv.jobs == nil {
+		srv.jobs = make(map[string]*runState)
+	}
+	srv.jobs[job.id] = job
+	srv.jobsMu.Unlock()
+
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, _ := doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+		map[string]string{"name": name}, auth)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("open during multi-scan job = %d, want 409", resp.StatusCode)
+	}
+}
+
 func TestDeleteRunRemovesRecords(t *testing.T) {
 	root := t.TempDir()
 	keep := "20260101-010101"
@@ -790,6 +829,17 @@ func TestDeleteRunRemovesRecords(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
 		t.Fatalf("live run folder was removed: %v", err)
+	}
+
+	srv.run.mu.Lock()
+	srv.run.status = statusPaused
+	srv.run.mu.Unlock()
+	resp, body = doJSON(t, client, http.MethodDelete, ts.URL+"/api/runs/"+keep, nil, auth)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete paused run = %d, want 409 (%s)", resp.StatusCode, body)
+	}
+	if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+		t.Fatalf("paused run folder was removed: %v", err)
 	}
 
 	srv.run.mu.Lock()
@@ -1877,6 +1927,43 @@ func TestSnapshotExposesRemovedRuns(t *testing.T) {
 	}
 }
 
+// TestDashboardSelectionGuardsReconnectAndDeleteConfirm covers the multi-scan
+// UI races: feed reconnect must re-render the selected panel, Delete Yes must
+// use the confirm-time target, and openRun/selectScan must dismiss confirm,
+// close the wizard/drawer, and ignore late history responses.
+func TestDashboardSelectionGuardsReconnectAndDeleteConfirm(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded html: %v", err)
+	}
+	html := string(page)
+	for _, needle := range []string{
+		"pendingDashboardDelete",
+		"hideDeleteConfirm()",
+		"closeHostDrawer()",
+		"var viewSeq = 0",
+		"snapshotsRefreshed",
+		"if (seq !== viewSeq) return",
+		"logPaused && (s.run_dir || \"\") === (lastRunDir || \"\")",
+	} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("index.html is missing selection guard %q", needle)
+		}
+	}
+	applyFeed := regexp.MustCompile(`(?s)function applyFeed\(frame\) \{.*?\n  \}`).FindString(html)
+	if applyFeed == "" || !strings.Contains(applyFeed, "snapshotsRefreshed && scans[activeID]") {
+		t.Fatal("applyFeed does not re-render the selected scan after a snapshot refresh")
+	}
+	openRun := regexp.MustCompile(`(?s)function openRun\(name\) \{.*?\n  \}`).FindString(html)
+	if openRun == "" || !strings.Contains(openRun, "closeScanSetup()") {
+		t.Fatal("openRun leaves the scan wizard open")
+	}
+	selectScan := regexp.MustCompile(`(?s)function selectScan\(id\) \{.*?\n  \}`).FindString(html)
+	if selectScan == "" || !strings.Contains(selectScan, "hideDeleteConfirm()") {
+		t.Fatal("selectScan does not dismiss a pending Delete confirm")
+	}
+}
+
 // TestFormPersistsRunOptionsButNotAuthorization guards the dashboard contract:
 // the new run-level controls survive a reload, while the authorization
 // checkbox must be re-confirmed for every scan.
@@ -1892,9 +1979,16 @@ func TestFormPersistsRunOptionsButNotAuthorization(t *testing.T) {
 		t.Fatal("index.html has no formFields list")
 	}
 	fields := match[1]
-	for _, id := range []string{"baseline", "csv", "manifest", "webhook", "keep_runs", "prune_dry_run"} {
+	for _, id := range []string{"baseline", "manifest", "webhook", "keep_runs", "prune_dry_run"} {
 		if !strings.Contains(fields, `"`+id+`"`) {
 			t.Errorf("formFields is missing %q, so the control does not persist", id)
+		}
+	}
+	// Absolute artifact overrides must not survive reloads: a leftover path
+	// under the report root can dump a new run's files into an older folder.
+	for _, id := range []string{"csv", "html", "pdf", "output", "screenshot_dir"} {
+		if strings.Contains(fields, `"`+id+`"`) {
+			t.Errorf("formFields persists %q; absolute overrides must stay ephemeral", id)
 		}
 	}
 	if strings.Contains(fields, `"authorized"`) {
@@ -1902,6 +1996,9 @@ func TestFormPersistsRunOptionsButNotAuthorization(t *testing.T) {
 	}
 	if !strings.Contains(html, "authorized.checked = false") {
 		t.Error("loadForm no longer clears the authorization checkbox")
+	}
+	if !strings.Contains(html, "clearArtifactOverrides()") {
+		t.Error("opening a new scan does not clear leftover artifact override paths")
 	}
 }
 
@@ -1997,8 +2094,11 @@ func TestDashboardWiresTrendsAndCompare(t *testing.T) {
 	if !strings.Contains(body, `className = "run-confirm"`) {
 		t.Error("history delete confirmation is not an in-page prompt")
 	}
-	if !strings.Contains(body, "commitDeleteRun(folder)") {
+	if !strings.Contains(body, "commitDeleteRun(pending.folder)") && !strings.Contains(body, "commitDeleteRun(folder)") {
 		t.Error("a history run opened on the dashboard cannot be deleted")
+	}
+	if !strings.Contains(body, "pendingDashboardDelete") {
+		t.Error("dashboard Delete confirm does not capture its target before navigation")
 	}
 	if !strings.Contains(body, "userError") {
 		t.Error("a failed history delete is cleared by the next live snapshot")

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -64,10 +63,16 @@ func ResumePlan(previous []report.Result, targets []scanner.Target) (remaining [
 		if _, ok := inScope[key]; !ok {
 			continue
 		}
-		// A probe aborted by pause or Ctrl+C records the cancellation as its
-		// error and did not finish. Treating that row as complete would skip
-		// the endpoint when the scan continues.
-		if r.Error == context.Canceled.Error() {
+		// Any recorded probe error means the endpoint did not finish cleanly
+		// (cancel, I/O timeout, dropped handshake). Reusing that row would
+		// freeze a transient failure as the final answer on resume.
+		if r.Error != "" {
+			continue
+		}
+		// A passwordless or authenticated host without a screenshot did not
+		// finish capture. Resume must probe it again even when Error was
+		// cleared or never set.
+		if incompleteCapture(r) {
 			continue
 		}
 		// A duplicated address would produce two rows for one endpoint, so
@@ -88,6 +93,16 @@ func ResumePlan(previous []report.Result, targets []scanner.Target) (remaining [
 		remaining = append(remaining, t)
 	}
 	return remaining, reused, nil
+}
+
+// incompleteCapture reports that a previous result found an authenticated or
+// passwordless session but never wrote a screenshot. Reusing that row would
+// freeze a capture timeout or I/O failure as a permanent finding.
+func incompleteCapture(r report.Result) bool {
+	if r.Screenshot != "" {
+		return false
+	}
+	return r.Passwordless || r.Password != "" || r.PasswordSource != ""
 }
 
 // targetKey renders a target in the same "ip:port" form as Result.Addr so a

@@ -298,9 +298,29 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 		}
 		res, err := probeOnce(ctx, addr, attemptOpts, cred)
 		if err != nil {
-			// A network-level failure ends the attempt loop; the discovery
-			// result still describes the endpoint.
-			return discovery, nil
+			// Authentication may have succeeded before the capture or the
+			// socket failed. Keep that finding so callers can report it and
+			// retry the screenshot; dropping it left the host as a bare
+			// "auth required" result with no credential and no error.
+			if sessionAuthenticated(res) {
+				if ctx.Err() != nil {
+					return res, ctx.Err()
+				}
+				return res, err
+			}
+			if ctx.Err() != nil {
+				return discovery, ctx.Err()
+			}
+			// Keep the discovery posture (RFB, auth required) but surface the
+			// failure. Returning nil used to look like a clean "needs auth"
+			// result, so remaining passwords were never tried on retry and
+			// the report hid the I/O problem. Do not return ErrConnect
+			// itself: the scanner treats that as a closed port and would
+			// drop the discovery finding.
+			if errors.Is(err, ErrConnect) {
+				return discovery, fmt.Errorf("lost connection while trying passwords")
+			}
+			return discovery, err
 		}
 		if sessionAuthenticated(res) {
 			return res, nil
@@ -345,7 +365,7 @@ func sessionAuthenticated(res *Result) bool {
 	if res == nil {
 		return false
 	}
-	return res.PasswordSource != "" || res.Passwordless
+	return res.Passwordless || res.Password != "" || res.PasswordSource != ""
 }
 
 // probeOnce runs one complete RFB session. An empty credential means the

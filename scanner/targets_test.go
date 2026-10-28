@@ -694,6 +694,85 @@ func TestProbeRetriesCaptureTimeoutAfterPasswordless(t *testing.T) {
 	}
 }
 
+func TestProbeRetriesCaptureTimeoutAfterBlankPassword(t *testing.T) {
+	timeoutErr := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	var calls atomic.Int32
+	fn := func(_ context.Context, _ string, opts vnc.Options) (*vnc.Result, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			// Blank VNC password: Password stays empty, only PasswordSource
+			// marks the session as authenticated.
+			return &vnc.Result{
+				SawBanner:         true,
+				Passwordless:      true,
+				PasswordSource:    vnc.SourceDefault,
+				SecurityTypeNames: []string{"VNC Authentication"},
+				Width:             800,
+				Height:            480,
+			}, fmt.Errorf("read raw pixels 800x480: %w", timeoutErr)
+		}
+		img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+		return &vnc.Result{
+			SawBanner:      true,
+			Passwordless:   true,
+			PasswordSource: vnc.SourceDefault,
+			Width:          2,
+			Height:         2,
+			Frame:          img,
+		}, nil
+	}
+
+	dir := t.TempDir()
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{
+		MaxRetries:    0,
+		RetryBackoff:  time.Millisecond,
+		VNCTimeout:    time.Second,
+		ScreenshotDir: dir,
+	}, fn)
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("probe calls = %d, want 2", got)
+	}
+	if res.PasswordSource != vnc.SourceDefault {
+		t.Errorf("PasswordSource = %q, want %q", res.PasswordSource, vnc.SourceDefault)
+	}
+	if res.Screenshot == "" {
+		t.Fatal("Screenshot is empty, want a capture after the blank-password retry")
+	}
+}
+
+func TestProbeKeepsWeakPasswordWhenCaptureRetriesExhausted(t *testing.T) {
+	timeoutErr := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	fn := func(_ context.Context, _ string, _ vnc.Options) (*vnc.Result, error) {
+		return &vnc.Result{
+			SawBanner:      true,
+			Password:       "hunter2",
+			PasswordSource: vnc.SourceWordList,
+			Width:          800,
+			Height:         480,
+		}, fmt.Errorf("read raw pixels 800x480: %w", timeoutErr)
+	}
+
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{
+		MaxRetries:   0,
+		RetryBackoff: time.Millisecond,
+		VNCTimeout:   time.Second,
+	}, fn)
+
+	if res.Password != "hunter2" {
+		t.Errorf("Password = %q, want hunter2 after exhausted capture retries", res.Password)
+	}
+	if res.PasswordSource != vnc.SourceWordList {
+		t.Errorf("PasswordSource = %q, want %q", res.PasswordSource, vnc.SourceWordList)
+	}
+	if res.Error == "" {
+		t.Error("Error is empty, want the capture failure recorded")
+	}
+	if res.Screenshot != "" {
+		t.Errorf("Screenshot = %q, want empty", res.Screenshot)
+	}
+}
+
 func TestProbeCaptureRetryUsesExtendedTimeout(t *testing.T) {
 	timeoutErr := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
 	var timeouts []time.Duration

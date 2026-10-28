@@ -432,13 +432,16 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 			if vncRes != nil && vncRes.SawBanner {
 				// The banner was parsed, so the endpoint definitely speaks
 				// RFB: keep the partial evidence (security types, TLS
-				// capability, server name) and record why the session could
-				// not be established.
+				// capability, server name, and any credential that already
+				// authenticated before capture failed).
 				res.RFB = true
 				res.Note = vncRes.Note
 				res.SecurityTypes = vncRes.SecurityTypeNames
 				res.TLS = vncRes.TLS
 				res.Passwordless = vncRes.Passwordless
+				res.Password = vncRes.Password
+				res.PasswordSource = vncRes.PasswordSource
+				res.AuthLocked = vncRes.AuthLocked
 				res.ServerName = vncRes.ServerName
 				res.ProductHint = productHint(vncRes.RFBVersion, vncRes.ServerName)
 				res.ScreenWidth = vncRes.Width
@@ -587,7 +590,7 @@ func isCaptureMiss(res *vnc.Result) bool {
 	if res == nil || res.Frame != nil {
 		return false
 	}
-	return res.Passwordless || res.Password != ""
+	return res.Passwordless || res.Password != "" || res.PasswordSource != ""
 }
 
 // captureRetryTimeout stretches the RFB read budget for screenshot recovery

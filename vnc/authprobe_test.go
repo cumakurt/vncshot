@@ -32,6 +32,9 @@ type authFake struct {
 	// lockOnAttempt, when > 0, makes the server answer SecurityResult 2
 	// on that (1-based) rejected attempt, simulating a lockout.
 	lockOnAttempt int32
+	// dropAfterAuth closes the socket after ServerInit so authentication
+	// succeeds but framebuffer capture fails.
+	dropAfterAuth bool
 	// width and height configure the served framebuffer.
 	width, height uint16
 
@@ -153,6 +156,9 @@ func (s *authFake) serve(conn net.Conn) {
 	binary.Write(&init, binary.BigEndian, uint32(len(name)))
 	init.Write(name)
 	if _, err := conn.Write(init.Bytes()); err != nil {
+		return
+	}
+	if s.dropAfterAuth {
 		return
 	}
 
@@ -283,6 +289,102 @@ func TestProbeAuthenticatesWithWeakPasswordAndCaptures(t *testing.T) {
 	}
 	if got := srv.attempts.Load(); got != 4 {
 		t.Errorf("server saw %d password attempts, want 4", got)
+	}
+}
+
+func TestProbeKeepsCredentialWhenCaptureFails(t *testing.T) {
+	srv := startAuthFake(t, "hunter2", 0)
+	srv.dropAfterAuth = true
+
+	result, err := vnc.Probe(t.Context(), srv.addr(), vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+		Passwords: []vnc.Credential{
+			{Password: "hunter2", Source: vnc.SourceWordList},
+		},
+	})
+	if err == nil {
+		t.Fatal("Probe error = nil, want a capture failure after authentication")
+	}
+	if result == nil {
+		t.Fatal("result is nil, want the authenticated finding with the error")
+	}
+	if result.Password != "hunter2" {
+		t.Errorf("Password = %q, want %q so the finding is not discarded", result.Password, "hunter2")
+	}
+	if result.PasswordSource != vnc.SourceWordList {
+		t.Errorf("PasswordSource = %q, want %q", result.PasswordSource, vnc.SourceWordList)
+	}
+	if result.Frame != nil {
+		t.Error("Frame is non-nil, want nil when capture failed")
+	}
+	if result.ServerName != "locked-desktop" {
+		t.Errorf("ServerName = %q, want %q", result.ServerName, "locked-desktop")
+	}
+}
+
+func TestProbeSurfacesErrorWhenPasswordAttemptDrops(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var conns atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := conns.Add(1)
+			if n == 1 {
+				// Discovery only: advertise VNC auth and stop before a session.
+				wg.Add(1)
+				go func(c net.Conn) {
+					defer wg.Done()
+					defer c.Close()
+					_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+					r := bufio.NewReader(c)
+					_, _ = c.Write([]byte("RFB 003.008\n"))
+					_, _ = io.ReadFull(r, make([]byte, 12))
+					_, _ = c.Write([]byte{1, 2})
+					_, _ = io.ReadFull(r, make([]byte, 1))
+				}(conn)
+				continue
+			}
+			// Later password attempts: drop the socket immediately so the
+			// guess fails after discovery already learned AuthRequired.
+			conn.Close()
+		}
+	}()
+
+	result, err := vnc.Probe(t.Context(), ln.Addr().String(), vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+		Passwords: []vnc.Credential{
+			{Password: "hunter2", Source: vnc.SourceWordList},
+		},
+	})
+	ln.Close()
+	wg.Wait()
+	if err == nil {
+		t.Fatal("Probe error = nil, want the dropped password attempt surfaced")
+	}
+	if result == nil {
+		t.Fatal("result is nil, want discovery evidence with the error")
+	}
+	if !result.AuthRequired {
+		t.Error("AuthRequired = false, want discovery posture preserved")
+	}
+	if result.Password != "" {
+		t.Errorf("Password = %q, want empty when no candidate authenticated", result.Password)
+	}
+	if conns.Load() < 2 {
+		t.Fatalf("server saw %d connections, want discovery plus at least one password attempt", conns.Load())
 	}
 }
 
