@@ -46,6 +46,19 @@ func TestSummarizeMixedResults(t *testing.T) {
 	}
 }
 
+func TestSummaryAddKeepsPlannedTargetCount(t *testing.T) {
+	var live Summary
+	live.Targets = 100
+	live.Add(Result{Open: true, RFB: true, Passwordless: true, Screenshot: "a.png"})
+	live.Add(Result{Open: true, RFB: true, Password: "secret"})
+	if live.Targets != 100 {
+		t.Fatalf("targets = %d, want the planned scope left unchanged", live.Targets)
+	}
+	if live.Open != 2 || live.RFB != 2 || live.Passwordless != 1 || live.WeakCredentials != 1 || live.Screenshots != 1 {
+		t.Fatalf("live summary = %+v", live)
+	}
+}
+
 func TestSummarizeEmpty(t *testing.T) {
 	want := Summary{}
 	if got := Summarize(nil); got != want {

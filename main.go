@@ -236,13 +236,6 @@ func main() {
 		return
 	}
 
-	// Raw RFB probing and the shared report tree under /usr/local/vncshot
-	// require root; fail fast instead of producing a half-working scan.
-	if err := requireRoot(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
-
 	// -prune is a maintenance command, not a scan: run it and exit so it can
 	// be scheduled from cron without inventing a dummy target.
 	// -prune with an explicit zero is a mistake worth reporting, so the flag
@@ -531,14 +524,14 @@ func versionText() string {
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "%s %s — VNC security inventory scanner (Linux)\n\n", appName, version)
 	fmt.Fprintf(w, "Usage:\n")
-	fmt.Fprintf(w, "  sudo %s -target <IP|CIDR|range> [flags]\n", appName)
-	fmt.Fprintf(w, "  sudo %s -file <path> [flags]\n", appName)
-	fmt.Fprintf(w, "  sudo %s -gui [flags]\n\n", appName)
+	fmt.Fprintf(w, "  %s -target <IP|CIDR|range> [flags]\n", appName)
+	fmt.Fprintf(w, "  %s -file <path> [flags]\n", appName)
+	fmt.Fprintf(w, "  %s -gui [flags]\n\n", appName)
 	fmt.Fprintf(w, "Probes VNC/RFB endpoints, flags passwordless servers and captures\n")
 	fmt.Fprintf(w, "their framebuffers. Each scan writes JSON, HTML and PDF reports plus\n")
 	fmt.Fprintf(w, "PNG screenshots into a timestamped folder under -out-dir.\n\n")
 	fmt.Fprintf(w, "-gui starts a local web interface with the same options and live\n")
-	fmt.Fprintf(w, "progress. It listens on loopback only and requires root.\n\n")
+	fmt.Fprintf(w, "progress. It listens on loopback only and does not require root.\n\n")
 	fmt.Fprintf(w, "Flags:\n")
 	flag.PrintDefaults()
 	fmt.Fprintf(w, "\nDeveloper: Cuma KURT <cumakurt@gmail.com>\n")
@@ -663,9 +656,12 @@ func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round
 		fmt.Fprintf(os.Stderr, "%s\n", console.Yellow("warning: "+warning))
 	}
 
-	fmt.Fprintf(os.Stderr, "targets: %d host:port pairs | ports: %s | workers: %d | rate: %s\n",
-		len(session.Targets), cfg.ports, cfg.workers, rateText(cfg.rate))
-	fmt.Fprintf(os.Stderr, "password candidates: %d\n", len(session.Credentials))
+	fmt.Fprintf(os.Stderr, "%s %s host:port pairs | %s %s | %s %s | %s %s\n",
+		console.Bold("targets:"), console.Tone(len(session.Targets), "cyan"),
+		console.Bold("ports:"), console.Cyan(cfg.ports),
+		console.Bold("workers:"), console.Tone(cfg.workers, "cyan"),
+		console.Bold("rate:"), console.Cyan(rateText(cfg.rate)))
+	fmt.Fprintf(os.Stderr, "%s %s\n", console.Bold("password candidates:"), console.Tone(len(session.Credentials), "cyan"))
 	if excluded := session.ExcludedTargets(); excluded > 0 {
 		fmt.Fprintf(os.Stderr, "excluded: %d target(s) never contacted (%s)\n", excluded, cfg.exclude)
 	}
@@ -687,42 +683,42 @@ func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round
 	}
 
 	fmt.Fprintf(os.Stderr, "\n%s\n", console.Bold("=== summary ==="))
-	fmt.Fprintf(os.Stderr, "targets:      %d\n", out.Summary.Targets)
+	fmt.Fprintf(os.Stderr, "targets:      %s\n", console.Tone(out.Summary.Targets, "cyan"))
 	if out.Resumed > 0 {
-		fmt.Fprintf(os.Stderr, "resumed:      %d\n", out.Resumed)
+		fmt.Fprintf(os.Stderr, "resumed:      %s\n", console.Tone(out.Resumed, "cyan"))
 	}
-	fmt.Fprintf(os.Stderr, "open:         %d\n", out.Summary.Open)
-	fmt.Fprintf(os.Stderr, "rfb services: %d\n", out.Summary.RFB)
-	fmt.Fprintf(os.Stderr, "passwordless: %s\n", console.Count(out.Summary.Passwordless, true))
-	fmt.Fprintf(os.Stderr, "weak creds:   %s\n", console.Count(out.Summary.WeakCredentials, true))
-	fmt.Fprintf(os.Stderr, "screenshots:  %d\n", out.Summary.Screenshots)
-	fmt.Fprintf(os.Stderr, "errors:       %s\n", console.Count(out.Summary.Errors, true))
+	fmt.Fprintf(os.Stderr, "open:         %s\n", console.Tone(out.Summary.Open, "cyan"))
+	fmt.Fprintf(os.Stderr, "rfb services: %s\n", console.Tone(out.Summary.RFB, "cyan"))
+	fmt.Fprintf(os.Stderr, "passwordless: %s\n", console.Tone(out.Summary.Passwordless, "red"))
+	fmt.Fprintf(os.Stderr, "weak creds:   %s\n", console.Tone(out.Summary.WeakCredentials, "red"))
+	fmt.Fprintf(os.Stderr, "screenshots:  %s\n", console.Tone(out.Summary.Screenshots, "green"))
+	fmt.Fprintf(os.Stderr, "errors:       %s\n", console.Tone(out.Summary.Errors, "yellow"))
 	writeDiffSummary(os.Stderr, out.Diff)
-	fmt.Fprintf(os.Stderr, "json:  %s\n", out.JSON)
-	fmt.Fprintf(os.Stderr, "html:  %s\n", out.HTML)
+	fmt.Fprintf(os.Stderr, "json:  %s\n", console.Cyan(out.JSON))
+	fmt.Fprintf(os.Stderr, "html:  %s\n", console.Cyan(out.HTML))
 	if out.PDF != "" {
-		fmt.Fprintf(os.Stderr, "pdf:   %s\n", out.PDF)
+		fmt.Fprintf(os.Stderr, "pdf:   %s\n", console.Cyan(out.PDF))
 	}
 	if out.CSV != "" {
-		fmt.Fprintf(os.Stderr, "csv:   %s\n", out.CSV)
+		fmt.Fprintf(os.Stderr, "csv:   %s\n", console.Cyan(out.CSV))
 	}
 	if out.SARIF != "" {
-		fmt.Fprintf(os.Stderr, "sarif: %s\n", out.SARIF)
+		fmt.Fprintf(os.Stderr, "sarif: %s\n", console.Cyan(out.SARIF))
 	}
 	if out.Manifest != "" {
-		fmt.Fprintf(os.Stderr, "manifest: %s\n", out.Manifest)
+		fmt.Fprintf(os.Stderr, "manifest: %s\n", console.Cyan(out.Manifest))
 	}
 	if out.Signature != "" {
-		fmt.Fprintf(os.Stderr, "signature: %s\n", out.Signature)
+		fmt.Fprintf(os.Stderr, "signature: %s\n", console.Cyan(out.Signature))
 	}
 	if len(out.RemovedRuns) > 0 {
-		fmt.Fprintf(os.Stderr, "retention:   removed %d old run(s)\n", len(out.RemovedRuns))
+		fmt.Fprintf(os.Stderr, "retention:   removed %s old run(s)\n", console.Tone(len(out.RemovedRuns), "yellow"))
 	}
 	if out.Summary.ExpiringSoon > 0 {
-		fmt.Fprintf(os.Stderr, "expiring certs: %d\n", out.Summary.ExpiringSoon)
+		fmt.Fprintf(os.Stderr, "expiring certs: %s\n", console.Tone(out.Summary.ExpiringSoon, "yellow"))
 	}
 	if out.Summary.AcceptedFindings > 0 {
-		fmt.Fprintf(os.Stderr, "accepted findings: %d (see -accept list)\n", out.Summary.AcceptedFindings)
+		fmt.Fprintf(os.Stderr, "accepted findings: %s (see -accept list)\n", console.Tone(out.Summary.AcceptedFindings, "cyan"))
 	}
 	if out.Warning != "" {
 		fmt.Fprintf(os.Stderr, "%s\n", console.Yellow("warning: "+out.Warning))
@@ -782,17 +778,6 @@ func runVerifyManifest(cfg config) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "manifest signature and artifacts verified: %s\n", cfg.verifyManifest)
-	return nil
-}
-
-// requireRoot enforces privileged execution. Raw RFB probing and the shared
-// report tree under /usr/local/vncshot both assume root, so running
-// unprivileged would either fail halfway or silently write to a fallback
-// location.
-func requireRoot() error {
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("root privileges required; re-run with sudo")
-	}
 	return nil
 }
 

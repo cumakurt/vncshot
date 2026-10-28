@@ -57,7 +57,7 @@ func TestSelfCheckDeterministic(t *testing.T) {
 func TestSelfCheckRootMatchesEuid(t *testing.T) {
 	checks := SelfCheck(SelfCheckOptions{ReportRoot: t.TempDir()})
 	check := findCheck(t, checks, "root")
-	want := StatusFail
+	want := StatusWarn
 	if os.Geteuid() == 0 {
 		want = StatusOK
 	}

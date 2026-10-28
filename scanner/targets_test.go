@@ -353,19 +353,106 @@ func TestHostsFromReader(t *testing.T) {
 	}
 }
 
-func TestHostsFromReaderRejectsOversizedInput(t *testing.T) {
-	// Each /16 expands to 2^16 hosts, so the first block past the budget
-	// must abort instead of growing the slice further.
-	blocks := maxTargets/(1<<maxCIDRHostBits) + 1
-	input := strings.Repeat("10.0.0.0/16\n", blocks)
+func TestReadHostLinesRejectsBudgetOverflowBeforeExpanding(t *testing.T) {
+	// The first /16 fills a one-block budget. The second must be refused
+	// from its prefix length, before another 2^16 addresses are allocated.
+	budget := 1 << 16
+	input := "10.0.0.0/16\n10.1.0.0/16\n"
 
-	_, err := hostsFromReader(strings.NewReader(input), "stdin")
+	_, err := readHostLines(strings.NewReader(input), "stdin", maxFileCIDRHostBits, budget)
 	if err == nil {
-		t.Fatal("hostsFromReader error = nil, want oversize error")
+		t.Fatal("readHostLines error = nil, want oversize error")
 	}
-	want := fmt.Sprintf("refusing to read more than %d hosts from stdin", maxTargets)
+	want := fmt.Sprintf("refusing to read more than %d hosts from stdin", budget)
 	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("hostsFromReader error = %q, want it to contain %q", err, want)
+		t.Fatalf("readHostLines error = %q, want it to contain %q", err, want)
+	}
+}
+
+func TestCIDRWidthBudget(t *testing.T) {
+	tests := []struct {
+		spec     string
+		bits     int
+		wantErr  string
+		wantNone bool
+	}{
+		{spec: "10.0.0.0/8", bits: maxFileCIDRHostBits, wantNone: true},
+		{spec: "10.0.0.0/7", bits: maxFileCIDRHostBits, wantErr: "/8 or longer"},
+		{spec: "10.0.0.0/16", bits: maxCIDRHostBits, wantNone: true},
+		{spec: "10.0.0.0/8", bits: maxCIDRHostBits, wantErr: "/16 or longer"},
+		{spec: "2001:db8::/104", bits: maxFileCIDRHostBits, wantNone: true},
+		{spec: "2001:db8::/103", bits: maxFileCIDRHostBits, wantErr: "/104 or longer"},
+		{spec: "2001:db8::/112", bits: maxCIDRHostBits, wantNone: true},
+		{spec: "2001:db8::/104", bits: maxCIDRHostBits, wantErr: "/112 or longer"},
+	}
+	for _, tt := range tests {
+		err := cidrWidthError(tt.spec, tt.bits)
+		if tt.wantNone {
+			if err != nil {
+				t.Errorf("cidrWidthError(%q, %d) = %v, want nil", tt.spec, tt.bits, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("cidrWidthError(%q, %d) = %v, want error containing %q", tt.spec, tt.bits, err, tt.wantErr)
+		}
+	}
+}
+
+func TestFileCIDRAllowsPrefixShorterThan16(t *testing.T) {
+	// /15 is 131072 addresses, which a single -target spec rejects and a
+	// file line must accept.
+	if _, err := ParseTargets("10.2.0.0/15", "", []int{5900}); err == nil {
+		t.Fatal("ParseTargets(-target /15) error = nil, want /16 cap")
+	} else if !strings.Contains(err.Error(), "/16 or longer") {
+		t.Fatalf("ParseTargets(-target /15) error = %v, want /16 cap", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nets.txt")
+	if err := os.WriteFile(path, []byte("10.2.0.0/15\n2001:db8::/120\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	got, err := ParseTargets("", path, []int{5900})
+	if err != nil {
+		t.Fatalf("ParseTargets(file /15) error = %v", err)
+	}
+	const want = (1 << 17) + (1 << 8)
+	if len(got) != want {
+		t.Fatalf("ParseTargets(file) = %d targets, want %d", len(got), want)
+	}
+}
+
+func TestFileCIDRRejectsPrefixShorterThan8(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nets.txt")
+	if err := os.WriteFile(path, []byte("10.0.0.0/7\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	_, err := ParseTargets("", path, []int{5900})
+	if err == nil || !strings.Contains(err.Error(), "/8 or longer") {
+		t.Fatalf("ParseTargets(file /7) error = %v, want /8 cap", err)
+	}
+}
+
+func TestFilePairBudgetExceedsTargetCap(t *testing.T) {
+	// 4096 hosts times 300 ports is past the -target pair cap (2^20) and
+	// inside the file cap (2^24). File mode must scan it.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nets.txt")
+	if err := os.WriteFile(path, []byte("10.4.0.0/20\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	ports := make([]int, 300)
+	for i := range ports {
+		ports[i] = i + 1
+	}
+	got, err := ParseTargets("", path, ports)
+	if err != nil {
+		t.Fatalf("ParseTargets(file) error = %v", err)
+	}
+	if len(got) != 4096*300 {
+		t.Fatalf("ParseTargets(file) = %d targets, want %d", len(got), 4096*300)
 	}
 }
 

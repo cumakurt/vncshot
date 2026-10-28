@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -56,11 +57,88 @@ type Options struct {
 	// socks5://[user:pass@]host[:port] or socks5h://... (the proxy resolves
 	// target hostnames). Empty connects directly.
 	ProxyURL string
-	// ShowProgress enables the terminal progress bar.
+	// ShowProgress enables the terminal progress bar and the live finding
+	// counters drawn under it.
 	ShowProgress bool
+	// ProgressWriter is where the progress bar and live counters are drawn.
+	// Nil uses stderr, which is where the rest of the CLI chrome goes.
+	ProgressWriter io.Writer
+	// SeedResults contribute to the live counters without being probed.
+	// A resumed scan passes the reused results so the totals match the
+	// final summary from the first paint.
+	SeedResults []report.Result
 	// OnProgress, when set, is called once per completed probe. It runs on
 	// the collecting goroutine, so implementations must not block for long.
 	OnProgress func(done int, total int, r report.Result)
+}
+
+// liveFindings is the running tally printed under the progress bar. The
+// fields match the CLI summary so an operator can read partial counts
+// without waiting for the scan to finish.
+type liveFindings struct {
+	open         int
+	rfb          int
+	passwordless int
+	weak         int
+	screenshots  int
+	errors       int
+}
+
+// observe folds one result into the tally. It returns whether any counter
+// changed, which is what throttles redraws while closed ports stream past.
+func (c *liveFindings) observe(r report.Result) bool {
+	before := *c
+	if r.Open {
+		c.open++
+	}
+	if r.RFB {
+		c.rfb++
+	}
+	if r.Passwordless {
+		c.passwordless++
+	}
+	if r.Password != "" {
+		c.weak++
+	}
+	if r.Screenshot != "" {
+		c.screenshots++
+	}
+	if r.Error != "" {
+		c.errors++
+	}
+	return *c != before
+}
+
+// line renders the counters as one plain row. Values only: evidence
+// (addresses, passwords, errors) stays in the report, not on this line.
+func (c liveFindings) line() string {
+	return fmt.Sprintf("open %d  rfb %d  passwordless %d  weak %d  screenshots %d  errors %d",
+		c.open, c.rfb, c.passwordless, c.weak, c.screenshots, c.errors)
+}
+
+// lineColored is the terminal form of line. Zero counts stay dim; a positive
+// count is bold in the same tone the summary uses, so a hit is visible
+// without reading the final report.
+func (c liveFindings) lineColored() string {
+	return fmt.Sprintf("%s %s  %s %s  %s %s  %s %s  %s %s  %s %s",
+		liveLabel("open"), liveCount(c.open, "36"),
+		liveLabel("rfb"), liveCount(c.rfb, "36"),
+		liveLabel("passwordless"), liveCount(c.passwordless, "31"),
+		liveLabel("weak"), liveCount(c.weak, "31"),
+		liveLabel("screenshots"), liveCount(c.screenshots, "32"),
+		liveLabel("errors"), liveCount(c.errors, "33"))
+}
+
+func liveLabel(name string) string {
+	return "\x1b[1m" + name + "\x1b[0m"
+}
+
+func liveCount(n int, color string) string {
+	text := strconv.Itoa(n)
+	if n == 0 {
+		return "\x1b[2m" + text + "\x1b[0m"
+	}
+	return "\x1b[1;" + color + "m" + text + "\x1b[0m"
 }
 
 // Run probes every target and returns one Result per target, in
@@ -128,23 +206,37 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]report.Result, 
 
 	out := make([]report.Result, 0, len(targets))
 
+	var counts liveFindings
 	var bar *progressbar.ProgressBar
-	if opts.ShowProgress {
-		bar = progressbar.NewOptions(len(targets),
-			progressbar.OptionSetDescription("scanning"),
-			progressbar.OptionShowCount(),
-			progressbar.OptionSetWidth(30),
-			progressbar.OptionThrottle(100*time.Millisecond),
-			progressbar.OptionOnCompletion(func() { fmt.Fprint(os.Stderr, "\n") }),
-			progressbar.OptionSpinnerType(14),
-			progressbar.OptionFullWidth(),
-		)
+	var lastPaint time.Time
+	colorLive := false
+	if opts.ShowProgress && len(targets) > 0 {
+		for _, seeded := range opts.SeedResults {
+			counts.observe(seeded)
+		}
+		writer := progressWriter(opts)
+		colorLive = writerIsTerminal(writer)
+		bar = newProgressBar(len(targets), writer, colorLive)
+		// Paint the row before the first probe returns so the categories
+		// are visible for the whole run, including a scan that finds nothing.
+		paintFindings(bar, counts, colorLive)
+		lastPaint = time.Now()
 	}
 
 	for r := range results {
 		out = append(out, r)
+		changed := counts.observe(r)
 		if bar != nil {
-			bar.Add(1)
+			// Closed ports do not change the row. Open ports refresh at
+			// the bar's cadence; a passwordless host, a weak credential
+			// or a screenshot is painted immediately.
+			notable := r.Passwordless || r.Password != "" || r.Screenshot != ""
+			last := len(out) == len(targets)
+			if last || (changed && (notable || time.Since(lastPaint) >= 100*time.Millisecond)) {
+				paintFindings(bar, counts, colorLive)
+				lastPaint = time.Now()
+			}
+			_ = bar.Add(1)
 		}
 		if opts.OnProgress != nil {
 			opts.OnProgress(len(out), len(targets), r)
@@ -159,6 +251,83 @@ func Run(ctx context.Context, targets []Target, opts Options) ([]report.Result, 
 		return out, context.Canceled
 	}
 	return out, nil
+}
+
+func progressWriter(opts Options) io.Writer {
+	if opts.ProgressWriter != nil {
+		return opts.ProgressWriter
+	}
+	return os.Stderr
+}
+
+// writerIsTerminal reports whether w is a character device. Colour is used
+// only there; a buffer or a pipe keeps the plain counter line.
+func writerIsTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// newProgressBar builds the CLI bar. The finding row is one detail line
+// under the bar, rewritten in place, so the operator can read partial
+// counts without the bar itself being squeezed off a narrow terminal.
+// On a terminal the bar is a coloured block; a pipe stays monochrome.
+//
+// The width stays fixed and the predicted-time suffix stays off. Both change
+// the line length on every paint, and the library's default refresh blanks
+// the line before drawing it again, so the "scanning" label flashes. On a
+// terminal the same paint is one carriage-return plus an erase-to-end, which
+// replaces the line without that blank frame.
+func newProgressBar(total int, w io.Writer, color bool) *progressbar.ProgressBar {
+	desc := "scanning"
+	options := []progressbar.Option{
+		progressbar.OptionSetWriter(w),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetWidth(30),
+		progressbar.OptionThrottle(100 * time.Millisecond),
+		progressbar.OptionSetMaxDetailRow(1),
+		progressbar.OptionOnCompletion(func() { fmt.Fprint(w, "\n") }),
+		progressbar.OptionSetPredictTime(false),
+	}
+	if color {
+		desc = "[cyan]scanning[reset]"
+		options = append(options,
+			progressbar.OptionUseANSICodes(true),
+			progressbar.OptionEnableColorCodes(true),
+			progressbar.OptionSetTheme(progressbar.Theme{
+				Saucer:        "[green]█[reset]",
+				SaucerHead:    "[green]█[reset]",
+				SaucerPadding: "[white]░[reset]",
+				// End caps stay empty. A filled cap on the right is the same
+				// glyph family as the saucer, so a bar at 0% looks like it is
+				// already growing inward from both ends.
+				BarStart: "",
+				BarEnd:   "",
+			}),
+		)
+	}
+	options = append(options, progressbar.OptionSetDescription(desc))
+	return progressbar.NewOptions(total, options...)
+}
+
+// paintFindings redraws the single finding row. The bar owns the cursor;
+// once it has finished, the completion newline has already moved on and a
+// late detail would land in the summary.
+func paintFindings(bar *progressbar.ProgressBar, counts liveFindings, color bool) {
+	if bar == nil || bar.IsFinished() {
+		return
+	}
+	text := counts.line()
+	if color {
+		text = counts.lineColored()
+	}
+	_ = bar.AddDetail(text)
 }
 
 // probe performs the RFB probe and, when the service allows a session, an

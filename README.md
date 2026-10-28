@@ -6,7 +6,7 @@ VNC security inventory scanner. Discovers RFB/VNC endpoints, flags
 passwordless and weak-password servers, and captures their current
 framebuffer as PNG evidence for authorized security assessments.
 
-`vncshot` supports Linux only and requires root privileges.
+`vncshot` supports Linux only. It runs without root; ports below 1024 and the default report directory may still need extra permission.
 
 ```
 Use only on networks you own or have explicit written permission to test.
@@ -16,7 +16,7 @@ Use only on networks you own or have explicit written permission to test.
 
 *The local GUI: the counter strip, the run-trend sparkline, captured frames
 and the previous-run history, all on loopback. The dashboard follows the
-operating system's light or dark colour scheme.*
+light theme, with a dark theme on the rail toggle.*
 
 ## Table of contents
 
@@ -73,7 +73,7 @@ operating system's light or dark colour scheme.*
 
 ## Features
 
-- Linux only; both the CLI and the GUI must run as root
+- Linux only; the CLI and the GUI run without root
 - Scan single IPs, CIDR blocks, IPv4 ranges, a file of targets, or a target
   list from standard input (`-file -`)
 - `-dry-run` prints the expanded scope without sending a packet
@@ -126,7 +126,7 @@ operating system's light or dark colour scheme.*
 | Area | Requirement |
 |------|-------------|
 | Operating system | Linux (the binary and `install.sh` refuse other systems) |
-| Privileges | root, directly or via `sudo`, for CLI and GUI scans |
+| Privileges | none required; ports below 1024 and `/usr/local/vncshot` need write or bind permission |
 | Build toolchain | Go 1.22 or newer, only when building from source |
 | Runtime | none; the binary is statically linked |
 | Network | TCP reachability to the scanned VNC ports |
@@ -148,7 +148,7 @@ vncshot -version
 vncshot -h
 
 # 3. Scan an authorized range and capture evidence
-sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
 
 # 4. Open the generated report
 sudo find /usr/local/vncshot -name vncshot_report.html
@@ -261,40 +261,44 @@ sudo ./install.sh --systemd-uninstall
 
 ## Privileges
 
-`vncshot` refuses to run without root privileges, in both CLI and GUI mode:
+`vncshot` starts without root, in both CLI and GUI mode:
 
 ```bash
-sudo vncshot -target 192.168.1.0/24
+vncshot -target 192.168.1.0/24
 ```
 
-This is enforced at startup; the tool exits with an actionable error instead
-of producing a partially working scan. The only exception is `-version`, which
-prints build information and exits before the root check.
+Binding a port below 1024, or writing the default report directory
+`/usr/local/vncshot`, still needs permission. Pass `-out-dir` for a directory
+the account can write. `-version` only prints build information.
 
 ## Usage
 
 ```bash
-sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
-sudo vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
-sudo vncshot -target 10.0.0.1-50 -out-dir /root/assessments
-sudo vncshot -target 192.168.1.0/24 -word-list /root/passwords.txt
-sudo vncshot -target 10.0.0.0/16 -dry-run
-cat hosts.txt | sudo vncshot -file - -ports 5900
-sudo vncshot -target 192.168.1.0/24 -redact -thumb-only
-sudo vncshot -target 10.0.0.0/16 -source-addr 10.1.2.3
-sudo vncshot -target 192.168.1.0/24 -baseline /usr/local/vncshot/20261020-090000
-sudo vncshot -target 10.0.0.0/24 -manifest -webhook https://hooks.example.test/vncshot
-sudo vncshot -target 192.168.1.0/24 -config /root/vncshot.conf
-sudo vncshot -target 192.168.1.0/24 -keep 30
-sudo vncshot -prune 30 -prune-dry-run
-sudo vncshot -gui
+vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
+vncshot -target 10.0.0.1-50 -out-dir /root/assessments
+vncshot -target 192.168.1.0/24 -word-list /root/passwords.txt
+vncshot -target 10.0.0.0/16 -dry-run
+cat hosts.txt | vncshot -file - -ports 5900
+vncshot -target 192.168.1.0/24 -redact -thumb-only
+vncshot -target 10.0.0.0/16 -source-addr 10.1.2.3
+vncshot -target 192.168.1.0/24 -baseline /usr/local/vncshot/20261020-090000
+vncshot -target 10.0.0.0/24 -manifest -webhook https://hooks.example.test/vncshot
+vncshot -target 192.168.1.0/24 -config /root/vncshot.conf
+vncshot -target 192.168.1.0/24 -keep 30
+vncshot -prune 30 -prune-dry-run
+vncshot -gui
 vncshot -version
 ```
 
 Terminal output uses ANSI colour and a live progress bar only when standard
 error is attached to a terminal; a pipe, log file or CI collector gets plain
 single-shot lines (one `scanning complete` line instead of carriage-return
-redraws). Set `NO_COLOR` to any non-empty value or pass `-no-color` to keep the
+redraws). Under the bar, a coloured second line shows running totals for open ports,
+RFB services, passwordless hosts, weak credentials, screenshots and errors,
+updated as probes complete, so those counts are readable before the scan
+finishes. Positive counts are highlighted; zeros stay dim. A resumed scan includes reused results in that line from the start.
+Set `NO_COLOR` to any non-empty value or pass `-no-color` to keep the
 palette off on a terminal as well.
 
 Running the tool without arguments prints the usage text and exits without
@@ -369,8 +373,8 @@ The `-gui-*` flags only apply together with `-gui`.
 
 `-prune` turns the invocation into a maintenance command: it needs no target,
 deletes all but the newest n run folders below `-out-dir` and exits, so it can be
-scheduled on its own. The root check still applies, because the default report
-root is `/usr/local/vncshot`, but no authorization prompt is shown for a prune
+scheduled on its own. The default report root is `/usr/local/vncshot`, which
+may not be writable, but no authorization prompt is shown for a prune
 or a dry run. `-prune-dry-run` either previews that command (with `-prune`, or
 alone together with `-keep`) or, in the GUI, previews the retention pass of the
 next scan. On its own, without a positive `-prune` or `-keep` value, it exits
@@ -380,7 +384,7 @@ mistake rather than silently ignored.
 
 `-dry-run` expands the target and port inputs, prints the scope and exits before
 any packet is sent or any directory is created. It neither prompts for
-authorization nor needs `-yes`, but the startup root check still applies.
+authorization nor needs `-yes`.
 
 `-h` prints the same flag reference and exits `0`. An unknown flag prints
 `flag provided but not defined: <name>` followed by the usage text and exits `2`.
@@ -430,7 +434,7 @@ The JSON form is equivalent:
 }
 ```
 
-`-version` is evaluated before environment, config-file and root checks are
+`-version` is evaluated before environment and config-file checks are
 applied, so a broken or missing config never hides the build information and
 the flag itself must come from the command line.
 
@@ -647,9 +651,11 @@ Expansion is bounded so a typo cannot start a massive scan:
 
 | Limit | Value | Behaviour |
 |-------|-------|-----------|
-| Host:port pairs per run | 1,048,576 (2^20) | Rejected with a message to narrow the target or port list |
-| Hosts per single CIDR spec | 65,536 (2^16, i.e. `/16` or longer) | Rejected; split larger blocks into several specs |
-| Hosts read from a file or stdin stream | 1,048,576 (2^20) | Rejected; the stream is not buffered beyond the cap |
+| Host:port pairs per `-target` run | 1,048,576 (2^20) | Rejected with a message to narrow the target or port list |
+| Hosts per `-target` CIDR | 65,536 (2^16; IPv4 `/16` or longer, IPv6 `/112` or longer) | Rejected; split the block or put it in `-file` |
+| Hosts per CIDR line in `-file` or stdin | 16,777,216 (2^24; IPv4 `/8` or longer, IPv6 `/104` or longer) | Rejected; split anything wider than `/8` |
+| Hosts read from a file or stdin stream | 16,777,216 (2^24) | Rejected; the stream is not buffered beyond the cap |
+| Host:port pairs when `-file` is set | 16,777,216 (2^24) | Rejected; narrow the file or the port list |
 | Hosts per single range spec (IPv4 and IPv6) | 1,048,576 (2^20) | Rejected; split larger ranges into several specs |
 | Word-list entries | 500 | Rejected |
 
@@ -681,23 +687,38 @@ For every `host:port` pair the worker performs:
 6. **Persist** — write the PNG for passwordless/weak-password hosts and add
    the result to the in-memory set.
 
-Results stream back to the collector, which drives the progress bar, the GUI
-event stream and the final sorted artifact set. Ctrl+C cancels the context;
+Results stream back to the collector, which drives the progress bar, the live
+finding counters, the GUI event stream and the final sorted artifact set.
+Ctrl+C cancels the context;
 in-flight probes abort and the partial results are still written.
 
 ## GUI
 
 ```bash
-sudo vncshot -gui
+vncshot -gui
 ```
 
 This starts a local web interface on loopback and prints its session URL to
-the terminal. The form exposes the scan options: target or target file, ports,
-workers, rate, connect and RFB timeouts, report root, JSON/HTML/PDF/CSV path
-overrides, screenshot directory, skip PDF, shared session, manifest, webhook URL
-and a keep-runs count with a prune dry-run toggle. `-config` is not part of the
-form; values passed on the launch command line are inherited by scans started
-from the GUI.
+the terminal. New scan opens the options for that run: target or target file,
+ports, workers, rate, connect and RFB timeouts, JSON/HTML/PDF/CSV path
+overrides, screenshot directory, skip PDF, shared session, manifest and the
+password list. Report root, keep-runs, the prune dry-run toggle and the webhook
+live under Settings and apply to every scan until changed. Password redaction
+is not a Settings switch; start the GUI with `-redact`.
+`-config` is not part of either screen; values passed on the launch command
+line are inherited by scans started from the GUI.
+
+The menu lists only working views: Dashboard, Live activity, Hosts, Findings,
+History, Settings and About. Switching views does not stop a scan. New scan,
+in the job list and on the Dashboard, opens the scan options: scope, pace,
+comparison, per-run output overrides, passwords and the authorization
+confirmation. Start scan adds a job to the list in the left rail; up to six
+scans run at the same time. Stop cancels the selected scan and keeps its
+partial report. Delete removes that scan from the menu and deletes its report
+folder when the folder sits inside the report root recorded for the scan.
+Findings lists what the selected scan has found so far, and stays usable while
+other scans continue. Settings holds the values that stay put: report root,
+how many runs to keep and the webhook. The live board is `GET /api/feed`.
 
 The "Comparison" panel holds a "Previous run" selector. It lists the run folders
 under the report root and selects one as the baseline for the next scan, with
@@ -720,17 +741,20 @@ SHA-256 fingerprint; certificates that carry none of those markers are labelled
 `Removed N old run(s)` when the pass deleted (or, in a dry run, would delete)
 one or more folders.
 
-Redaction stays a launch-time option: the "Delivery" panel keeps a redaction
-checkbox as a saved preference, but the scan pipeline only honours `-redact`
-given when the GUI was started. Start `sudo vncshot -gui -redact` to redact the
-reports of every scan launched from that dashboard.
+Redaction stays a launch-time option. Start `vncshot -gui -redact` to redact
+the reports of every scan launched from that dashboard.
 
 The "Previous runs" panel lists the run folders under the report root
 (`GET /api/runs`, newest first, limited to the 100 most recent). Selecting a
 run reloads its JSON report into the dashboard (`POST /api/runs/open`) so an
-older run can be reviewed without starting a scan; the request is rejected
-with `409 Conflict` while a scan is running. Run names are validated as bare
+older run can be reviewed without starting a scan. Scans started from the
+menu do not occupy the single-run slot, so a previous run can be opened while
+they are still going. `POST /api/scan` and `POST /api/runs/open` still return
+`409 Conflict` when that single-run slot is busy. Run names are validated as bare
 timestamp folder names, so a crafted name cannot escape the report root.
+Each row can delete that folder (`DELETE /api/runs/{name}`), which removes
+the reports, screenshots and other files inside it. A folder a live scan is
+still writing is refused with `409 Conflict`.
 
 A "Run trend" strip under the counters plots the newest runs
 (`GET /api/trends`, up to 50): one column per run with stacked bars for the
@@ -743,9 +767,9 @@ against the run the dashboard is serving (`POST /api/diff`) and opens a
 and changed endpoints. The panel has a close button and is hidden whenever
 another run becomes current.
 
-The dashboard follows the operating system colour scheme: the light "paper"
-theme has an automatic dark variant driven by a `prefers-color-scheme` block
-over the same CSS token set, with no toggle and no JavaScript. Findings
+The dashboard opens in a light theme. The rail control offers Light, Dark and
+System. System follows the operating system. With no saved choice the bench
+stays light, and the choice is applied before the first paint. Findings
 thumbnails open an in-page lightbox (Esc, backdrop click or the Close button
 dismisses it; focus returns to the thumbnail) instead of navigating to the raw
 file, and the lightbox keeps a "open full size" link for copy/download use.
@@ -760,8 +784,9 @@ scan.
 
 A scan cannot start until the authorization checkbox is ticked; this is the
 GUI equivalent of `-yes`. Progress, counters, findings and screenshots update
-live over Server-Sent Events. A running scan can be cancelled, and a finished
-run links to its HTML, PDF and JSON artifacts.
+live over Server-Sent Events. Stop cancels the selected scan. Delete removes
+it and its report folder. A finished run links to its HTML, PDF and JSON
+artifacts.
 
 Security properties:
 
@@ -770,13 +795,14 @@ Security properties:
   as a URL query parameter, stored in an HttpOnly, SameSite=Strict cookie,
   and must also be sent in the `X-Vncshot-Token` header for state-changing
   requests.
-* The `/files/` endpoint only serves files inside the current run folder.
+* The `/files/` endpoint only serves files inside one run folder: the
+  single-run slot, or the scan named by `?scan=<id>`.
 * A screenshot directory outside the run folder is rejected before any probe
   starts, with an error that points at the report root. `/files/` is rooted at
   the run folder, so captures written elsewhere would render as broken
   thumbnails; remove the override or point it inside the run folder.
-* The GUI also runs as root, so anyone with the printed URL can drive the
-  scanner. Treat the URL and token as credentials.
+* Anyone with the printed URL can drive the scanner. Treat the URL and token
+  as credentials.
 * For remote access, keep the loopback bind and forward the port over SSH
   (`ssh -L 8080:127.0.0.1:<port> ...`) rather than exposing it on a public
   interface.
@@ -788,7 +814,7 @@ automatic `xdg-open` call.
 
 *Findings carry the transport, the credential source and a thumbnail of the
 captured frame; clicking a thumbnail opens the in-page lightbox. The left rail
-keeps the previous runs and their compare actions one click away.*
+lists the scans that are running or waiting to be reviewed.*
 
 ### GUI HTTP API
 
@@ -800,19 +826,26 @@ state-changing requests, the `X-Vncshot-Token` header.
 |--------|------|---------|
 | `GET` | `/` | Dashboard page (accepts `?t=<token>` to establish the session) |
 | `GET` | `/api/state` | Current run snapshot: status, counters, findings, artifact links |
-| `GET` | `/api/events` | Server-Sent Events stream of the same snapshot |
-| `POST` | `/api/scan` | Start a scan (requires `authorized: true`) |
-| `POST` | `/api/cancel` | Cancel the running scan |
+| `GET` | `/api/events` | Server-Sent Events stream of the single-run snapshot |
+| `POST` | `/api/scan` | Start the single-run scan (requires `authorized: true`; `409` if that slot is busy) |
+| `POST` | `/api/cancel` | Cancel the single-run scan |
+| `GET` | `/api/scans` | Menu rows for scans started from the dashboard |
+| `POST` | `/api/scans` | Start another scan (requires `authorized: true`; `429` when six are already running) |
+| `GET` | `/api/scans/{id}` | Snapshot of one dashboard scan |
+| `POST` | `/api/scans/{id}/stop` | Cancel that scan and keep its partial report |
+| `DELETE` | `/api/scans/{id}` | Remove that scan from the menu and delete its report folder |
+| `GET` | `/api/feed` | Server-Sent Events board: menu rows, then per-scan updates |
 | `GET` | `/api/runs` | Previous runs under the report root, newest first |
+| `DELETE` | `/api/runs/{name}` | Delete one previous run folder and its records (`409` if a live scan is using it) |
 | `POST` | `/api/runs/open` | Load a previous run into the dashboard |
 | `GET` | `/api/trends` | Summary counters of the newest runs (up to 50) for the trend strip |
 | `POST` | `/api/diff` | Compare two previous runs: `{base, target}` → `{new, resolved, changed}` |
-| `GET` | `/files/<path>` | Serve an artifact of the current run folder |
+| `GET` | `/files/<path>` | Serve an artifact of the single-run folder, or of `?scan=<id>` |
 
 Error responses use the standard HTTP status codes: `400` for invalid input,
 `401` without a session, `403` without the token header or authorization,
-`404` for a missing run or artifact, `409` when a scan is already running, and
-`405` for a wrong method.
+`404` for a missing run or artifact, `409` when the single-run slot is busy,
+`429` when six dashboard scans are already running, and `405` for a wrong method.
 
 ## Output
 
@@ -1084,7 +1117,7 @@ on success and `1` on any failure, with the first failing artifact named on
 stderr:
 
 ```bash
-sudo vncshot -target 192.168.1.0/24 -manifest -sign-key /root/vncshot-signing.pem
+vncshot -target 192.168.1.0/24 -manifest -sign-key /root/vncshot-signing.pem
 # hand the public key to the reviewer, who needs no root on this host:
 sudo cat /root/vncshot-signing.pem.pub > vncshot-signing.pem.pub
 vncshot -verify-manifest /usr/local/vncshot/20261028-120000 -pub-key vncshot-signing.pem.pub
@@ -1156,7 +1189,7 @@ categories that makes the run exit with code `3` after every report has been
 written:
 
 ```bash
-sudo vncshot -target 192.168.1.0/24 -fail-on passwordless,new -yes
+vncshot -target 192.168.1.0/24 -fail-on passwordless,new -yes
 ```
 
 Accepted categories (case-insensitive, duplicates are ignored):
@@ -1289,7 +1322,7 @@ first round uses `-baseline` if given, later rounds pick the newest run
 folder in the report root themselves.
 
 ```bash
-sudo vncshot -file /root/scope.txt -interval 24h -keep 30 \
+vncshot -file /root/scope.txt -interval 24h -keep 30 \
   -slack-url https://hooks.slack.com/services/T000/B000/XXXX \
   -cert-warn 30
 ```
@@ -1348,10 +1381,10 @@ standalone maintenance command and exits, so it can run without a target.
 
 ```bash
 # preview the nightly prune without deleting anything
-sudo vncshot -prune 30 -prune-dry-run
+vncshot -prune 30 -prune-dry-run
 
 # apply the policy after every scan of a range
-sudo vncshot -target 10.0.0.0/24 -keep 30
+vncshot -target 10.0.0.0/24 -keep 30
 ```
 
 Deletion is deliberately narrow and fails safe:
@@ -1393,14 +1426,14 @@ deadline as direct dials, and proxy failures are classified as connect
 errors, so `-retries` keeps working.
 
 ```bash
-sudo vncshot -file scope.txt -proxy socks5h://127.0.0.1:1080
+vncshot -file scope.txt -proxy socks5h://127.0.0.1:1080
 ```
 
 ## Self-check
 
-`sudo vncshot -selfcheck` verifies the environment without scanning or
+`vncshot -selfcheck` verifies the environment without scanning or
 changing anything and exits 0 only when every check passes (warnings do not
-fail): root privileges, report-root writability, the system TLS root pool,
+fail): effective uid (a warning when not root), report-root writability, the system TLS root pool,
 `xdg-open` (GUI auto-open), clock sanity, loopback sockets and free disk
 space (warn below 100 MiB). Use it when a scan behaves unexpectedly, or in
 new deployments before the first scan.
@@ -1441,23 +1474,25 @@ very large inventories. `-redact` does not change the size.
 
 ## Troubleshooting
 
-**`error: root privileges required; re-run with sudo`**
-Run the command through `sudo`. `-version` and `-h` are the only exceptions.
-
 **`create report directory /usr/local/vncshot/...: permission denied`**
-The compiled-in report root is not writable. Run as root, or pass an explicit
-`-out-dir` you own.
+The compiled-in report root is not writable. Pass an explicit `-out-dir` you
+own.
 
 **Reports are in `/root/.local/share/vncshot` instead of `/usr/local/vncshot`**
 The default root was not writable and no `-out-dir` was given, so the scan fell
 back to the per-user directory. The CLI prints a warning with the reason.
 
 **`refusing to scan N host:port pairs (limit 1048576)`**
-Narrow the range, split the CIDR, or reduce the port list.
+A `-target` run is over the 2^20 pair cap. Narrow the range, split the CIDR, or reduce the port list.
+
+**`refusing to scan N host:port pairs (limit 16777216)`**
+A `-file` or stdin run is over the 2^24 pair cap (one IPv4 `/8` with a single port). Narrow the file or the port list.
 
 **`CIDR ... is too large (… /16 or longer prefixes only …)`**
-`vncshot` expands at most 65,536 hosts per CIDR spec; split a `/8` into `/16`
-blocks or use `-file` with the subnets you actually own.
+A `-target` CIDR expands at most 65,536 hosts. Split a block shorter than `/16`, or list it in `-file`.
+
+**`CIDR ... is too large (… /8 or longer prefixes only …)`**
+A `-file` or stdin line is wider than an IPv4 `/8` (IPv6 `/104`). Prefixes from `/8` through `/32` are expanded; split anything wider.
 
 **A host shows `open: true`, `rfb: false`**
 The TCP port answered but the service did not complete an RFB handshake. It is
@@ -1507,7 +1542,7 @@ smaller runs.
 ## Package layout
 
 ```
-main.go        CLI flags, root check, GUI bootstrap
+main.go        CLI flags, GUI bootstrap
 app/           scan session, artifact layout, baseline diff, manifest, signing, fail-on, retention, webhook
 config/        flag defaults from a config file and VNCSHOT_* environment variables
 gui/           embedded web UI (index.html + HTTP server)

@@ -1,124 +1,626 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light" data-theme-pref="light" data-rail="wide">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vncshot · control room</title>
+<title>vncshot</title>
+<script>
+/* Resolve the theme before the first paint. No saved preference stays light. */
+(function () {
+  var pref = "light";
+  try { pref = localStorage.getItem("vncshot-theme") || "light"; } catch (e) {}
+  if (pref !== "dark" && pref !== "system") pref = "light";
+  var dark = pref === "dark" || (pref === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  var root = document.documentElement;
+  root.setAttribute("data-theme", dark ? "dark" : "light");
+  root.setAttribute("data-theme-pref", pref);
+  try {
+    var rail = localStorage.getItem("vncshot-rail") || "wide";
+    if (rail === "compact" || rail === "hidden") root.setAttribute("data-rail", rail);
+    if (localStorage.getItem("vncshot-motion") === "reduce") root.setAttribute("data-motion", "reduce");
+    if (localStorage.getItem("vncshot-density") === "compact") root.setAttribute("data-density", "compact");
+  } catch (e) {}
+})();
+</script>
 <style>
   :root {
-    --paper: #fbf9f6;
-    --paper-2: #f4f0ea;
-    --ink: #1b2a32;
-    --ink-soft: #4c5b63;
-    --muted: #7c8a91;
-    --rule: #ded6cb;
-    --accent: #0e6e62;
-    --accent-soft: #e3f0ed;
-    --warn: #b45309;
-    --warn-soft: #fdf1e0;
-    --danger: #a3312a;
-    --radius: 4px;
-    /* Surfaces and hairlines live in tokens so the dark variant can swap the
-       whole palette without touching component rules. */
-    --panel: #fff;
-    --row-hover: #fdfbf7;
-    --row-line: #eee8e0;
-    --dot-line: #e8e1d7;
-    --ok-border: #bcd9d3;
-    --hot-border: #f0d3ab;
-    --danger-soft: #fbeeec;
-    --danger-border: #e8c9c5;
-    --warn-ink: #7c4512;
-    --overlay: rgba(16, 22, 26, 0.82);
-    --shadow: rgba(20, 26, 30, 0.22);
-    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --surface-0: #e6ebf0;
+    --surface-1: #f3f6f9;
+    --surface-2: #fbfcfd;
+    --surface-3: #ffffff00;
+    --text: #1b2430;
+    --text-soft: #3c4a5c;
+    --text-muted: #4e5d6e;
+    --line: #c5d0db;
+    --line-strong: #1b2430;
+    --accent: #8c3a22;
+    --accent-soft: #f6ebe6;
+    --on-accent: #f8f4f1;
+    --ok: #1d6a45;
+    --ok-soft: #e7f4ee;
+    --warn: #8a5a12;
+    --warn-soft: #f8f0e2;
+    --danger: #8f2d2d;
+    --danger-soft: #f8ecec;
+    --sev-critical: #7a1f1f;
+    --sev-critical-bg: #f8e4e2;
+    --sev-high: #7a4b0e;
+    --sev-high-bg: #f8efd8;
+    --sev-medium: #5c4810;
+    --sev-medium-bg: #f3ecd4;
+    --sev-low: #1b5c3c;
+    --sev-low-bg: #e3f3eb;
+    --sev-info: #1d4d72;
+    --sev-info-bg: #e4eef6;
+    --overlay: rgba(18, 24, 32, 0.72);
+    --shadow: 0 1px 2px rgba(20, 28, 38, 0.06), 0 8px 24px rgba(20, 28, 38, 0.06);
+    --edge: 0 0 0 1px transparent;
+    --beam: #c46a4e;
+    --row-hover: #eef2f6;
+    --row-line: #e1e7ee;
+    --dot-line: #d5dde6;
+    --ok-border: #b7d4c4;
+    --hot-border: #e4c2b4;
+    --danger-border: #e4c4c4;
+    --warn-ink: #6e4810;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --radius-1: 2px;
+    --radius-2: 4px;
+    --dur: 180ms;
+    --rail-w: 240px;
+    --z-rail: 5;
+    --z-top: 8;
+    --z-drawer: 24;
+    --z-palette: 30;
+    --z-toast: 40;
+    --z-dialog: 50;
+    --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --font-ui: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --paper: var(--surface-0);
+    --paper-2: var(--surface-1);
+    --ink: var(--text);
+    --ink-soft: var(--text-soft);
+    --muted: var(--text-muted);
+    --rule: var(--line);
+    --panel: var(--surface-2);
+    --radius: var(--radius-1);
+    --serif: var(--font-display);
+    --sans: var(--font-ui);
+    --mono: var(--font-mono);
   }
 
-  /* Dark variant: same structure, inverted paper. The accent, warning and
-     danger hues keep their meaning but are lifted for contrast on a dark
-     ground so badges and counters stay readable. */
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --paper: #14181c;
-      --paper-2: #1a1f24;
-      --ink: #e6ecf0;
-      --ink-soft: #b3c0c8;
-      --muted: #8695a0;
-      --rule: #2f3a42;
-      --accent: #5ec9b6;
-      --accent-soft: #16302c;
-      --warn: #e8a45c;
-      --warn-soft: #332414;
-      --danger: #e8877d;
-      --panel: #191e23;
-      --row-hover: #1f262c;
-      --row-line: #262f36;
-      --dot-line: #2b353d;
-      --ok-border: #2c5a52;
-      --hot-border: #5c4322;
-      --danger-soft: #3a2220;
-      --danger-border: #6a3a35;
-      --warn-ink: #f0c9a0;
-      --overlay: rgba(6, 9, 11, 0.88);
-      --shadow: rgba(0, 0, 0, 0.55);
-    }
+  /* Dark is designed separately: lighter edges, no drop shadow, retuned severity. */
+  [data-theme="dark"] {
+    --surface-0: #0e141b;
+    --surface-1: #161d27;
+    --surface-2: #1c2531;
+    --text: #e7eef6;
+    --text-soft: #c5d0dc;
+    --text-muted: #b7c3d1;
+    --line: rgba(231, 238, 246, 0.16);
+    --line-strong: #e7eef6;
+    --accent: #f0b5a4;
+    --accent-soft: #3a2824;
+    --on-accent: #2a120c;
+    --ok: #8fd0ae;
+    --ok-soft: #1a3328;
+    --warn: #e7c27a;
+    --warn-soft: #332816;
+    --danger: #ffb4ae;
+    --danger-soft: #3a2424;
+    --sev-critical: #ffc9c4;
+    --sev-critical-bg: #4a2828;
+    --sev-high: #f3d08a;
+    --sev-high-bg: #3d3218;
+    --sev-medium: #e4d7a4;
+    --sev-medium-bg: #33301c;
+    --sev-low: #9ed9bc;
+    --sev-low-bg: #1a3328;
+    --sev-info: #b7d4ee;
+    --sev-info-bg: #1a2c3d;
+    --overlay: rgba(6, 8, 12, 0.82);
+    --shadow: none;
+    --edge: 0 0 0 1px rgba(240, 181, 164, 0.28);
+    --beam: #f0b5a4;
+    --row-hover: #232c38;
+    --row-line: #2a3542;
+    --dot-line: #31404f;
+    --ok-border: #2d5a46;
+    --hot-border: #6a4034;
+    --danger-border: #6a3a3a;
+    --warn-ink: #f0d7a4;
   }
+
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     margin: 0;
     background: var(--paper);
     color: var(--ink);
-    font: 14px/1.55 var(--sans);
+    font: 14px/1.5 var(--sans);
+  }
+  button, input, select { font: inherit; color: inherit; }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .shell {
     display: grid;
-    grid-template-columns: 320px minmax(0, 1fr);
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
     min-height: 100vh;
   }
-  /* ---------- left rail ---------- */
+  html[data-rail="compact"] { --rail-w: 72px; }
+  html[data-rail="hidden"] { --rail-w: 0px; }
+  html[data-rail="hidden"] aside { display: none; }
+  /* A display:none rail is not a grid item, so main would fall into the
+     zero-width first track and wrap one character per line. */
+  html[data-rail="hidden"] .shell { grid-template-columns: minmax(0, 1fr); }
   aside {
-    border-right: 1px solid var(--rule);
-    padding: 26px 22px 40px;
     background: var(--paper-2);
+    border-right: 1px solid var(--rule);
+    padding: 18px 14px 20px;
     position: sticky;
     top: 0;
     height: 100vh;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
   }
+  .brand-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 0 6px 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .mark { width: 28px; height: 28px; color: var(--accent); flex: 0 0 auto; }
   .brand {
     font-family: var(--serif);
-    font-size: 26px;
-    letter-spacing: -0.01em;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
     margin: 0;
+    line-height: 1;
   }
-  .brand span { color: var(--accent); }
   .tagline {
-    color: var(--muted);
-    font-size: 12px;
-    margin: 2px 0 22px;
-  }
-  .rail-section {
-    border-top: 1px solid var(--rule);
-    padding-top: 16px;
-    margin-top: 18px;
-  }
-  .rail-title {
-    font-family: var(--serif);
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--ink-soft);
-    margin: 0 0 12px;
-  }
-  label { display: block; margin-bottom: 12px; }
-  label .lbl {
-    display: block;
+    margin: 3px 0 0;
     font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .nav { display: flex; flex-direction: column; gap: 2px; margin: 14px 0 8px; }
+  .menu-label {
+    margin: 12px 8px 4px;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .nav button {
+    text-align: left;
+    width: 100%;
+    border: 0;
+    border-left: 2px solid transparent;
+    background: transparent;
+    color: var(--ink-soft);
+    padding: 7px 10px;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  .nav button.active {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+  .scan-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+  }
+  .scan-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 7px 8px;
+    cursor: pointer;
+    border-radius: var(--radius);
+  }
+  .scan-item.active { border-color: var(--accent); background: var(--accent-soft); }
+  button.new-scan { color: var(--accent); border-style: dashed; font-weight: 600; }
+  button.new-scan:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .scan-name { font-weight: 600; font-size: 12.5px; word-break: break-all; }
+  .scan-meta { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+  .rail-foot {
+    margin-top: auto;
+    padding-top: 14px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+  .rail-foot .btn { margin-bottom: 8px; }
+  main {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    padding: 22px 28px 20px;
+    min-width: 0;
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+  .masthead {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 18px;
+    border-bottom: 1px solid var(--ink);
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+  }
+  .masthead h1 {
+    font-family: var(--serif);
+    font-size: 28px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .masthead .meta {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: right;
+    max-width: min(46%, 28rem);
+    overflow-wrap: anywhere;
+  }
+  .mono { font-family: var(--mono); }
+  .status-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin: 0 0 14px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 3px 8px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
+    font-size: 11px;
+    color: var(--ink-soft);
+  }
+  .pill .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .pill.running { color: var(--ok); border-color: var(--ok-border); }
+  .pill.running .dot { background: var(--ok); }
+  .pill.completed .dot { background: var(--accent); }
+  .pill.failed, .pill.cancelled { color: var(--danger); border-color: var(--danger-border); }
+  .pill.failed .dot, .pill.cancelled .dot { background: var(--danger); }
+  .scan-actions { display: flex; gap: 8px; margin-left: auto; }
+  .btn {
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper-2);
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: var(--radius);
+  }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .btn-primary:hover { filter: brightness(1.05); }
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink);
+    border-color: var(--rule);
+  }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-mini {
+    border: 1px solid var(--rule);
+    background: transparent;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: var(--radius);
+  }
+  .btn-mini:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-mini.active { border-color: var(--accent); color: var(--accent); }
+  .finding-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .notice, .error-box {
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 8px 10px;
+    margin: 0 0 12px;
+    font-size: 13px;
+  }
+  .error-box { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
+  .hidden { display: none !important; }
+  .progress-wrap { margin: 0 0 16px; }
+  .progress-track {
+    height: 8px;
+    background: var(--dot-line);
+    border: 1px solid var(--rule);
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+  }
+  .progress-wrap.live .progress-track { height: 10px; }
+  .progress-wrap.live .progress-fill { background: var(--ok); }
+  .progress-meta {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .counters {
+    display: grid;
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    margin: 0 0 22px;
+  }
+  .counter {
+    padding: 8px 8px 10px;
+    border-right: 1px solid var(--rule);
+    min-width: 0;
+  }
+  .counter:last-child { border-right: 0; }
+  .counter .k {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    overflow-wrap: break-word;
+  }
+  .counter .v {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+  .counter.good .v { color: var(--ok); }
+  .counter.hot .v { color: var(--accent); }
+  .counter.tick .v { color: var(--accent); }
+  .block { margin: 0 0 22px; }
+  .block-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+  }
+  .block-head h2 {
+    font-family: var(--serif);
+    font-size: 18px;
+    margin: 0;
+    font-weight: 600;
+  }
+  .block-head .hint, .hint { font-size: 12px; color: var(--muted); }
+  .block-head .hint { min-width: 0; flex: 1 1 14rem; text-align: right; }
+  .empty {
+    border: 1px dashed var(--rule);
+    color: var(--muted);
+    padding: 14px;
+    font-size: 13px;
+  }
+  .trend-strip {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+    min-height: 92px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .trend-col {
+    border: 0;
+    background: transparent;
+    width: 46px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    color: inherit;
+  }
+  .trend-count { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .trend-count.hot { color: var(--accent); }
+  .trend-bar {
+    width: 14px;
+    height: 64px;
+    background: var(--dot-line);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+  .trend-seg { display: block; width: 100%; }
+  .trend-seg.pwless { background: var(--accent); }
+  .trend-seg.weak { background: var(--warn); }
+  .trend-name { font-size: 9px; color: var(--muted); font-family: var(--mono); }
+  .reports { display: flex; flex-wrap: wrap; gap: 8px; }
+  .report-link {
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 6px 10px;
+    color: var(--ink);
+    text-decoration: none;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .report-link:hover { border-color: var(--accent); }
+  .compare-groups { display: grid; gap: 12px; }
+  .group-label {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .compare-groups ul { margin: 0; padding-left: 18px; }
+  .compare-groups .none { color: var(--muted); font-size: 13px; }
+  .log { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 12px; }
+  .log li {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--row-line);
+  }
+  .log time { color: var(--muted); }
+  .log li.lvl-warn { color: var(--warn-ink); }
+  .log li.lvl-error { color: var(--danger); }
+  .run-list { list-style: none; margin: 0; padding: 0; }
+  .run-list li { padding: 8px 0; border-bottom: 1px solid var(--row-line); }
+  .run-head { display: flex; gap: 8px; align-items: baseline; }
+  .run-head time { font-family: var(--mono); font-size: 12px; color: var(--muted); flex: 0 0 auto; }
+  .scan-board { list-style: none; margin: 0; padding: 0; }
+  .scan-board li {
+    display: grid;
+    grid-template-columns: 12.5rem minmax(0, 1fr);
+    gap: 16px;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--row-line);
+  }
+  .scan-board time {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .scan-board button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+    color: inherit;
+  }
+  .scan-board li.active time,
+  .scan-board li.active .scan-name { color: var(--accent); }
+  .run-name {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--mono);
+    color: var(--ink);
+  }
+  .run-name.current { color: var(--accent); }
+  .run-meta { font-size: 12px; color: var(--muted); }
+  .run-meta a { color: var(--ink-soft); margin-left: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 8px 8px;
+    border-bottom: 1px solid var(--rule);
+  }
+  td { padding: 8px; border-bottom: 1px solid var(--row-line); vertical-align: top; }
+  tr:hover td { background: var(--row-hover); }
+  .tag {
+    display: inline-block;
+    border: 1px solid var(--rule);
+    padding: 0 5px;
+    font-size: 11px;
+    font-family: var(--mono);
+    margin: 0 2px 2px 0;
+  }
+  .tag.hot { color: var(--accent); border-color: var(--hot-border); background: var(--accent-soft); }
+  .tag.ok { color: var(--ok); border-color: var(--ok-border); }
+  .shot-link {
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 0;
+    cursor: pointer;
+    display: inline-block;
+  }
+  .shot-link img { display: block; width: 96px; height: 60px; object-fit: cover; }
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    padding: 24px;
+  }
+  .lightbox-figure { margin: 0; max-width: min(1100px, 100%); background: var(--panel); box-shadow: 0 12px 40px var(--shadow); }
+  .lightbox-bar {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 12px;
+  }
+  .lightbox-caption { font-family: var(--mono); }
+  .lightbox-actions { display: flex; gap: 10px; align-items: center; }
+  .lightbox-actions a { color: var(--ink); }
+  .lightbox img { display: block; max-width: 100%; max-height: 78vh; }
+  .disclaimer {
+    margin-top: 28px;
+    border-top: 1px solid var(--rule);
+    padding-top: 12px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .app-foot {
+    margin-top: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    align-items: baseline;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .app-foot strong { color: var(--text); font-weight: 600; }
+  .app-foot a { color: var(--text); }
+  label { display: block; margin-bottom: 10px; }
+  label .lbl {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--muted);
     margin-bottom: 4px;
   }
@@ -127,531 +629,302 @@
     background: var(--panel);
     border: 1px solid var(--rule);
     border-radius: var(--radius);
-    padding: 7px 9px;
-    font: inherit;
+    padding: 7px 8px;
     font-size: 13px;
-    color: var(--ink);
   }
-  input:focus, select:focus {
-    outline: 2px solid var(--accent-soft);
-    border-color: var(--accent);
-  }
+  input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
   input[type="checkbox"] { accent-color: var(--accent); }
-  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .check {
-    display: flex;
-    gap: 8px;
-    align-items: flex-start;
-    font-size: 12.5px;
-    color: var(--ink-soft);
-    margin-bottom: 12px;
-  }
+  .check { display: flex; gap: 8px; align-items: flex-start; }
   .check input { margin-top: 3px; }
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    border: 1px solid transparent;
-    border-radius: var(--radius);
-    padding: 10px 16px;
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
-    width: 100%;
-  }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { background: #0b5a50; }
-  .btn-ghost {
-    background: transparent;
-    border-color: var(--rule);
-    color: var(--ink-soft);
-    margin-top: 8px;
-  }
-  .btn-ghost:hover { border-color: var(--danger); color: var(--danger); }
-  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-  .rail-foot {
-    margin-top: 22px;
-    font-size: 11px;
-    color: var(--muted);
-    line-height: 1.6;
-  }
-  .run-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-height: 260px;
-    overflow-y: auto;
-  }
-  .run-list li {
-    padding: 7px 0;
-    border-bottom: 1px dotted var(--rule);
-  }
-  .run-list li:last-child { border-bottom: 0; }
-  .run-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 8px;
-  }
-  .run-name {
-    background: none;
-    border: 0;
-    padding: 0;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--accent);
-    cursor: pointer;
-    text-align: left;
-  }
-  .run-name:hover { text-decoration: underline; }
-  .run-name.current { color: var(--ink); font-weight: 700; cursor: default; text-decoration: none; }
-  .run-meta {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--muted);
-    margin-top: 2px;
-  }
-  .run-meta a { margin-left: 6px; }
-  /* ---------- main ---------- */
-  main { padding: 28px 34px 60px; min-width: 0; }
-  .masthead {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    gap: 24px;
-    border-bottom: 2px solid var(--ink);
-    padding-bottom: 14px;
-  }
-  .masthead h1 {
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .rail-section { border-top: 1px solid var(--rule); padding-top: 12px; margin-top: 14px; }
+  .rail-title {
     font-family: var(--serif);
-    font-size: 30px;
-    margin: 0;
-    font-weight: 600;
-    letter-spacing: -0.015em;
+    font-size: 15px;
+    margin: 0 0 10px;
   }
-  .masthead .meta {
-    font-size: 12px;
-    color: var(--muted);
-    text-align: right;
-    white-space: nowrap;
-  }
-  .status-line {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-    margin: 18px 0 8px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    border-radius: 999px;
-    padding: 4px 12px;
-    font-size: 11px;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    border: 1px solid var(--rule);
+  .masthead-actions { display: flex; align-items: flex-end; gap: 12px; }
+  .scan-setup {
+    border: 1px solid var(--ink);
     background: var(--panel);
-    color: var(--muted);
-  }
-  .pill .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--muted);
-  }
-  .pill.running { border-color: var(--ok-border); background: var(--accent-soft); color: var(--accent); }
-  .pill.running .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
-  .pill.completed { border-color: var(--ok-border); background: var(--accent-soft); color: var(--accent); }
-  .pill.completed .dot { background: var(--accent); }
-  .pill.failed, .pill.cancelled { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
-  .pill.failed .dot, .pill.cancelled .dot { background: var(--danger); }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
-
-  .progress-wrap { margin: 18px 0 6px; }
-  .progress-track {
-    height: 6px;
-    background: var(--paper-2);
-    border-radius: 999px;
-    overflow: hidden;
-    border: 1px solid var(--rule);
-  }
-  .progress-fill {
-    height: 100%;
-    width: 0;
-    background: linear-gradient(90deg, var(--accent), #2a9d8f);
-    transition: width 0.25s ease;
-  }
-  .progress-meta {
-    display: flex;
-    justify-content: space-between;
-    font-size: 12px;
-    color: var(--muted);
-    margin-top: 6px;
-    font-family: var(--mono);
-  }
-
-  /* Nine counters. auto-fit produced an 8 + 1 wrap where ERRORS spanned the
-     entire second row, leaving a lone full-width cell. Only 1, 3 and 9 divide
-     nine evenly, so the strip uses nine columns on desktop (one clean row)
-     and three below 900px (three clean rows) — never an empty filler cell.
-     The 1px gap over a rule-coloured background draws the separators in both
-     directions without per-cell border bookkeeping. */
-  .counters {
+    padding: 14px 16px 16px;
+    margin: 0 0 18px;
     display: grid;
-    grid-template-columns: repeat(9, minmax(0, 1fr));
-    gap: 1px;
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    background: var(--rule);
-    margin: 24px 0;
-    overflow: hidden;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 32px;
   }
-  .counter {
-    padding: 14px 12px;
-    background: var(--panel);
-    min-width: 0;
-    overflow-wrap: break-word;
-  }
-  @media (max-width: 900px) {
-    .counters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  }
-  .counter .k {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--muted);
-  }
-  .counter .v {
-    font-family: var(--serif);
-    font-size: 27px;
-    line-height: 1.15;
-    margin-top: 2px;
-  }
-  .counter.hot .v { color: var(--warn); }
-  .counter.good .v { color: var(--accent); }
-
-  /* Trend strip: one column per previous run, stacked passwordless + weak
-     bars, clickable to open the run. */
-  .trend-strip {
-    /* Centred and allowed to grow: with a single run a left-pinned column
-       left a wide empty panel, so the columns share the strip instead. */
-    display: flex;
-    align-items: flex-end;
-    justify-content: center;
-    gap: 6px;
-    overflow-x: auto;
-    padding: 12px 10px;
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    background: var(--panel);
-    min-height: 108px;
-  }
-  .trend-col { flex: 0 1 88px; }
-  .trend-col {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    flex: none;
-    min-width: 46px;
-    padding: 4px 2px;
-    border: 0;
-    border-radius: var(--radius);
-    background: none;
-    font: inherit;
-    cursor: pointer;
-  }
-  .trend-col:hover { background: var(--accent-soft); }
-  .trend-col:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .trend-count {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--muted);
-  }
-  .trend-count.hot { color: var(--warn); font-weight: 700; }
-  .trend-bar {
-    display: flex;
-    flex-direction: column-reverse;
-    align-items: stretch;
-    width: 22px;
-    height: 56px;
-    border: 1px solid var(--rule);
-    border-radius: 2px;
-    background: var(--paper-2);
-    overflow: hidden;
-  }
-  .trend-seg { width: 100%; }
-  .trend-seg.pwless { background: var(--danger); }
-  .trend-seg.weak { background: var(--warn); }
-  .trend-name {
-    font-family: var(--mono);
-    font-size: 9px;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-
-  /* Baseline compare panel opened from the run history. */
-  .btn-mini {
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    background: var(--panel);
-    padding: 3px 9px;
-    font-size: 10.5px;
-    font-weight: 600;
-    color: var(--ink-soft);
-    cursor: pointer;
-  }
-  .btn-mini:hover { border-color: var(--accent); color: var(--accent); }
-  .compare-groups {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 14px;
-  }
-  .compare-groups .group-label {
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--muted);
-    border-bottom: 1px solid var(--rule);
-    padding-bottom: 5px;
-    margin-bottom: 6px;
-  }
-  .compare-groups ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-height: 220px;
-    overflow-y: auto;
-    font-family: var(--mono);
-    font-size: 11.5px;
-  }
-  .compare-groups li {
+  .scan-setup-bar {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: 10px;
-    padding: 4px 0;
-    border-bottom: 1px dotted var(--dot-line);
-    color: var(--ink-soft);
-  }
-  .compare-groups .none { color: var(--muted); font-size: 12px; }
-
-  .block { margin-top: 30px; }
-  .block-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    border-bottom: 1px solid var(--rule);
-    padding-bottom: 8px;
-    margin-bottom: 14px;
-  }
-  .block-head h2 {
-    font-family: var(--serif);
-    font-size: 17px;
-    font-weight: 600;
-    margin: 0;
-  }
-  .block-head .hint { font-size: 11.5px; color: var(--muted); }
-
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th {
-    text-align: left;
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--muted);
-    font-weight: 600;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--rule);
-  }
-  td { padding: 8px 10px; border-bottom: 1px solid var(--row-line); vertical-align: middle; }
-  tr:hover td { background: var(--row-hover); }
-  .mono { font-family: var(--mono); font-size: 11.5px; }
-  .tag {
-    display: inline-block;
-    font-size: 10.5px;
-    padding: 1px 7px;
-    border-radius: 999px;
-    background: var(--paper-2);
-    color: var(--ink-soft);
-    border: 1px solid var(--rule);
-  }
-  .tag.hot { background: var(--warn-soft); border-color: var(--hot-border); color: var(--warn); }
-  .tag.ok { background: var(--accent-soft); border-color: var(--ok-border); color: var(--accent); }
-  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-  /* Keyboard focus is visible everywhere, not just in text inputs. The
-     :not(:focus-visible) reset keeps a mouse click from drawing the ring. */
-  a:focus-visible,
-  button:focus-visible,
-  .run-name:focus-visible,
-  .trend-col:focus-visible,
-  .shot-link:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-    border-radius: 2px;
-  }
-  .shot-link { display: inline-block; border-radius: 2px; }
-  .shot-link img {
-    height: 34px;
-    width: 54px;
-    object-fit: cover;
-    border: 1px solid var(--rule);
-    border-radius: 2px;
-    display: block;
-    transition: border-color .12s ease;
-  }
-  .shot-link:hover img { border-color: var(--accent); }
-
-  /* Screenshot lightbox: the dashboard mirrors the modal of the HTML report
-     so a capture can be inspected without leaving the page. */
-  .lightbox {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 32px;
-    background: var(--overlay);
-  }
-  .lightbox-figure {
-    margin: 0;
-    max-width: min(1180px, 96vw);
-    max-height: 92vh;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .lightbox-figure img {
-    max-width: 100%;
-    max-height: calc(92vh - 74px);
-    object-fit: contain;
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    background: var(--panel);
-    box-shadow: 0 18px 60px var(--shadow);
-  }
-  .lightbox-bar {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 16px;
-    font-size: 12px;
-    color: #e9eef2;
-  }
-  .lightbox-bar .lightbox-caption { font-family: var(--mono); }
-  .lightbox-actions { display: flex; gap: 8px; flex: none; }
-  .lightbox-actions a,
-  .lightbox-actions button {
-    border: 1px solid rgba(255, 255, 255, .35);
-    background: rgba(255, 255, 255, .08);
-    color: #eef4f7;
-    border-radius: var(--radius);
-    padding: 5px 11px;
-    font: 600 11.5px/1.4 var(--sans);
-    text-decoration: none;
-    cursor: pointer;
-  }
-  .lightbox-actions a:hover,
-  .lightbox-actions button:hover { background: rgba(255, 255, 255, .18); }
-  body.lightbox-open { overflow: hidden; }
-  .empty {
-    border: 1px dashed var(--rule);
-    border-radius: var(--radius);
-    padding: 26px;
-    color: var(--muted);
-    font-size: 13px;
-    background: var(--panel);
-  }
-  .log {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-height: 220px;
-    overflow-y: auto;
-    font-family: var(--mono);
-    font-size: 11.5px;
-  }
-  .log li {
-    display: flex;
     gap: 12px;
-    padding: 5px 0;
-    border-bottom: 1px dotted var(--dot-line);
-    color: var(--ink-soft);
+    grid-column: 1 / -1;
   }
-  .log li time { color: var(--muted); flex: none; }
-  /* Event severity: the scanner sends a kind string per event, so the feed
-     colours those kinds instead of inventing a new wire field. */
-  .log li.lvl-warn span { color: var(--warn); }
-  .log li.lvl-error span { color: var(--danger); }
-  .reports { display: flex; flex-wrap: wrap; gap: 10px; }
-  .report-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    border: 1px solid var(--rule);
-    background: var(--panel);
-    border-radius: var(--radius);
-    padding: 9px 14px;
-    font-size: 12.5px;
-    color: var(--ink);
-    text-decoration: none;
+  .scan-setup-bar h2 {
+    font-family: var(--serif);
+    font-size: 18px;
+    margin: 0;
     font-weight: 600;
   }
-  .report-link:hover { border-color: var(--accent); color: var(--accent); }
-  .report-link span.ext {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--muted);
-    text-transform: uppercase;
-  }
-  .notice {
-    background: var(--warn-soft);
-    border: 1px solid var(--hot-border);
-    color: var(--warn-ink);
-    border-radius: var(--radius);
-    padding: 10px 14px;
-    font-size: 12.5px;
-    margin: 14px 0;
-  }
-  .error-box {
-    background: var(--danger-soft);
-    border: 1px solid var(--danger-border);
-    color: var(--danger);
-    border-radius: var(--radius);
-    padding: 10px 14px;
-    font-size: 12.5px;
-    margin: 14px 0;
-    white-space: pre-wrap;
-  }
-  .hidden { display: none !important; }
-  .disclaimer {
-    margin-top: 34px;
-    border-top: 1px solid var(--rule);
-    padding-top: 14px;
-    font-size: 11px;
-    color: var(--muted);
-    line-height: 1.65;
-  }
+  #form > .hint,
+  #form .rail-section:last-child { grid-column: 1 / -1; }
+  #globalSettings { max-width: 640px; }
   @media (max-width: 980px) {
     .shell { grid-template-columns: 1fr; }
     aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
-    main { padding: 22px 18px 40px; }
+    main { padding: 18px 14px 36px; }
+    .counters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .scan-setup { grid-template-columns: 1fr; }
   }
+
+  body, aside, main, .btn, .nav button, .scan-setup, .notice {
+    transition: background-color var(--dur), color var(--dur), border-color var(--dur);
+  }
+  html[data-motion="reduce"] *,
+  html[data-motion="reduce"] *::before,
+  html[data-motion="reduce"] *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html:not([data-motion="full"]) *,
+    html:not([data-motion="full"]) *::before,
+    html:not([data-motion="full"]) *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+  html[data-density="compact"] { font-size: 13px; }
+  html[data-density="compact"] main { padding-top: 12px; }
+  .counter .v, table, .mono, .progress-meta { font-variant-numeric: tabular-nums; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .skip-link {
+    position: absolute;
+    left: 8px;
+    top: -40px;
+    background: var(--accent);
+    color: var(--on-accent);
+    padding: 6px 10px;
+    z-index: var(--z-dialog);
+  }
+  .skip-link:focus { top: 8px; }
+  html[data-rail="compact"] .brand-copy,
+  html[data-rail="compact"] .nav-label,
+  html[data-rail="compact"] .menu-label,
+  html[data-rail="compact"] .scan-name,
+  html[data-rail="compact"] .scan-meta,
+  html[data-rail="compact"] .rail-foot p,
+  html[data-rail="compact"] .theme-switch span { display: none; }
+  html[data-rail="compact"] .nav button { justify-content: center; padding-left: 0; padding-right: 0; }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin: 0 0 var(--space-4);
+    min-height: 36px;
+  }
+  .crumbs { color: var(--text-muted); font-size: 12px; min-width: 0; }
+  .crumbs strong { color: var(--text); font-weight: 600; }
+  .workspace-tabs { display: flex; gap: 4px; flex: 1; min-width: 0; overflow: auto; }
+  .workspace-tabs button {
+    border: 1px solid var(--line);
+    background: var(--surface-1);
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: var(--radius-1);
+    white-space: nowrap;
+  }
+  .workspace-tabs button.active { border-color: var(--accent); color: var(--accent); }
+  .nav-group { border-bottom: 1px solid var(--line); }
+  .nav-group summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 10px 8px 4px;
+  }
+  .nav-group summary::-webkit-details-marker { display: none; }
+  .nav button { display: flex; align-items: center; gap: 8px; }
+  .nav button .marklet { width: 14px; height: 14px; flex: 0 0 auto; }
+  .nav button.active .marklet { fill: var(--accent); }
+  .badge-count {
+    margin-left: auto;
+    min-width: 1.2em;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--sev-critical);
+  }
+  .theme-switch { display: flex; gap: 4px; flex-wrap: wrap; }
+  .theme-switch button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .sev {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid transparent;
+    padding: 1px 6px;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .sev i {
+    width: 8px;
+    height: 8px;
+    display: inline-block;
+    background: currentColor;
+  }
+  .sev-critical { color: var(--sev-critical); background: var(--sev-critical-bg); }
+  .sev-critical i { transform: rotate(45deg); border-radius: 1px; }
+  .sev-high { color: var(--sev-high); background: var(--sev-high-bg); }
+  .sev-high i { clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+  .sev-medium { color: var(--sev-medium); background: var(--sev-medium-bg); }
+  .sev-low { color: var(--sev-low); background: var(--sev-low-bg); }
+  .sev-low i { border-radius: 50%; }
+  .sev-info { color: var(--sev-info); background: var(--sev-info-bg); }
+  .sev-info i { background: transparent; border: 1.5px solid currentColor; border-radius: 50%; }
+  .sev-bars { display: grid; gap: 6px; margin: 0 0 16px; }
+  .sev-bar { display: grid; grid-template-columns: 88px 1fr 2.5em; gap: 8px; align-items: center; font-size: 12px; }
+  .sev-bar .track { height: 8px; background: var(--dot-line); }
+  .sev-bar .fill { height: 8px; background: currentColor; }
+  .wizard-steps { display: flex; gap: 6px; grid-column: 1 / -1; flex-wrap: wrap; }
+  .wizard-steps button[aria-current="step"] { border-color: var(--accent); color: var(--accent); }
+  #form .rail-section { display: none; }
+  #form[data-step="1"] .rail-section[data-wizard="1"],
+  #form[data-step="2"] .rail-section[data-wizard="2"],
+  #form[data-step="3"] .rail-section[data-wizard="3"],
+  #form[data-step="4"] .rail-section[data-wizard="4"],
+  #form[data-step="5"] .rail-section[data-wizard="5"] { display: block; }
+  .beam {
+    width: 28px;
+    height: 28px;
+    border: 1.5px solid var(--accent);
+    border-radius: 50%;
+    position: relative;
+    display: inline-block;
+  }
+  .beam::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 40%;
+    height: 1.5px;
+    background: var(--beam);
+    transform-origin: left center;
+    animation: sweep 2.4s linear infinite;
+  }
+  .progress-wrap.live .progress-fill { background: linear-gradient(90deg, var(--accent), var(--beam)); }
+  @keyframes sweep { to { transform: rotate(360deg); } }
+  .palette, .drawer, .shortcut-help {
+    position: fixed;
+    z-index: var(--z-palette);
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow), var(--edge);
+  }
+  .palette {
+    top: 12vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(560px, calc(100% - 32px));
+  }
+  .palette input { width: 100%; border: 0; border-bottom: 1px solid var(--line); padding: 12px; background: transparent; }
+  .palette ul { list-style: none; margin: 0; padding: 6px; max-height: 320px; overflow: auto; }
+  .palette li button { width: 100%; text-align: left; border: 0; background: transparent; padding: 8px; cursor: pointer; }
+  .palette li button.active, .palette li button:hover { background: var(--accent-soft); }
+  .drawer { top: 0; right: 0; height: 100%; width: min(420px, 100%); z-index: var(--z-drawer); padding: 16px; overflow: auto; }
+  .shortcut-help { z-index: var(--z-dialog); top: 18vh; left: 50%; transform: translateX(-50%); width: min(420px, calc(100% - 32px)); padding: 16px; }
+  .toasts { position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast); display: grid; gap: 8px; }
+  .toast { background: var(--surface-2); border: 1px solid var(--line); box-shadow: var(--shadow); padding: 8px 10px; }
+  .skeleton { height: 12px; background: linear-gradient(90deg, var(--dot-line), var(--surface-1), var(--dot-line)); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  .guide-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .guide-grid > div { min-width: 0; }
+  .guide-grid .empty { display: flex; gap: 8px; align-items: center; }
+  .log-tools { display: flex; gap: 8px; margin-bottom: 8px; }
+  .log-tools input { flex: 1; }
+
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <div class="shell">
   <aside>
-    <h1 class="brand">vnc<span>shot</span></h1>
-    <p class="tagline">VNC security inventory · control room</p>
+    <div class="brand-row">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="11" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M16 16 L16 6 A10 10 0 0 1 24 12" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="16" cy="16" r="2.2" fill="currentColor"/>
+      </svg>
+      <div class="brand-copy">
+        <h1 class="brand">vncshot</h1>
+        <p class="tagline">Aperture</p>
+      </div>
+    </div>
+    <nav class="nav" aria-label="Sections">
+      <button type="button" id="nav-scans" class="active"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Dashboard</span><span class="badge-count" id="badgeRuns"></span></button>
+      <button type="button" id="nav-activity"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h3l2-4 2 8 2-4h3" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Live activity</span></button>
+      <button type="button" id="nav-hosts"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="7" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 13h4" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Hosts</span></button>
+      <button type="button" id="nav-findings"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 12l4-8 2 4 4-6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Findings</span></button>
+      <button type="button" id="nav-history"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h8v10H4z" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">History</span></button>
+      <button type="button" id="nav-settings"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Settings</span></button>
+      <button type="button" id="nav-about"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5h.01" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">About</span></button>
+    </nav>
+    <p class="menu-label" data-i18n="Jobs">Jobs</p>
+    <button type="button" class="scan-item new-scan" id="newScanRail" data-i18n="New scan">New scan</button>
+    <div class="scan-list" id="scanMenu">
+      <div class="empty">No scans yet.</div>
+    </div>
+    <div class="rail-foot">
+      <div class="theme-switch" id="themeToggle" role="radiogroup" aria-label="Theme">
+        <button type="button" data-theme-choice="light" data-i18n="Light" aria-pressed="true">Light</button>
+        <button type="button" data-theme-choice="dark" data-i18n="Dark" aria-pressed="false">Dark</button>
+        <button type="button" data-theme-choice="system" data-i18n="System" aria-pressed="false">System</button>
+      </div>
+      <p><span data-i18n="Loopback only">Loopback only</span><br>vncshot <span id="version">dev</span></p>
+    </div>
+  </aside>
 
-    <form id="form" autocomplete="off">
-      <div class="rail-section">
+  <main id="main">
+    <div class="topbar">
+      <button type="button" class="btn btn-ghost" id="railToggle" data-i18n="Rail" aria-pressed="false">Rail</button>
+      <div class="crumbs" id="crumbs">Overview / <strong>Dashboard</strong></div>
+      <div class="workspace-tabs" id="workspaceTabs" role="tablist" aria-label="Open views"></div>
+      <button type="button" class="btn btn-ghost" id="openPalette" data-i18n="Search">Search</button>
+    </div>
+    <div id="warningBox" class="notice hidden"></div>
+    <div id="errorBox" class="error-box hidden"></div>
+    <div id="view-scans" class="view active">
+    <div class="masthead">
+      <div>
+        <h1 id="scanName">Scan control</h1>
+      </div>
+      <div class="masthead-actions">
+        <div class="meta">
+          <div id="startedAt">no scan started</div>
+          <div id="runDir" class="mono"></div>
+        </div>
+        <button type="button" class="btn btn-primary" id="newScan">New scan</button>
+      </div>
+    </div>
+
+    <form id="form" class="scan-setup hidden" data-step="1" autocomplete="off">
+      <div class="scan-setup-bar">
+        <h2>New scan</h2>
+        <button type="button" class="btn-mini" id="scanSetupClose">Close</button>
+      </div>
+      <p class="hint">Scope, pace, comparison and credentials for this scan. A running scan keeps the options it started with.</p>
+      <div class="wizard-steps" id="wizardSteps">
+        <button type="button" data-step="1" aria-current="step">1 Target</button>
+        <button type="button" data-step="2">2 Profile</button>
+        <button type="button" data-step="3">3 Credentials</button>
+        <button type="button" data-step="4">4 Review</button>
+        <button type="button" data-step="5">5 Authorize</button>
+      </div>
+
+      <div class="rail-section" data-wizard="1">
         <p class="rail-title">Scope</p>
         <label>
           <span class="lbl">Target</span>
@@ -659,7 +932,7 @@
         </label>
         <label>
           <span class="lbl">Target file</span>
-          <input type="text" id="file" placeholder="/root/targets.txt">
+          <input type="text" id="file" placeholder="/home/operator/targets.txt">
         </label>
         <label>
           <span class="lbl">Ports</span>
@@ -667,8 +940,8 @@
         </label>
       </div>
 
-      <div class="rail-section">
-        <p class="rail-title">Performance</p>
+      <div class="rail-section" data-wizard="2">
+        <p class="rail-title">Profile</p>
         <div class="pair">
           <label>
             <span class="lbl">Workers</span>
@@ -691,7 +964,7 @@
         </div>
       </div>
 
-      <div class="rail-section">
+      <div class="rail-section" data-wizard="2">
         <p class="rail-title">Comparison</p>
         <label>
           <span class="lbl">Previous run</span>
@@ -701,12 +974,8 @@
         </label>
       </div>
 
-      <div class="rail-section">
+      <div class="rail-section" data-wizard="2">
         <p class="rail-title">Output</p>
-        <label>
-          <span class="lbl">Report root</span>
-          <input type="text" id="out_dir" placeholder="/usr/local/vncshot">
-        </label>
         <label>
           <span class="lbl">JSON override</span>
           <input type="text" id="output" placeholder="default: &lt;run-dir&gt;/vncshot_report.json">
@@ -735,43 +1004,17 @@
           <input type="checkbox" id="manifest">
           <span>Write a SHA-256 checksum manifest for the run artifacts</span>
         </label>
-        <div class="pair">
-          <label>
-            <span class="lbl">Keep runs</span>
-            <input type="number" id="keep_runs" min="0" placeholder="0 = keep all">
-          </label>
-        </div>
-        <label class="check">
-          <input type="checkbox" id="prune_dry_run">
-          <span>Report expired runs without deleting them</span>
-        </label>
         <label class="check">
           <input type="checkbox" id="shared" checked>
           <span>Request a shared RFB session (do not kick active viewers)</span>
         </label>
       </div>
 
-      <div class="rail-section">
-        <p class="rail-title">Delivery</p>
-        <label>
-          <span class="lbl">Webhook URL</span>
-          <input type="text" id="webhook" placeholder="https://hooks.example/vncshot">
-        </label>
-        <label class="check">
-          <input type="checkbox" id="redact">
-          <span>Redact captured passwords in reports</span>
-        </label>
-        <p class="hint" style="font-size:11px;color:var(--muted);margin:0">
-          Redaction is a launch-time option: start the GUI with -redact. The
-          dashboard keeps this preference but the scan pipeline ignores it.
-        </p>
-      </div>
-
-      <div class="rail-section">
+      <div class="rail-section" data-wizard="3">
         <p class="rail-title">Passwords</p>
         <label>
           <span class="lbl">Word list</span>
-          <input type="text" id="word_list" placeholder="/root/wordlist.txt (one per line)">
+          <input type="text" id="word_list" placeholder="/home/operator/wordlist.txt (one per line)">
         </label>
         <label class="check">
           <input type="checkbox" id="no_default_passwords">
@@ -787,41 +1030,16 @@
         </p>
       </div>
 
-      <div class="rail-section">
+      <div class="rail-section" data-wizard="4" id="wizardReview"></div>
+      <div class="rail-section" data-wizard="5">
         <p class="rail-title">Authorization</p>
         <label class="check">
           <input type="checkbox" id="authorized">
           <span>I confirm I own, or hold explicit written permission to test, every target in scope.</span>
         </label>
         <button class="btn btn-primary" type="submit" id="start">Start scan</button>
-        <button class="btn btn-ghost" type="button" id="cancel" disabled>Cancel scan</button>
       </div>
     </form>
-
-    <div class="rail-section">
-      <p class="rail-title">Previous runs</p>
-      <div id="historyList">
-        <div class="empty">No earlier runs.</div>
-      </div>
-    </div>
-
-    <p class="rail-foot">
-      Loopback only · session token protected<br>
-      vncshot <span id="version">dev</span> · GPL-3.0<br>
-      Cuma KURT · cumakurt@gmail.com
-    </p>
-  </aside>
-
-  <main>
-    <div class="masthead">
-      <div>
-        <h1>Scan control</h1>
-      </div>
-      <div class="meta">
-        <div id="startedAt">no scan started</div>
-        <div id="runDir" class="mono"></div>
-      </div>
-    </div>
 
     <div class="status-line">
       <span class="pill" id="statusPill" role="status" aria-live="polite">
@@ -830,14 +1048,21 @@
       <span id="elapsed">—</span>
       <span id="rateLine"></span>
       <span id="credLine"></span>
+      <span class="scan-actions">
+        <button class="btn btn-ghost" type="button" id="cancel" disabled>Stop</button>
+        <button class="btn btn-ghost" type="button" id="deleteScan" disabled data-i18n="Delete">Delete</button>
+        <span id="deleteScanAsk" class="hidden">
+          <span data-i18n="Delete this scan and its report folder?">Delete this scan and its report folder?</span>
+          <button type="button" class="btn-mini" id="deleteScanYes" data-i18n="Delete">Delete</button>
+          <button type="button" class="btn-mini" id="deleteScanNo" data-i18n="Cancel">Cancel</button>
+        </span>
+      </span>
     </div>
 
     <div id="diffBox" class="notice hidden"></div>
     <div id="retentionBox" class="notice hidden"></div>
-    <div id="warningBox" class="notice hidden"></div>
-    <div id="errorBox" class="error-box hidden"></div>
 
-    <div class="progress-wrap">
+    <div class="progress-wrap" id="progressWrap">
       <div class="progress-track"><div class="progress-fill" id="bar"></div></div>
       <div class="progress-meta">
         <span id="progressText">0 / 0 probes</span>
@@ -845,6 +1070,13 @@
       </div>
     </div>
 
+    <div class="sev-bars" id="sevBars" aria-label="Severity from the selected scan">
+      <div class="sev-bar sev-critical"><span>Critical</span><span class="track"><span class="fill" id="barCritical"></span></span><span id="nCritical">0</span></div>
+      <div class="sev-bar sev-high"><span>High</span><span class="track"><span class="fill" id="barHigh"></span></span><span id="nHigh">0</span></div>
+      <div class="sev-bar sev-medium"><span>Medium</span><span class="track"><span class="fill" id="barMedium"></span></span><span id="nMedium">0</span></div>
+      <div class="sev-bar sev-low"><span>Low</span><span class="track"><span class="fill" id="barLow"></span></span><span id="nLow">0</span></div>
+      <div class="sev-bar sev-info"><span>Info</span><span class="track"><span class="fill" id="barInfo"></span></span><span id="nInfo">0</span></div>
+    </div>
     <div class="counters">
       <div class="counter"><div class="k">Targets</div><div class="v" id="cTargets">0</div></div>
       <div class="counter"><div class="k">Open ports</div><div class="v" id="cOpen">0</div></div>
@@ -857,6 +1089,33 @@
       <div class="counter"><div class="k">Errors</div><div class="v" id="cErrors">0</div></div>
     </div>
 
+    <div class="block" id="scanBoard">
+      <div class="block-head">
+        <h2 data-i18n="Scans">Scans</h2>
+        <span class="hint" data-i18n="Each scan keeps its own start time.">Each scan keeps its own start time.</span>
+      </div>
+      <div id="scanBoardList">
+        <div class="empty" data-i18n="No scans yet.">No scans yet.</div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <h2>Activity</h2>
+        <span class="hint">live events from the scanner</span>
+      </div>
+      <ul class="log" id="log" aria-live="polite"><li><time>—</time><span>waiting for a scan</span></li></ul>
+    </div>
+
+
+    </div>
+    <div id="view-history" class="view">
+    <div class="masthead">
+      <div>
+        <h1>History</h1>
+      </div>
+    </div>
+    <p class="hint">Earlier runs, the trend of notable findings, and report files for the selected scan.</p>
     <div class="block" id="trendsBlock">
       <div class="block-head">
         <h2>Run trend</h2>
@@ -885,24 +1144,108 @@
       <div class="compare-groups" id="compareBody"></div>
     </div>
 
-    <div class="block">
-      <div class="block-head">
-        <h2>Findings</h2>
-        <span class="hint" id="findingHint">open ports, RFB services and passwordless hosts</span>
+    <div class="rail-section">
+      <p class="rail-title">Previous runs</p>
+      <div id="historyList">
+        <div class="empty">No earlier runs.</div>
       </div>
+    </div>
+    </div>
+    <div id="view-findings" class="view">
+    <div class="masthead">
+      <div>
+        <h1>Findings</h1>
+      </div>
+      <div class="meta" id="findingHint">open ports, RFB services and passwordless hosts</div>
+    </div>
+    <div class="finding-filters" id="findingFilters">
+      <button type="button" class="btn-mini active" data-filter="all" data-i18n="All">All</button>
+      <button type="button" class="btn-mini" data-filter="auth" data-i18n="Authentication">Authentication</button>
+      <button type="button" class="btn-mini" data-filter="crypto" data-i18n="Encryption">Encryption</button>
+      <button type="button" class="btn-mini" data-filter="exposure" data-i18n="Exposure">Exposure</button>
+    </div>
+    <div class="block">
       <div id="findingsHost">
         <div class="empty">No findings yet.</div>
       </div>
     </div>
 
-    <div class="block">
-      <div class="block-head">
-        <h2>Activity</h2>
-        <span class="hint">live events from the scanner</span>
+    </div>
+    <div id="view-settings" class="view">
+    <div class="masthead">
+      <div>
+        <h1>Settings</h1>
       </div>
-      <ul class="log" id="log" aria-live="polite"><li><time>—</time><span>waiting for a scan</span></li></ul>
+    </div>
+    <p class="hint">Report location, retention and delivery. These stay in place until you change them and apply to every scan you start.</p>
+    <div id="globalSettings">
+      <div class="rail-section">
+        <p class="rail-title">Appearance</p>
+        <label>
+          <span class="lbl">Language</span>
+          <select id="langSelect">
+            <option value="en">English</option>
+            <option value="tr">Türkçe</option>
+          </select>
+        </label>
+        <label>
+          <span class="lbl">Density</span>
+          <select id="densitySelect">
+            <option value="comfort">Comfortable</option>
+            <option value="compact">Compact</option>
+          </select>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="motionReduce">
+          <span>Reduce motion</span>
+        </label>
+        <p class="hint">Theme is the Light / Dark / System control at the bottom of the rail. With no saved choice the bench stays light.</p>
+      </div>
+      <div class="rail-section">
+        <p class="rail-title">Reports</p>
+        <label>
+          <span class="lbl">Report root</span>
+          <input type="text" id="out_dir" placeholder="/usr/local/vncshot">
+        </label>
+        <label>
+          <span class="lbl">Keep runs</span>
+          <input type="number" id="keep_runs" min="0" placeholder="0 = keep all">
+        </label>
+        <label class="check">
+          <input type="checkbox" id="prune_dry_run">
+          <span>Report expired runs without deleting them</span>
+        </label>
+      </div>
+      <div class="rail-section">
+        <p class="rail-title">Delivery</p>
+        <label>
+          <span class="lbl">Webhook URL</span>
+          <input type="text" id="webhook" placeholder="https://hooks.example/vncshot">
+        </label>
+        <p class="hint">Password redaction is fixed when the GUI starts. Use <span class="mono">vncshot -gui -redact</span>.</p>
+      </div>
+    </div>
     </div>
 
+    <div id="view-activity" class="view">
+      <div class="masthead"><div><h1>Live activity</h1></div></div>
+      <p class="hint">Events from the selected scan. Pause holds the list; new events stay buffered.</p>
+      <div class="log-tools">
+        <input type="search" id="logSearch" placeholder="Filter events" aria-label="Filter events">
+        <button type="button" class="btn btn-ghost" id="logPause">Pause</button>
+      </div>
+      <ul class="log" id="logFull" aria-live="polite"></ul>
+    </div>
+    <div id="view-hosts" class="view">
+      <div class="masthead"><div><h1>Hosts</h1></div></div>
+      <p class="hint">Endpoints in the selected scan. Choosing one opens its detail.</p>
+      <div id="hostList"><div class="empty">No hosts yet.</div></div>
+    </div>
+    <div id="view-about" class="view">
+      <div class="masthead"><div><h1>About</h1></div></div>
+      <p>vncshot <span id="aboutVersion">dev</span> is a local RFB survey bench. It listens on loopback and does not require root.</p>
+      <p class="hint">Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.</p>
+    </div>
     <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true"
          aria-label="Captured framebuffer" aria-describedby="lightboxCaption">
       <figure class="lightbox-figure">
@@ -922,8 +1265,31 @@
       Captured desktops are sensitive evidence; report findings only to the network owner.
       The developer accepts no liability for use or misuse of this tool. See LICENSE for the full terms.
     </div>
+    <footer class="app-foot">
+      <span>Developer <strong>Cuma KURT</strong></span>
+      <a href="mailto:cumakurt@gmail.com">cumakurt@gmail.com</a>
+      <a href="https://www.linkedin.com/in/cuma-kurt-34414917/" target="_blank" rel="noopener">LinkedIn</a>
+      <a href="https://github.com/cumakurt/vncshot" target="_blank" rel="noopener">github.com/cumakurt/vncshot</a>
+      <span>GPL-3.0</span>
+    </footer>
   </main>
 </div>
+<div class="palette hidden" id="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+  <input type="text" id="paletteInput" placeholder="Jump or run a command" aria-label="Command">
+  <ul id="paletteList"></ul>
+</div>
+<aside class="drawer hidden" id="hostDrawer" aria-label="Host detail">
+  <button type="button" class="btn btn-ghost" id="hostDrawerClose">Close</button>
+  <h2 id="hostDrawerTitle">Host</h2>
+  <div id="hostDrawerBody"></div>
+</aside>
+<div class="shortcut-help hidden" id="shortcutHelp" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+  <h2>Shortcuts</h2>
+  <p>Ctrl/Cmd+K search · ? this list · Esc close</p>
+  <p>G then D dashboard · F findings · H reports · S settings · N new scan</p>
+  <button type="button" class="btn btn-ghost" id="shortcutClose">Close</button>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>
 (function () {
@@ -935,7 +1301,21 @@
   var state = null;
   var es = null;
   var lastStatus = null;
+  var scans = {};
+  var activeID = "";
+  var viewingHistory = false;
+  var menuJobs = [];
+  var currentLang = "en";
+  var currentView = "scans";
+  var pendingDelete = "";
   var lastRunDir = null;
+  var lastFindingKey = "";
+  var lastLogKey = "";
+  var findingFilter = "all";
+  var latestFindings = [];
+  var logPaused = false;
+  var openTabs = ["scans"];
+  var chord = "";
 
   function $(id) { return document.getElementById(id); }
 
@@ -962,26 +1342,60 @@
     var pill = $("statusPill");
     pill.className = "pill " + (status || "idle");
     $("statusText").textContent = status || "idle";
-    var running = status === "running";
-    $("start").disabled = running;
-    $("cancel").disabled = !running;
+    $("cancel").disabled = !(status === "running" && activeID);
+    $("deleteScan").disabled = !activeID;
+    if (!activeID && $("deleteScanAsk")) $("deleteScanAsk").classList.add("hidden");
+  }
+
+  // setCounter writes one live tally and pulses the card when the number
+  // changes, so a finding is visible before the scan finishes.
+  function setCounter(el, value) {
+    var text = String(value);
+    if (el.textContent === text) return;
+    el.textContent = text;
+    var card = el.parentElement;
+    if (!card) return;
+    card.classList.remove("tick");
+    void card.offsetWidth;
+    card.classList.add("tick");
   }
 
   function renderCounters(s) {
-    $("cTargets").textContent = s.summary.targets || 0;
-    $("cOpen").textContent = s.summary.open || 0;
-    $("cRfb").textContent = s.summary.rfb || 0;
-    $("cTls").textContent = s.summary.tls_services || 0;
-    $("cSelfSigned").textContent = s.self_signed || 0;
-    $("cNoAuth").textContent = s.summary.passwordless || 0;
-    $("cWeak").textContent = s.summary.weak_credentials || 0;
-    $("cShots").textContent = s.summary.screenshots || 0;
-    $("cErrors").textContent = s.summary.errors || 0;
+    var sum = s.summary || {};
+    setCounter($("cTargets"), sum.targets || 0);
+    setCounter($("cOpen"), sum.open || 0);
+    setCounter($("cRfb"), sum.rfb || 0);
+    setCounter($("cTls"), sum.tls_services || 0);
+    setCounter($("cSelfSigned"), s.self_signed || 0);
+    setCounter($("cNoAuth"), sum.passwordless || 0);
+    setCounter($("cWeak"), sum.weak_credentials || 0);
+    setCounter($("cShots"), sum.screenshots || 0);
+    setCounter($("cErrors"), sum.errors || 0);
+    var crit = sum.passwordless || 0;
+    var high = sum.weak_credentials || 0;
+    var med = s.self_signed || 0;
+    var low = sum.tls_services || 0;
+    var info = sum.open || 0;
+    var peak = Math.max(crit, high, med, low, info, 1);
+    var paint = function (id, n) {
+      $(id).style.width = Math.round((n / peak) * 100) + "%";
+    };
+    $("nCritical").textContent = crit;
+    $("nHigh").textContent = high;
+    $("nMedium").textContent = med;
+    $("nLow").textContent = low;
+    $("nInfo").textContent = info;
+    paint("barCritical", crit);
+    paint("barHigh", high);
+    paint("barMedium", med);
+    paint("barLow", low);
+    paint("barInfo", info);
   }
 
   function renderProgress(s) {
     var pct = s.total > 0 ? Math.min(100, Math.round((s.done / s.total) * 100)) : 0;
     $("bar").style.width = pct + "%";
+    $("progressWrap").classList.toggle("live", s.status === "running");
     $("progressText").textContent = s.done + " / " + s.total + " probes";
     $("progressPct").textContent = pct + "%";
     $("elapsed").textContent = s.elapsed_ms ? "elapsed " + fmtDuration(s.elapsed_ms) : "—";
@@ -1048,10 +1462,149 @@
     return parts[parts.length - 1] || "";
   }
 
+  var TR = {
+    "Dashboard": "Pano",
+    "Live activity": "Canlı aktivite",
+    "Hosts": "Hostlar",
+    "Credentials": "Kimlik bilgileri",
+    "Scope": "Kapsam",
+    "New scan": "Yeni tarama",
+    "Queue": "Kuyruk",
+    "Schedules": "Zamanlamalar",
+    "Profiles": "Profiller",
+    "All findings": "Tüm bulgular",
+    "Authentication": "Kimlik doğrulama",
+    "Encryption": "Şifreleme",
+    "Exposure": "Maruziyet",
+    "Reports": "Raporlar",
+    "Compliance": "Uyumluluk",
+    "Settings": "Ayarlar",
+    "About": "Hakkında",
+    "Style guide": "Stil rehberi",
+    "Overview": "Genel bakış",
+    "Targets": "Hedefler",
+    "Scan": "Tarama",
+    "Findings": "Bulgular",
+    "System": "Sistem",
+    "Jobs": "İşler",
+    "Light": "Açık",
+    "Dark": "Koyu",
+    "Loopback only": "Yalnızca yerel bağlantı",
+    "Rail": "Menü",
+    "Search": "Ara",
+    "Scans": "Taramalar",
+    "Each scan keeps its own start time.": "Her taramanın başlangıç zamanı ayrı durur.",
+    "No scans yet.": "Henüz tarama yok.",
+    "No earlier runs.": "Daha eski tarama yok.",
+    "no report data": "rapor verisi yok",
+    "Delete this run and its files?": "Bu tarama ve dosyaları silinsin mi?",
+    "Delete this scan and its report folder?": "Bu tarama ve rapor klasörü silinsin mi?",
+    "Delete": "Sil",
+    "Cancel": "Vazgeç",
+    "History": "Geçmiş",
+    "Findings": "Bulgular",
+    "All": "Tümü",
+    "delete": "sil",
+    "compare": "karşılaştır"
+  };
+
+  function t(en) {
+    if (currentLang !== "tr") return en;
+    return TR[en] || en;
+  }
+
+  function formatWhen(value) {
+    if (!value) return "—";
+    var raw = String(value).trim();
+    var normalized = raw.indexOf("T") < 0 ? raw.replace(" ", "T") : raw;
+    var d = new Date(normalized);
+    if (isNaN(d.getTime())) return raw;
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+      " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  }
+
+  function whenMs(value) {
+    if (!value) return 0;
+    var raw = String(value).trim();
+    var normalized = raw.indexOf("T") < 0 ? raw.replace(" ", "T") : raw;
+    var d = new Date(normalized);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  }
+
+  function renderScanBoard() {
+    var host = $("scanBoardList");
+    if (!host) return;
+    var seen = {};
+    var rows = [];
+    menuJobs.forEach(function (job) {
+      var snap = scans[job.id] || {};
+      var folder = runNameFromPath(snap.run_dir || "");
+      if (folder) seen[folder] = true;
+      rows.push({
+        when: job.started || snap.started || "",
+        title: job.name || job.id,
+        detail: (job.status || "idle") + (folder ? " · " + folder : ""),
+        active: job.id === activeID && !viewingHistory,
+        open: function () { selectScan(job.id); showView("scans"); }
+      });
+    });
+    (historyRuns || []).forEach(function (run) {
+      if (seen[run.name]) return;
+      var detail = run.summary
+        ? (run.summary.passwordless || 0) + " pwless · " + (run.summary.weak_credentials || 0) + " weak"
+        : t("no report data");
+      rows.push({
+        when: run.started || "",
+        title: run.name,
+        detail: detail,
+        active: !!(viewingHistory && runNameFromPath(state && state.run_dir) === run.name),
+        open: function () { openRun(run.name); }
+      });
+    });
+    rows.sort(function (a, b) { return whenMs(b.when) - whenMs(a.when); });
+    host.textContent = "";
+    if (!rows.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = t("No scans yet.");
+      host.appendChild(empty);
+      return;
+    }
+    var list = document.createElement("ul");
+    list.className = "scan-board";
+    rows.forEach(function (row) {
+      var li = document.createElement("li");
+      if (row.active) li.className = "active";
+      var time = document.createElement("time");
+      time.dateTime = row.when || "";
+      time.textContent = formatWhen(row.when);
+      var body = document.createElement("button");
+      body.type = "button";
+      var title = document.createElement("span");
+      title.className = "scan-name";
+      title.textContent = row.title;
+      var detail = document.createElement("span");
+      detail.className = "scan-meta";
+      detail.textContent = row.detail;
+      body.appendChild(title);
+      body.appendChild(detail);
+      body.addEventListener("click", row.open);
+      li.appendChild(time);
+      li.appendChild(body);
+      list.appendChild(li);
+    });
+    host.appendChild(list);
+  }
+
   function renderHistory(runs) {
     var host = $("historyList");
     if (!runs || !runs.length) {
-      host.innerHTML = '<div class="empty">No earlier runs.</div>';
+      host.textContent = "";
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = t("No earlier runs.");
+      host.appendChild(empty);
       return;
     }
     var current = runNameFromPath(state && state.run_dir);
@@ -1083,8 +1636,12 @@
         meta.textContent = run.summary.passwordless + " pwless · " +
           run.summary.weak_credentials + " weak";
       } else {
-        meta.textContent = "no report data";
+        meta.textContent = t("no report data");
       }
+      var when = document.createElement("time");
+      when.dateTime = run.started || "";
+      when.textContent = formatWhen(run.started);
+      head.insertBefore(when, name);
       // The compare action diffs this run against the run the dashboard is
       // currently serving, so it only exists with a current run selected.
       if (!isCurrent && current) {
@@ -1092,7 +1649,7 @@
         var compare = document.createElement("button");
         compare.type = "button";
         compare.className = "btn-mini";
-        compare.textContent = "compare";
+        compare.textContent = t("compare");
         compare.title = "compare with " + current;
         compare.addEventListener("click", function () { compareWithCurrent(run.name); });
         meta.appendChild(compare);
@@ -1109,6 +1666,38 @@
           a.textContent = key.toUpperCase();
           meta.appendChild(a);
         });
+      }
+      meta.appendChild(document.createTextNode(" "));
+      if (pendingDelete === run.name) {
+        var ask = document.createElement("span");
+        ask.textContent = t("Delete this run and its files?");
+        var yes = document.createElement("button");
+        yes.type = "button";
+        yes.className = "btn-mini";
+        yes.textContent = t("Delete");
+        yes.addEventListener("click", function () { commitDeleteRun(run.name); });
+        var no = document.createElement("button");
+        no.type = "button";
+        no.className = "btn-mini";
+        no.textContent = t("Cancel");
+        no.addEventListener("click", function () {
+          pendingDelete = "";
+          renderHistory(historyRuns);
+        });
+        meta.appendChild(ask);
+        meta.appendChild(document.createTextNode(" "));
+        meta.appendChild(yes);
+        meta.appendChild(document.createTextNode(" "));
+        meta.appendChild(no);
+      } else {
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn-mini";
+        remove.textContent = t("delete");
+        remove.setAttribute("aria-label", "Delete run " + run.name);
+        remove.title = "delete this run and its report files";
+        remove.addEventListener("click", function () { deleteRun(run.name); });
+        meta.appendChild(remove);
       }
 
       li.appendChild(head);
@@ -1166,6 +1755,7 @@
         historyRuns = runs;
         renderHistory(runs);
         fillBaselineOptions(runs);
+        renderScanBoard();
       })
       .catch(function () {
         $("historyList").innerHTML = '<div class="empty">History unavailable.</div>';
@@ -1177,9 +1767,40 @@
     api("/api/runs/open", { method: "POST", body: JSON.stringify({ name: name }) })
       .then(function (res) {
         if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
-        return api("/api/state").then(function (stateRes) { return stateRes.json(); }).then(render);
+        return api("/api/state").then(function (stateRes) { return stateRes.json(); }).then(function (snap) {
+          activeID = "";
+          viewingHistory = true;
+          showView("scans");
+          render(snap);
+        });
       })
       .then(loadHistory)
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  }
+
+  function deleteRun(name) {
+    pendingDelete = name;
+    renderHistory(historyRuns);
+  }
+
+  function commitDeleteRun(name) {
+    pendingDelete = "";
+    api("/api/runs/" + encodeURIComponent(name), { method: "DELETE" })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
+        var current = runNameFromPath(state && state.run_dir);
+        if (current === name) {
+          viewingHistory = false;
+          activeID = "";
+          render(blankSnap());
+        }
+        loadHistory();
+        loadTrends();
+        toast("Deleted " + name);
+      })
       .catch(function (err) {
         $("errorBox").classList.remove("hidden");
         $("errorBox").textContent = err.message;
@@ -1356,7 +1977,7 @@
     "target", "file", "ports", "workers", "rate", "timeout_ms", "vnc_timeout_ms",
     "out_dir", "output", "html", "pdf", "csv", "screenshot_dir", "no_pdf",
     "manifest", "keep_runs", "prune_dry_run", "shared", "word_list",
-    "no_default_passwords", "no_password_check", "baseline", "webhook", "redact"
+    "no_default_passwords", "no_password_check", "baseline", "webhook"
   ];
 
   function saveForm() {
@@ -1454,8 +2075,16 @@
   function renderFindings(s) {
     var host = $("findingsHost");
     var rows = s.findings || [];
+    var key = findingFilter + ":" + String(rows.length);
+    if (rows.length) {
+      var tail = rows[rows.length - 1];
+      key += ":" + (tail.addr || "") + ":" + (tail.screenshot || "");
+    }
+    if (key === lastFindingKey) return;
+    lastFindingKey = key;
     if (!rows.length) {
       host.innerHTML = '<div class="empty">No findings yet.</div>';
+      renderHosts(rows);
       return;
     }
     var table = document.createElement("table");
@@ -1468,15 +2097,26 @@
     // The server already sorts findings exactly like the report artifacts
     // (numeric IP, then port); reversing here would show a different order
     // than the JSON/HTML/PDF of the same run.
+    var shown = rows.filter(passesFilter);
+    if (!shown.length) {
+      host.innerHTML = '<div class="empty">No findings in this view.</div>';
+      renderHosts(rows);
+      return;
+    }
     rows.forEach(function (f) {
+      if (!passesFilter(f)) return;
       var tr = document.createElement("tr");
-      var stateCell = f.passwordless
+      tr.tabIndex = 0;
+      tr.dataset.addr = f.addr || "";
+      var sevName = findingSeverity(f);
+      var stateCell = '<span class="sev sev-' + sevName + '"><i></i>' + sevName + '</span> ' +
+        (f.passwordless
         ? '<span class="tag hot">no auth</span>'
         : (f.password
             ? '<span class="tag hot">weak: ' + esc(f.password) + '</span>'
             : (f.auth_locked
                 ? '<span class="tag">locked out</span>'
-                : (f.rfb ? '<span class="tag ok">rfb</span>' : '<span class="tag">open</span>')));
+                : (f.rfb ? '<span class="tag ok">rfb</span>' : '<span class="tag">open</span>'))));
       var transport = (f.security_types || []).join(" · ");
       var transportCell = transport ? esc(transport) : '<span class="mono">—</span>';
       if (f.tls) {
@@ -1510,14 +2150,85 @@
     table.appendChild(tbody);
     host.innerHTML = "";
     host.appendChild(table);
+    renderHosts(rows);
+  }
+
+  function findingSeverity(f) {
+    if (f.passwordless) return "critical";
+    if (f.password) return "high";
+    if (f.certificate && (f.certificate.self_signed || f.certificate.expired)) return "medium";
+    if (f.tls) return "low";
+    return "info";
+  }
+
+  function passesFilter(f) {
+    if (findingFilter === "auth") return !!(f.passwordless || f.password || f.auth_locked);
+    if (findingFilter === "crypto") return !!(f.tls || f.certificate);
+    if (findingFilter === "exposure") return !f.tls;
+    return true;
+  }
+
+  function renderHosts(rows) {
+    var host = $("hostList");
+    if (!host) return;
+    latestFindings = rows || [];
+    if (!latestFindings.length) {
+      host.innerHTML = '<div class="empty">No hosts yet.</div>';
+      return;
+    }
+    host.innerHTML = "";
+    var seen = {};
+    latestFindings.forEach(function (f) {
+      if (!f.addr || seen[f.addr]) return;
+      seen[f.addr] = true;
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "scan-item";
+      btn.textContent = f.addr + " · " + findingSeverity(f);
+      btn.addEventListener("click", function () { openHost(f); });
+      host.appendChild(btn);
+    });
+  }
+
+  function openHost(f) {
+    $("hostDrawerTitle").textContent = f.addr || "Host";
+    var body = $("hostDrawerBody");
+    body.innerHTML = "";
+    var lines = [
+      ["Server", f.server_name || "—"],
+      ["RFB", f.rfb ? "yes" : "no"],
+      ["Security", (f.security_types || []).join(", ") || "—"],
+      ["TLS", f.tls ? "yes" : "no"],
+      ["Desktop", f.dimensions || "—"],
+      ["Severity", findingSeverity(f)],
+      ["Note", f.error || ""]
+    ];
+    lines.forEach(function (pair) {
+      var p = document.createElement("p");
+      p.textContent = pair[0] + ": " + pair[1];
+      body.appendChild(p);
+    });
+    $("hostDrawer").classList.remove("hidden");
   }
 
   function renderLog(s) {
     var list = $("log");
     var events = s.events || [];
-    if (!events.length) return;
+    if (logPaused) return;
+    var query = ($("logSearch") && $("logSearch").value || "").toLowerCase();
+    var key = String(events.length) + ":" + query;
+    if (key === lastLogKey) return;
+    lastLogKey = key;
+    if (!events.length) {
+      list.innerHTML = '<li><time>—</time><span>waiting for a scan</span></li>';
+      return;
+    }
     list.innerHTML = "";
+    var full = $("logFull");
+    if (full) full.innerHTML = "";
     events.slice().reverse().forEach(function (e) {
+      var text = "[" + e.kind + "] " + e.message;
+      if (query && text.toLowerCase().indexOf(query) < 0) return;
       var li = document.createElement("li");
       var t = document.createElement("time");
       t.textContent = new Date(e.at).toLocaleTimeString();
@@ -1529,7 +2240,8 @@
       if (level) li.className = "lvl-" + level;
       li.appendChild(t);
       li.appendChild(span);
-      list.appendChild(li);
+      if (!logPaused) list.appendChild(li);
+      if (full && !logPaused) full.appendChild(li.cloneNode(true));
     });
   }
 
@@ -1551,6 +2263,9 @@
     state = s;
     setStatus(s.status);
     $("version").textContent = s.version || "dev";
+    if ($("aboutVersion")) $("aboutVersion").textContent = s.version || "dev";
+    $("scanName").textContent = s.name || (s.id ? s.id : "Scan control");
+    $("findingHint").textContent = (s.name ? s.name + " · " : "") + "open ports, RFB services and passwordless hosts";
     $("startedAt").textContent = s.started ? "started " + s.started : "no scan started";
     $("runDir").textContent = s.run_dir || "";
 
@@ -1572,6 +2287,12 @@
     renderProgress(s);
     renderCounters(s);
     renderReports(s);
+    // A different run replaces the finding table; keep the previous DOM
+    // only while this scan is appending to the same list.
+    if ((s.run_dir || "") !== (lastRunDir || "")) {
+      lastFindingKey = "";
+      lastLogKey = "";
+    }
     renderFindings(s);
     renderLog(s);
 
@@ -1594,11 +2315,223 @@
     }
   }
 
+  var viewTitles = {
+    scans: ["", "Dashboard"],
+    activity: ["", "Live activity"],
+    hosts: ["", "Hosts"],
+    findings: ["", "Findings"],
+    history: ["", "History"],
+    settings: ["", "Settings"],
+    about: ["", "About"]
+  };
+
+  function showView(name, navName) {
+    currentView = name;
+    var nav = navName || name;
+    document.querySelectorAll(".view").forEach(function (pane) {
+      pane.classList.toggle("active", pane.id === "view-" + name);
+    });
+    document.querySelectorAll(".nav button[id^='nav-']").forEach(function (btn) {
+      btn.classList.toggle("active", btn.id === "nav-" + nav);
+    });
+    if (openTabs.indexOf(name) < 0) openTabs.push(name);
+    if (openTabs.length > 6) openTabs.shift();
+    var tabs = $("workspaceTabs");
+    if (tabs) {
+      tabs.innerHTML = "";
+      openTabs.forEach(function (id) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", "tab");
+        b.className = id === name ? "active" : "";
+        b.textContent = t((viewTitles[id] || ["", id])[1]);
+        b.addEventListener("click", function () { showView(id); });
+        tabs.appendChild(b);
+      });
+    }
+    var pair = viewTitles[name] || ["", name];
+    var crumbs = $("crumbs");
+    if (crumbs) {
+      crumbs.innerHTML = pair[0]
+        ? esc(t(pair[0])) + " / <strong>" + esc(t(pair[1])) + "</strong>"
+        : "<strong>" + esc(t(pair[1])) + "</strong>";
+    }
+    try {
+      var recent = JSON.parse(localStorage.getItem("vncshot-recent") || "[]");
+      recent = [name].concat(recent.filter(function (x) { return x !== name; })).slice(0, 5);
+      localStorage.setItem("vncshot-recent", JSON.stringify(recent));
+    } catch (e) {}
+  }
+
+  function resolvedTheme(pref) {
+    if (pref === "system") {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    return pref === "dark" ? "dark" : "light";
+  }
+
+  function applyTheme(pref) {
+    if (pref !== "dark" && pref !== "system") pref = "light";
+    document.documentElement.setAttribute("data-theme", resolvedTheme(pref));
+    document.documentElement.setAttribute("data-theme-pref", pref);
+    $("themeToggle").querySelectorAll("[data-theme-choice]").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", btn.getAttribute("data-theme-choice") === pref ? "true" : "false");
+    });
+    try { localStorage.setItem("vncshot-theme", pref); } catch (e) {}
+  }
+
+  function blankSnap() {
+    return {
+      status: "idle",
+      summary: {},
+      findings: [],
+      events: [],
+      report_links: {},
+      files: [],
+      done: 0,
+      total: 0
+    };
+  }
+
+  function rememberScan(snap) {
+    if (!snap || !snap.id) return;
+    var prev = scans[snap.id];
+    if (prev && snap.seq && prev.seq && snap.seq < prev.seq) return;
+    scans[snap.id] = snap;
+    if (snap.id === activeID) render(snap);
+  }
+
+  function openScanSetup() {
+    showView("scans", "wizard");
+    setWizardStep(1);
+    $("form").classList.remove("hidden");
+    $("target").focus();
+  }
+
+  function setWizardStep(step) {
+    $("form").setAttribute("data-step", String(step));
+    $("wizardSteps").querySelectorAll("button").forEach(function (btn) {
+      var on = btn.getAttribute("data-step") === String(step);
+      if (on) btn.setAttribute("aria-current", "step");
+      else btn.removeAttribute("aria-current");
+    });
+    if (step === 4) fillReview();
+  }
+
+  function fillReview() {
+    var box = $("wizardReview");
+    box.innerHTML = "";
+    var lines = [
+      "Target: " + ($("target").value || "—"),
+      "File: " + ($("file").value || "—"),
+      "Ports: " + ($("ports").value || "—"),
+      "Workers: " + ($("workers").value || "—"),
+      "Word list: " + ($("word_list").value || "built-in list")
+    ];
+    lines.forEach(function (line) {
+      var p = document.createElement("p");
+      p.textContent = line;
+      box.appendChild(p);
+    });
+    var p = document.createElement("p");
+    p.textContent = "Next step asks you to confirm this scope is authorized.";
+    box.appendChild(p);
+  }
+
+  function closeScanSetup() {
+    $("form").classList.add("hidden");
+  }
+
+  function selectScan(id) {
+    viewingHistory = false;
+    closeScanSetup();
+    activeID = id;
+    var snap = scans[id];
+    if (snap) render(snap);
+    renderMenu(menuJobs);
+  }
+
+  function renderMenu(jobs) {
+    menuJobs = jobs || [];
+    var running = menuJobs.filter(function (job) { return job.status === "running"; }).length;
+    var badge = $("badgeRuns");
+    if (badge) badge.textContent = running ? String(running) : "";
+    var live = {};
+    menuJobs.forEach(function (job) { live[job.id] = true; });
+    Object.keys(scans).forEach(function (id) {
+      if (!live[id]) delete scans[id];
+    });
+    if (activeID && !live[activeID]) {
+      activeID = menuJobs.length ? menuJobs[0].id : "";
+      if (activeID && scans[activeID]) render(scans[activeID]);
+      else if (!activeID) render(blankSnap());
+    }
+    var host = $("scanMenu");
+    var signature = menuJobs.map(function (job) { return job.id; }).join(",");
+    if (host.dataset.ids !== signature) {
+      host.textContent = "";
+      host.dataset.ids = signature;
+      if (!menuJobs.length) {
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = t("No scans yet.");
+        host.appendChild(empty);
+        renderScanBoard();
+        return;
+      }
+      menuJobs.forEach(function (job) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "scan-item";
+        btn.dataset.id = job.id;
+        var name = document.createElement("span");
+        name.className = "scan-name";
+        var meta = document.createElement("span");
+        meta.className = "scan-meta";
+        btn.appendChild(name);
+        btn.appendChild(meta);
+        btn.addEventListener("click", function () { selectScan(job.id); });
+        host.appendChild(btn);
+      });
+    }
+    menuJobs.forEach(function (job) {
+      var btn = host.querySelector('.scan-item[data-id="' + job.id + '"]');
+      if (!btn) return;
+      btn.className = "scan-item" + (job.id === activeID ? " active" : "");
+      var sum = job.summary || {};
+      var hits = (sum.passwordless || 0) + (sum.weak_credentials || 0);
+      var meta = formatWhen(job.started);
+      if (meta === "—") meta = "";
+      var rest = (job.status || "idle") + " · " + (job.done || 0) + "/" + (job.total || 0);
+      meta = meta ? meta + " · " + rest : rest;
+      if (hits) meta += " · " + hits + " notable";
+      btn.querySelector(".scan-name").textContent = job.name || job.id;
+      btn.querySelector(".scan-meta").textContent = meta;
+    });
+    renderScanBoard();
+  }
+
+  function applyFeed(frame) {
+    if (frame.snapshots) {
+      scans = {};
+      frame.snapshots.forEach(function (snap) {
+        if (snap && snap.id) scans[snap.id] = snap;
+      });
+    }
+    if (frame.version) $("version").textContent = frame.version;
+    if (frame.jobs) renderMenu(frame.jobs);
+    if (frame.update) rememberScan(frame.update);
+    if (!viewingHistory && !activeID && menuJobs.length && scans[menuJobs[0].id]) {
+      activeID = menuJobs[0].id;
+      render(scans[activeID]);
+    }
+  }
+
   function connect() {
     if (es) es.close();
-    es = new EventSource("/api/events");
+    es = new EventSource("/api/feed");
     es.onmessage = function (msg) {
-      try { render(JSON.parse(msg.data)); } catch (e) { /* ignore malformed frame */ }
+      try { applyFeed(JSON.parse(msg.data)); } catch (e) { /* ignore malformed frame */ }
     };
     es.onerror = function () {
       // The server closes the stream when the GUI shuts down; retry with a
@@ -1609,6 +2542,10 @@
   }
 
   $("form").addEventListener("change", saveForm);
+  $("globalSettings").addEventListener("change", saveForm);
+  $("newScan").addEventListener("click", openScanSetup);
+  $("newScanRail").addEventListener("click", openScanSetup);
+  $("scanSetupClose").addEventListener("click", closeScanSetup);
 
   $("form").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -1637,7 +2574,6 @@
       no_password_check: $("no_password_check").checked,
       baseline: $("baseline").value,
       webhook: $("webhook").value.trim(),
-      redact: $("redact").checked,
       authorized: $("authorized").checked
     };
     if (!body.authorized) {
@@ -1645,10 +2581,21 @@
       $("errorBox").textContent = "Confirm your authorization before starting a scan.";
       return;
     }
-    api("/api/scan", { method: "POST", body: JSON.stringify(body) })
+    api("/api/scans", { method: "POST", body: JSON.stringify(body) })
       .then(function (res) {
         if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
-        return res.json().then(render);
+        return res.json().then(function (snap) {
+        viewingHistory = false;
+        scans[snap.id] = snap;
+        activeID = snap.id;
+        $("authorized").checked = false;
+        closeScanSetup();
+        showView("scans");
+          render(snap);
+          var next = menuJobs.filter(function (job) { return job.id !== snap.id; });
+          next.push(snap);
+          renderMenu(next);
+        });
       })
       .catch(function (err) {
         $("errorBox").classList.remove("hidden");
@@ -1657,15 +2604,78 @@
   });
 
   $("cancel").addEventListener("click", function () {
-    api("/api/cancel", { method: "POST" })
+    if (!activeID) return;
+    api("/api/scans/" + encodeURIComponent(activeID) + "/stop", { method: "POST" })
       .then(function (res) {
         if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
-        return res.json().then(render);
+        return res.json().then(rememberScan);
       })
       .catch(function (err) {
         $("errorBox").classList.remove("hidden");
         $("errorBox").textContent = err.message;
       });
+  });
+
+  $("deleteScan").addEventListener("click", function () {
+    if (!activeID) return;
+    $("deleteScanAsk").classList.remove("hidden");
+  });
+  $("deleteScanNo").addEventListener("click", function () {
+    $("deleteScanAsk").classList.add("hidden");
+  });
+  $("deleteScanYes").addEventListener("click", function () {
+    if (!activeID) return;
+    $("deleteScanAsk").classList.add("hidden");
+    var id = activeID;
+    api("/api/scans/" + encodeURIComponent(id), { method: "DELETE" })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
+        viewingHistory = false;
+        delete scans[id];
+        menuJobs = menuJobs.filter(function (job) { return job.id !== id; });
+        activeID = menuJobs.length ? menuJobs[0].id : "";
+        renderMenu(menuJobs);
+        if (activeID && scans[activeID]) render(scans[activeID]);
+        else render(blankSnap());
+      })
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  });
+
+  function bindNav(id, fn) {
+    var el = $(id);
+    if (el) el.addEventListener("click", fn);
+  }
+  function setFindingFilter(name) {
+    findingFilter = name || "all";
+    lastFindingKey = "";
+    document.querySelectorAll("#findingFilters button").forEach(function (btn) {
+      btn.classList.toggle("active", btn.getAttribute("data-filter") === findingFilter);
+    });
+    if (state) renderFindings(state);
+  }
+  bindNav("nav-scans", function () { showView("scans"); });
+  bindNav("nav-activity", function () { showView("activity"); });
+  bindNav("nav-hosts", function () { showView("hosts"); });
+  bindNav("nav-findings", function () { setFindingFilter("all"); showView("findings"); });
+  bindNav("nav-history", function () { showView("history"); });
+  bindNav("nav-settings", function () { showView("settings"); });
+  bindNav("nav-about", function () { showView("about"); });
+  $("findingFilters").addEventListener("click", function (ev) {
+    var btn = ev.target.closest("button");
+    if (!btn) return;
+    setFindingFilter(btn.getAttribute("data-filter"));
+    showView("findings");
+  });
+  $("themeToggle").addEventListener("click", function (ev) {
+    var choice = ev.target.getAttribute && ev.target.getAttribute("data-theme-choice");
+    if (choice) applyTheme(choice);
+  });
+  try { applyTheme(localStorage.getItem("vncshot-theme") || "light"); } catch (e) { applyTheme("light"); }
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+    if (document.documentElement.getAttribute("data-theme-pref") === "system") applyTheme("system");
   });
 
   $("compareClose").addEventListener("click", hideCompare);
@@ -1674,8 +2684,24 @@
   // by later scan updates.
   $("findingsHost").addEventListener("click", function (ev) {
     var btn = ev.target.closest(".shot-link");
-    if (!btn || !btn.dataset.shot) return;
-    openLightbox(btn.dataset.shot, btn.dataset.caption || "", btn);
+    if (btn && btn.dataset.shot) {
+      openLightbox(btn.dataset.shot, btn.dataset.caption || "", btn);
+      return;
+    }
+    var sev = ev.target.closest(".sev");
+    if (sev) {
+      var name = (sev.textContent || "").trim();
+      if (name === "critical" || name === "high") setFindingFilter("auth");
+      else if (name === "medium" || name === "low") setFindingFilter("crypto");
+      else setFindingFilter("exposure");
+      showView("findings");
+      return;
+    }
+    var row = ev.target.closest("tr");
+    if (!row || !row.dataset.addr) return;
+    var found = null;
+    latestFindings.forEach(function (f) { if (f.addr === row.dataset.addr) found = f; });
+    if (found) openHost(found);
   });
   $("lightboxClose").addEventListener("click", closeLightbox);
   $("lightbox").addEventListener("click", function (ev) {
@@ -1683,13 +2709,160 @@
     if (ev.target === $("lightbox")) closeLightbox();
   });
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape") closeLightbox();
+    var tag = (ev.target && ev.target.tagName) || "";
+    var typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")) {
+      ev.preventDefault();
+      openPalette();
+      return;
+    }
+    if (ev.key === "?" && !typing) {
+      $("shortcutHelp").classList.remove("hidden");
+      return;
+    }
+    if (!typing && (ev.key === "g" || ev.key === "G")) { chord = "g"; return; }
+    if (chord === "g" && !typing) {
+      var jump = { d: "scans", f: "findings", h: "history", s: "settings", n: "wizard" };
+      var dest = jump[(ev.key || "").toLowerCase()];
+      chord = "";
+      if (dest === "wizard") openScanSetup();
+      else if (dest) showView(dest);
+      return;
+    }
+    if (ev.key !== "Escape") return;
+    if (!$("palette").classList.contains("hidden")) $("palette").classList.add("hidden");
+    else if (!$("shortcutHelp").classList.contains("hidden")) $("shortcutHelp").classList.add("hidden");
+    else if (!$("hostDrawer").classList.contains("hidden")) $("hostDrawer").classList.add("hidden");
+    else if (!$("lightbox").classList.contains("hidden")) closeLightbox();
+    else if (!$("form").classList.contains("hidden")) closeScanSetup();
   });
+
+  function toast(message) {
+    var item = document.createElement("div");
+    item.className = "toast";
+    item.textContent = message;
+    $("toasts").appendChild(item);
+    setTimeout(function () { if (item.parentNode) item.parentNode.removeChild(item); }, 3200);
+  }
+
+  function paletteCommands() {
+    var cmds = [];
+    document.querySelectorAll(".nav button[id^='nav-']").forEach(function (btn) {
+      cmds.push({ label: btn.textContent.replace(/\s+/g, " ").trim(), run: function () { btn.click(); } });
+    });
+    cmds.push({ label: "Theme light", run: function () { applyTheme("light"); } });
+    cmds.push({ label: "Theme dark", run: function () { applyTheme("dark"); } });
+    cmds.push({ label: "Theme system", run: function () { applyTheme("system"); } });
+    cmds.push({ label: "New scan", run: openScanSetup });
+    return cmds;
+  }
+
+  function openPalette() {
+    var box = $("palette");
+    box.classList.remove("hidden");
+    $("paletteInput").value = "";
+    paintPalette("");
+    $("paletteInput").focus();
+  }
+
+  function paintPalette(q) {
+    var list = $("paletteList");
+    list.innerHTML = "";
+    var query = (q || "").toLowerCase();
+    paletteCommands().filter(function (cmd) {
+      return !query || cmd.label.toLowerCase().indexOf(query) >= 0;
+    }).forEach(function (cmd, i) {
+      var li = document.createElement("li");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = cmd.label;
+      if (i === 0) btn.className = "active";
+      btn.addEventListener("click", function () {
+        $("palette").classList.add("hidden");
+        cmd.run();
+      });
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+  }
+
+  $("openPalette").addEventListener("click", openPalette);
+  $("paletteInput").addEventListener("input", function () { paintPalette($("paletteInput").value); });
+  $("palette").addEventListener("click", function (ev) { if (ev.target === $("palette")) $("palette").classList.add("hidden"); });
+  $("hostDrawerClose").addEventListener("click", function () { $("hostDrawer").classList.add("hidden"); });
+  $("shortcutClose").addEventListener("click", function () { $("shortcutHelp").classList.add("hidden"); });
+  $("wizardSteps").addEventListener("click", function (ev) {
+    var step = ev.target.getAttribute && ev.target.getAttribute("data-step");
+    if (step) setWizardStep(step);
+  });
+  $("logPause").addEventListener("click", function () {
+    logPaused = !logPaused;
+    $("logPause").textContent = logPaused ? "Resume" : "Pause";
+    if (!logPaused) { lastLogKey = ""; if (state) renderLog(state); }
+    else toast("Live log paused");
+  });
+  $("logSearch").addEventListener("input", function () {
+    lastLogKey = "";
+    if (state) renderLog(state);
+  });
+  $("railToggle").addEventListener("click", function () {
+    var order = ["wide", "compact", "hidden"];
+    var cur = document.documentElement.getAttribute("data-rail") || "wide";
+    var next = order[(order.indexOf(cur) + 1) % order.length];
+    document.documentElement.setAttribute("data-rail", next);
+    $("railToggle").setAttribute("aria-pressed", next !== "wide" ? "true" : "false");
+    try { localStorage.setItem("vncshot-rail", next); } catch (e) {}
+  });
+  document.querySelectorAll(".nav-group").forEach(function (group) {
+    var key = "vncshot-group-" + group.getAttribute("data-group");
+    try { if (localStorage.getItem(key) === "closed") group.open = false; } catch (e) {}
+    group.addEventListener("toggle", function () {
+      try { localStorage.setItem(key, group.open ? "open" : "closed"); } catch (e) {}
+    });
+  });
+  $("langSelect").addEventListener("change", function () {
+    try { localStorage.setItem("vncshot-lang", $("langSelect").value); } catch (e) {}
+    applyLang($("langSelect").value);
+  });
+  $("densitySelect").addEventListener("change", function () {
+    var compact = $("densitySelect").value === "compact";
+    document.documentElement.setAttribute("data-density", compact ? "compact" : "comfort");
+    try { localStorage.setItem("vncshot-density", compact ? "compact" : "comfort"); } catch (e) {}
+  });
+  $("motionReduce").addEventListener("change", function () {
+    document.documentElement.setAttribute("data-motion", $("motionReduce").checked ? "reduce" : "full");
+    try { localStorage.setItem("vncshot-motion", $("motionReduce").checked ? "reduce" : "full"); } catch (e) {}
+  });
+
+  function applyLang(lang) {
+    currentLang = lang === "tr" ? "tr" : "en";
+    document.querySelectorAll("[data-i18n]").forEach(function (el) {
+      el.textContent = t(el.getAttribute("data-i18n"));
+    });
+    document.querySelectorAll(".nav-label").forEach(function (el) {
+      var en = el.getAttribute("data-en") || el.textContent;
+      el.setAttribute("data-en", en);
+      el.textContent = t(en);
+    });
+    showView(currentView || "scans");
+    if (historyRuns) renderHistory(historyRuns);
+    var menu = $("scanMenu");
+    if (menu) delete menu.dataset.ids;
+    renderMenu(menuJobs);
+  }
+
+  try {
+    var savedLang = localStorage.getItem("vncshot-lang") || "en";
+    $("langSelect").value = savedLang;
+    applyLang(savedLang);
+    $("densitySelect").value = localStorage.getItem("vncshot-density") === "compact" ? "compact" : "comfort";
+    $("motionReduce").checked = localStorage.getItem("vncshot-motion") === "reduce";
+  } catch (e) {}
+  showView("scans");
 
   loadForm();
   loadHistory();
   loadTrends();
-  api("/api/state").then(function (res) { return res.json(); }).then(render).catch(function () {});
   connect();
 })();
 </script>

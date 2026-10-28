@@ -1,9 +1,7 @@
 // Package gui serves a local, loopback-only web interface for vncshot.
 //
-// The GUI is deliberately implemented as a web app: the scanner must run as
-// root on Linux, so an in-browser front end avoids pulling a cgo/C library
-// dependency into the static binary while still offering every CLI option,
-// live progress and direct access to the generated reports.
+// The GUI is a local web app so the scanner stays a static binary: no cgo
+// toolkit, every scan option, live progress and the generated reports.
 package gui
 
 import (
@@ -152,6 +150,9 @@ type runInfo struct {
 }
 
 type snapshot struct {
+	ID          string         `json:"id,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Seq         int64          `json:"seq,omitempty"`
 	Status      string         `json:"status"`
 	Error       string         `json:"error"`
 	Started     string         `json:"started"`
@@ -196,7 +197,14 @@ type diffSummary struct {
 }
 
 type runState struct {
-	mu          sync.Mutex
+	mu         sync.Mutex
+	id         string
+	name       string
+	dropDir    bool
+	reportRoot string
+	seq        int64
+	// accounted is read and written only while server.jobsMu is held.
+	accounted   bool
 	status      string
 	errMsg      string
 	started     time.Time
@@ -220,6 +228,10 @@ type runState struct {
 	cancel      context.CancelFunc
 	subscribers map[chan snapshot]struct{}
 	lastSent    time.Time
+	// flushPending is set when a progress frame was coalesced. A timer
+	// delivers that latest snapshot so a finding is not held until the
+	// next probe happens to fall outside the throttle window.
+	flushPending bool
 }
 
 const (
@@ -250,6 +262,15 @@ type server struct {
 	cfg     Config
 	run     *runState
 	version string
+
+	jobsMu  sync.Mutex
+	jobs    map[string]*runState
+	order   []string
+	cards   map[string]jobCard
+	running int
+
+	feedMu   sync.Mutex
+	feedSubs map[chan []byte]struct{}
 }
 
 // Run starts the GUI and blocks until the process receives a signal.
@@ -296,6 +317,7 @@ func Run(cfg Config) error {
 	go func() {
 		<-stopCh
 		srv.cancelRun()
+		srv.cancelJobs()
 		_ = httpSrv.Close()
 	}()
 
@@ -341,9 +363,13 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/cancel", s.guard(s.handleCancel))
 	mux.HandleFunc("/api/runs", s.guard(s.handleRuns))
 	mux.HandleFunc("/api/runs/open", s.guard(s.handleRunOpen))
+	mux.HandleFunc("/api/runs/", s.guard(s.handleRunItem))
 	mux.HandleFunc("/api/trends", s.guard(s.handleTrends))
 	mux.HandleFunc("/api/diff", s.guard(s.handleDiff))
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
+	mux.HandleFunc("/api/feed", s.guard(s.handleFeed))
+	mux.HandleFunc("/api/scans", s.guard(s.handleScans))
+	mux.HandleFunc("/api/scans/", s.guard(s.handleScanRoute))
 	mux.HandleFunc("/files/", s.guard(s.handleFiles))
 	return mux
 }
@@ -458,7 +484,7 @@ func (s *server) handleScan(w http.ResponseWriter, r *http.Request) {
 	s.run.finished = time.Time{}
 	s.run.done = 0
 	s.run.total = len(session.Targets)
-	s.run.summary = report.Summary{Targets: len(session.Targets)}
+	s.run.summary = session.LiveSummary()
 	s.run.runDir = session.RunDir
 	s.run.credentials = len(session.Credentials)
 	s.run.jsonPath = session.JSONPath
@@ -475,83 +501,92 @@ func (s *server) handleScan(w http.ResponseWriter, r *http.Request) {
 	s.run.cancel = cancel
 	s.run.mu.Unlock()
 
-	s.pushEvent("scan", fmt.Sprintf("started scan of %d host:port pairs with %d password candidates",
+	s.pushEvent(s.run, "scan", fmt.Sprintf("started scan of %d host:port pairs with %d password candidates",
 		len(session.Targets), len(session.Credentials)))
-	s.broadcast(true)
+	s.broadcast(s.run, true)
 
-	go s.execute(ctx, session, cancel)
+	go s.execute(ctx, s.run, session, cancel)
 
 	writeJSON(w, s.snapshot())
 }
 
-func (s *server) execute(ctx context.Context, session *app.Session, cancel context.CancelFunc) {
+func (s *server) execute(ctx context.Context, job *runState, session *app.Session, cancel context.CancelFunc) {
 	defer cancel()
 
 	out, err := session.Scan(ctx, func(p app.Progress) {
-		s.run.mu.Lock()
-		s.run.done = p.Done
-		s.run.results = append(s.run.results, p.Result)
-		if p.Result.Open || p.Result.Passwordless || p.Result.Error != "" {
-			s.run.findings = append(s.run.findings, toFinding(p.Result))
+		job.mu.Lock()
+		job.done = p.Done
+		job.results = append(job.results, p.Result)
+		if p.Result.Open || p.Result.Passwordless || p.Result.Password != "" || p.Result.Error != "" {
+			job.findings = append(job.findings, toFinding(p.Result))
 		}
-		// Summarize recomputes from the collected results, which is cheap
-		// at report scale and avoids drift between counters and rows.
-		s.run.summary = report.Summarize(s.run.results)
-		s.run.total = p.Total
-		s.run.mu.Unlock()
-		s.broadcast(false)
+		// Add is O(1). Rebuilding the summary from the whole slice on every
+		// probe made a large scan stall the live counters.
+		job.summary.Add(p.Result)
+		job.summary.Targets = p.Total
+		job.total = p.Total
+		notable := p.Result.Passwordless || p.Result.Password != "" || p.Result.Screenshot != ""
+		job.mu.Unlock()
+		// A passwordless host, weak credential or screenshot is pushed
+		// immediately. Open ports and errors ride the coalesced cadence.
+		s.broadcast(job, notable)
 	})
 
-	s.run.mu.Lock()
-	s.run.done = out.Summary.Targets
-	s.run.summary = out.Summary
-	s.run.runDir = out.RunDir
-	s.run.jsonPath = out.JSON
-	s.run.htmlPath = out.HTML
-	s.run.pdfPath = out.PDF
-	s.run.finished = time.Now()
+	job.mu.Lock()
+	job.done = out.Summary.Targets
+	job.summary = out.Summary
+	job.runDir = out.RunDir
+	job.jsonPath = out.JSON
+	job.htmlPath = out.HTML
+	job.pdfPath = out.PDF
+	job.finished = time.Now()
 	// A webhook failure must not look like a clean run, and a baseline
 	// comparison requested on the launch command line must be visible:
 	// both were previously dropped on the floor by the GUI.
 	if out.Warning != "" {
-		if s.run.warning != "" {
-			s.run.warning += "; " + out.Warning
+		if job.warning != "" {
+			job.warning += "; " + out.Warning
 		} else {
-			s.run.warning = out.Warning
+			job.warning = out.Warning
 		}
 	}
 	if out.Diff != nil {
-		s.run.diff = &diffSummary{
+		job.diff = &diffSummary{
 			Baseline: filepath.Base(out.Diff.Baseline),
 			New:      len(out.Diff.New),
 			Resolved: len(out.Diff.Resolved),
 			Changed:  len(out.Diff.Changed),
 		}
 	}
-	s.run.removedRuns = len(out.RemovedRuns)
+	job.removedRuns = len(out.RemovedRuns)
 	switch {
 	case errors.Is(err, context.Canceled):
-		s.run.status = statusCancelled
+		job.status = statusCancelled
 	case err != nil:
-		s.run.status = statusFailed
-		s.run.errMsg = err.Error()
+		job.status = statusFailed
+		job.errMsg = err.Error()
 	default:
-		s.run.status = statusCompleted
+		job.status = statusCompleted
 	}
-	s.run.mu.Unlock()
+	dropDir := job.dropDir
+	runDir := job.runDir
+	job.mu.Unlock()
 
-	s.collectFiles(session.RunDir)
-	s.pushEvent("scan", fmt.Sprintf("finished: %d open, %d passwordless", out.Summary.Open, out.Summary.Passwordless))
-	s.broadcast(true)
+	s.collectFiles(job, session.RunDir)
+	s.pushEvent(job, "scan", fmt.Sprintf("finished: %d open, %d passwordless", out.Summary.Open, out.Summary.Passwordless))
+	s.broadcast(job, true)
+	if dropDir {
+		_ = removeRunDir(s.reportRoot(), runDir)
+	}
 }
 
 // collectFiles lists the artifacts of a finished run so the UI can link to
 // them without guessing file names.
-func (s *server) collectFiles(runDir string) {
+func (s *server) collectFiles(job *runState, runDir string) {
 	files := listRunFiles(runDir)
-	s.run.mu.Lock()
-	s.run.files = files
-	s.run.mu.Unlock()
+	job.mu.Lock()
+	job.files = files
+	job.mu.Unlock()
 }
 
 // listRunFiles returns every regular file below runDir as a slash-separated
@@ -587,6 +622,150 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.listRuns())
+}
+
+// handleRunItem deletes one previous run folder. The name is a single
+// timestamp segment; open stays on its own route.
+func (s *server) handleRunItem(w http.ResponseWriter, r *http.Request) {
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/runs/"), "/")
+	if name == "" || strings.Contains(name, "/") || !validRunName(name) {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.deleteHistoricalRun(name); err != nil {
+		var status interface{ StatusCode() int }
+		if errors.As(err, &status) {
+			http.Error(w, err.Error(), status.StatusCode())
+			return
+		}
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteHistoricalRun removes a timestamp folder and every report file inside
+// it. A folder a live scan is still writing is left in place.
+func (s *server) deleteHistoricalRun(name string) error {
+	dir, status, err := s.resolveRunDir(name)
+	if err != nil {
+		return runHTTPError{status: status, msg: err.Error()}
+	}
+	if s.runDirectoryBusy(dir) {
+		return runHTTPError{status: http.StatusConflict, msg: "run is in use by a live scan"}
+	}
+	if err := removeRunDir(s.reportRoot(), dir); err != nil {
+		return runHTTPError{status: http.StatusConflict, msg: "run could not be deleted"}
+	}
+	s.detachFinishedJobsAt(dir)
+	s.releaseDisplayedRun(dir)
+	return nil
+}
+
+type runHTTPError struct {
+	status int
+	msg    string
+}
+
+func (e runHTTPError) Error() string { return e.msg }
+
+func (e runHTTPError) StatusCode() int { return e.status }
+
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return filepath.Clean(aa) == filepath.Clean(bb)
+}
+
+func (s *server) runDirectoryBusy(dir string) bool {
+	s.run.mu.Lock()
+	legacy := s.run.status == statusRunning && samePath(s.run.runDir, dir)
+	s.run.mu.Unlock()
+	if legacy {
+		return true
+	}
+	s.jobsMu.Lock()
+	jobs := make([]*runState, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		jobs = append(jobs, job)
+	}
+	s.jobsMu.Unlock()
+	for _, job := range jobs {
+		job.mu.Lock()
+		busy := job.status == statusRunning && samePath(job.runDir, dir)
+		job.mu.Unlock()
+		if busy {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *server) detachFinishedJobsAt(dir string) {
+	s.jobsMu.Lock()
+	jobs := make([]*runState, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		jobs = append(jobs, job)
+	}
+	s.jobsMu.Unlock()
+	var ids []string
+	for _, job := range jobs {
+		job.mu.Lock()
+		id := job.id
+		match := job.status != statusRunning && samePath(job.runDir, dir)
+		job.mu.Unlock()
+		if match && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	for _, id := range ids {
+		s.detachJob(id)
+	}
+	s.publishMenu()
+}
+
+// releaseDisplayedRun clears the single-run slot when it is showing the
+// folder that was just deleted, so a refresh does not keep serving it.
+func (s *server) releaseDisplayedRun(dir string) {
+	s.run.mu.Lock()
+	defer s.run.mu.Unlock()
+	if s.run.status == statusRunning || !samePath(s.run.runDir, dir) {
+		return
+	}
+	s.run.id = ""
+	s.run.name = ""
+	s.run.status = statusIdle
+	s.run.errMsg = ""
+	s.run.started = time.Time{}
+	s.run.finished = time.Time{}
+	s.run.done = 0
+	s.run.total = 0
+	s.run.summary = report.Summary{}
+	s.run.runDir = ""
+	s.run.credentials = 0
+	s.run.jsonPath = ""
+	s.run.htmlPath = ""
+	s.run.pdfPath = ""
+	s.run.files = nil
+	s.run.results = nil
+	s.run.findings = nil
+	s.run.events = nil
+	s.run.warning = ""
+	s.run.diff = nil
+	s.run.session = nil
 }
 
 func (s *server) listRuns() []runInfo {
@@ -837,7 +1016,7 @@ func (s *server) handleRunOpen(w http.ResponseWriter, r *http.Request) {
 	s.run.cancel = nil
 	s.run.mu.Unlock()
 
-	s.broadcast(true)
+	s.broadcast(s.run, true)
 	writeJSON(w, s.snapshot())
 }
 
@@ -1030,8 +1209,8 @@ func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no scan is running", http.StatusConflict)
 		return
 	}
-	s.pushEvent("cancel", "cancellation requested; finishing in-flight probes")
-	s.broadcast(true)
+	s.pushEvent(s.run, "cancel", "cancellation requested; finishing in-flight probes")
+	s.broadcast(s.run, true)
 	writeJSON(w, s.snapshot())
 }
 
@@ -1101,9 +1280,21 @@ func writeEvent(w http.ResponseWriter, snap snapshot) {
 }
 
 func (s *server) handleFiles(w http.ResponseWriter, r *http.Request) {
-	s.run.mu.Lock()
-	runDir := s.run.runDir
-	s.run.mu.Unlock()
+	var runDir string
+	if id := r.URL.Query().Get("scan"); id != "" {
+		job := s.lookupJob(id)
+		if job == nil {
+			http.NotFound(w, r)
+			return
+		}
+		job.mu.Lock()
+		runDir = job.runDir
+		job.mu.Unlock()
+	} else {
+		s.run.mu.Lock()
+		runDir = s.run.runDir
+		s.run.mu.Unlock()
+	}
 	if runDir == "" {
 		http.NotFound(w, r)
 		return
@@ -1139,68 +1330,110 @@ func (s *server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, full)
 }
 
-// broadcast pushes a snapshot to every SSE subscriber. Progress updates are
-// throttled; terminal transitions are always delivered.
-func (s *server) broadcast(force bool) {
-	s.run.mu.Lock()
-	if !force && time.Since(s.run.lastSent) < 150*time.Millisecond {
-		s.run.mu.Unlock()
+// progressFlushDelay is how long a non-urgent progress frame may wait so a
+// fast scan does not flood the browser, while the latest counters still arrive.
+const progressFlushDelay = 150 * time.Millisecond
+
+// broadcast pushes a snapshot to every SSE subscriber. Urgent frames
+// (scan start, finish, a new finding) go out immediately. Ordinary progress
+// is coalesced: a dropped frame is delivered by a short timer instead of
+// waiting for another probe.
+func (s *server) broadcast(job *runState, force bool) {
+	job.mu.Lock()
+	if !force && time.Since(job.lastSent) < progressFlushDelay {
+		if !job.flushPending {
+			job.flushPending = true
+			delay := progressFlushDelay - time.Since(job.lastSent)
+			if delay < 0 {
+				delay = 0
+			}
+			time.AfterFunc(delay, func() {
+				job.mu.Lock()
+				pending := job.flushPending
+				job.mu.Unlock()
+				if pending {
+					s.broadcast(job, true)
+				}
+			})
+		}
+		job.mu.Unlock()
 		return
 	}
-	s.run.lastSent = time.Now()
-	snap := s.snapshotLocked()
-	for ch := range s.run.subscribers {
+	job.lastSent = time.Now()
+	job.flushPending = false
+	snap := s.snapshotOf(job)
+	subs := make([]chan snapshot, 0, len(job.subscribers))
+	for ch := range job.subscribers {
+		subs = append(subs, ch)
+	}
+	job.mu.Unlock()
+
+	for _, ch := range subs {
 		select {
 		case ch <- snap:
 		default:
 			// Slow consumer: drop this frame rather than blocking the scan.
 		}
 	}
-	s.run.mu.Unlock()
+	if job.id != "" {
+		s.publishFeed(snap)
+	}
 }
 
 func (s *server) snapshot() snapshot {
 	s.run.mu.Lock()
 	defer s.run.mu.Unlock()
-	return s.snapshotLocked()
+	return s.snapshotOf(s.run)
 }
 
+// snapshotLocked is the lock-held view of the legacy single run. Callers
+// that already hold s.run.mu use it; new scans call snapshotOf directly.
 func (s *server) snapshotLocked() snapshot {
+	return s.snapshotOf(s.run)
+}
+
+func (s *server) snapshotOf(job *runState) snapshot {
+	if job.id != "" {
+		job.seq++
+	}
 	snap := snapshot{
-		Status:      s.run.status,
-		Error:       s.run.errMsg,
-		Done:        s.run.done,
-		Total:       s.run.total,
-		Summary:     s.run.summary,
-		RunDir:      s.run.runDir,
-		Credentials: s.run.credentials,
-		SelfSigned:  countSelfSigned(s.run.findings),
-		JSON:        s.run.jsonPath,
-		HTML:        s.run.htmlPath,
-		PDF:         s.run.pdfPath,
-		Files:       append([]string(nil), s.run.files...),
-		Findings:    s.sortedFindingsLocked(),
-		Events:      append([]event(nil), s.run.events...),
-		Warning:     s.run.warning,
+		ID:          job.id,
+		Name:        job.name,
+		Seq:         job.seq,
+		Status:      job.status,
+		Error:       job.errMsg,
+		Done:        job.done,
+		Total:       job.total,
+		Summary:     job.summary,
+		RunDir:      job.runDir,
+		Credentials: job.credentials,
+		SelfSigned:  countSelfSigned(job.findings),
+		JSON:        job.jsonPath,
+		HTML:        job.htmlPath,
+		PDF:         job.pdfPath,
+		Files:       append([]string(nil), job.files...),
+		Findings:    sortedFindings(job),
+		Events:      append([]event(nil), job.events...),
+		Warning:     job.warning,
 		Version:     s.version,
-		Running:     s.run.status == statusRunning,
-		StartedScan: s.run.status != statusIdle,
+		Running:     job.status == statusRunning,
+		StartedScan: job.status != statusIdle,
 		// Artifact paths are assigned when the scan starts, but the files
 		// only exist once it settles. Linking them mid-scan would render
 		// "Reports" buttons that answer 404.
-		ReportLinks: s.reportLinksLocked(),
-		RemovedRuns: s.run.removedRuns,
-		Diff:        s.run.diff,
+		ReportLinks: s.reportLinks(job),
+		RemovedRuns: job.removedRuns,
+		Diff:        job.diff,
 	}
-	if !s.run.started.IsZero() {
-		snap.Started = s.run.started.Format("2006-01-02 15:04:05")
+	if !job.started.IsZero() {
+		snap.Started = job.started.Format("2006-01-02 15:04:05")
 	}
-	if !s.run.finished.IsZero() {
-		snap.Finished = s.run.finished.Format("2006-01-02 15:04:05")
-		end := s.run.finished
-		snap.ElapsedMs = end.Sub(s.run.started).Milliseconds()
-	} else if !s.run.started.IsZero() {
-		snap.ElapsedMs = time.Since(s.run.started).Milliseconds()
+	if !job.finished.IsZero() {
+		snap.Finished = job.finished.Format("2006-01-02 15:04:05")
+		end := job.finished
+		snap.ElapsedMs = end.Sub(job.started).Milliseconds()
+	} else if !job.started.IsZero() {
+		snap.ElapsedMs = time.Since(job.started).Milliseconds()
 	}
 	if snap.ElapsedMs > 0 && snap.Done > 0 {
 		snap.ProgressRate = float64(snap.Done) / (float64(snap.ElapsedMs) / 1000)
@@ -1211,35 +1444,39 @@ func (s *server) snapshotLocked() snapshot {
 	// Findings carry on-disk screenshot paths; expose them as URLs the
 	// browser can fetch from the run folder instead.
 	for i := range snap.Findings {
-		snap.Findings[i].Screenshot = s.artifactLink(snap.Findings[i].Screenshot)
+		snap.Findings[i].Screenshot = s.artifactLink(job, snap.Findings[i].Screenshot)
 	}
 	return snap
 }
 
-// reportLinksLocked returns the artifact URLs for the dashboard, or an empty
-// map while a scan is still writing them.
-func (s *server) reportLinksLocked() map[string]string {
+// reportLinks returns the artifact URLs for one scan, or an empty map while
+// that scan is still writing them.
+func (s *server) reportLinks(job *runState) map[string]string {
 	links := map[string]string{}
-	if s.run.status == statusRunning {
+	if job.status == statusRunning {
 		return links
 	}
-	links["json"] = s.artifactLink(s.run.jsonPath)
-	links["html"] = s.artifactLink(s.run.htmlPath)
-	links["pdf"] = s.artifactLink(s.run.pdfPath)
+	links["json"] = s.artifactLink(job, job.jsonPath)
+	links["html"] = s.artifactLink(job, job.htmlPath)
+	links["pdf"] = s.artifactLink(job, job.pdfPath)
 	return links
 }
 
 // artifactLink maps an on-disk artifact to its /files URL, returning "" when
-// the file is outside the current run folder.
-func (s *server) artifactLink(path string) string {
-	if path == "" || s.run.runDir == "" {
+// the file is outside that scan's run folder.
+func (s *server) artifactLink(job *runState, path string) string {
+	if path == "" || job.runDir == "" {
 		return ""
 	}
-	rel, err := filepath.Rel(s.run.runDir, path)
+	rel, err := filepath.Rel(job.runDir, path)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return ""
 	}
-	return "/files/" + filepath.ToSlash(rel)
+	link := "/files/" + filepath.ToSlash(rel)
+	if job.id != "" {
+		link += "?scan=" + url.QueryEscape(job.id)
+	}
+	return link
 }
 
 // countSelfSigned returns how many findings carry a self-signed certificate.
@@ -1253,11 +1490,11 @@ func countSelfSigned(findings []finding) int {
 	return count
 }
 
-// sortedFindingsLocked returns the findings in the same deterministic order
-// the reports use (numeric IP, then port), so the dashboard never disagrees
-// with the artifacts of the same run.
-func (s *server) sortedFindingsLocked() []finding {
-	out := append([]finding(nil), s.run.findings...)
+// sortedFindings returns the findings in the same deterministic order the
+// reports use (numeric IP, then port), so the dashboard never disagrees with
+// the artifacts of the same run. The caller holds job.mu.
+func sortedFindings(job *runState) []finding {
+	out := append([]finding(nil), job.findings...)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if cmp := compareNumericIP(a.IP, b.IP); cmp != 0 {
@@ -1284,10 +1521,10 @@ func compareNumericIP(a, b string) int {
 	}
 }
 
-func (s *server) pushEvent(kind, message string) {
-	s.run.mu.Lock()
-	s.run.events = append(s.run.events, event{At: time.Now(), Kind: kind, Message: message})
-	s.run.mu.Unlock()
+func (s *server) pushEvent(job *runState, kind, message string) {
+	job.mu.Lock()
+	job.events = append(job.events, event{At: time.Now(), Kind: kind, Message: message})
+	job.mu.Unlock()
 }
 
 func (s *server) scanConfig(req scanRequest) (app.Config, error) {

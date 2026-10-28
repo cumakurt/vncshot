@@ -6,7 +6,7 @@ VNC güvenlik envanteri tarayıcısı. RFB/VNC uç noktalarını keşfeder, paro
 ve zayıf parolalı sunucuları işaretler ve yetkili güvenlik değerlendirmeleri
 için güncel ekran görüntüsünü PNG kanıtı olarak kaydeder.
 
-`vncshot` yalnızca Linux üzerinde çalışır ve root yetkisi gerektirir.
+`vncshot` yalnızca Linux üzerinde çalışır. Root gerekmez; 1024 altı portlar ve varsayılan rapor dizini yine de ek izin isteyebilir.
 
 ```
 Yalnızca sahibi olduğunuz veya açık yazılı izniniz bulunan ağlarda kullanın.
@@ -16,7 +16,7 @@ Yalnızca sahibi olduğunuz veya açık yazılı izniniz bulunan ağlarda kullan
 
 *Yerel GUI: sayaç şeridi, tarama eğilimi sparkline'ı, yakalanan kareler ve
 önceki tarama geçmişi; tümü loopback üzerinde. Pano, işletim sisteminin açık
-veya koyu renk şemasını izler.*
+açık temadadır; sol menüdeki anahtar koyu temayı açar.*
 
 ## İçindekiler
 
@@ -73,7 +73,7 @@ veya koyu renk şemasını izler.*
 
 ## Özellikler
 
-- Yalnızca Linux; hem CLI hem GUI root olarak çalışmalıdır
+- Yalnızca Linux; CLI ve GUI root olmadan çalışır
 - Tek IP, CIDR bloğu, IPv4 aralığı, hedef dosyası veya standart girdiden
   hedef listesi (`-file -`) tarama
 - `-dry-run` hiçbir paket göndermeden genişletilmiş kapsamı yazdırır
@@ -128,7 +128,7 @@ veya koyu renk şemasını izler.*
 | Alan | Gereksinim |
 |------|------------|
 | İşletim sistemi | Linux (ikili dosya ve `install.sh` diğer sistemleri reddeder) |
-| Yetki | CLI ve GUI taramaları için doğrudan veya `sudo` ile root |
+| Yetki | Gerekmez; 1024 altı portlar ve `/usr/local/vncshot` yazma veya bağlama izni ister |
 | Derleme araç zinciri | Yalnızca kaynaktan derlerken Go 1.22 veya üzeri |
 | Çalışma zamanı | Yok; ikili dosya statik bağlanmıştır |
 | Ağ | Taranan VNC portlarına TCP erişimi |
@@ -151,7 +151,7 @@ vncshot -version
 vncshot -h
 
 # 3. Yetkili bir aralığı tara ve kanıt topla
-sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
 
 # 4. Oluşan raporu aç
 sudo find /usr/local/vncshot -name vncshot_report.html
@@ -269,42 +269,46 @@ sudo ./install.sh --systemd-uninstall
 
 ## Yetkiler
 
-`vncshot` hem CLI hem GUI modunda root yetkisi olmadan çalışmayı reddeder:
+`vncshot` hem CLI hem GUI modunda root olmadan başlar:
 
 ```bash
-sudo vncshot -target 192.168.1.0/24
+vncshot -target 192.168.1.0/24
 ```
 
-Bu kontrol uygulama başlarken yapılır; yarım çalışan bir tarama yerine aksiyon
-alınabilir bir hata ile çıkılır. Tek istisna, root kontrolünden önce derleme
-bilgisini yazdırıp çıkan `-version` bayrağıdır.
+1024 altındaki bir porta bağlanmak veya varsayılan rapor dizini
+`/usr/local/vncshot` altına yazmak yine izin ister. Hesabın yazabildiği bir
+dizin için `-out-dir` verin. `-version` yalnızca derleme bilgisini yazdırır.
 
 ## Kullanım
 
 ```bash
-sudo vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
-sudo vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
-sudo vncshot -target 10.0.0.1-50 -out-dir /root/assessments
-sudo vncshot -target 192.168.1.0/24 -word-list /root/parolalar.txt
-sudo vncshot -target 10.0.0.0/16 -dry-run
-cat hosts.txt | sudo vncshot -file - -ports 5900
-sudo vncshot -target 192.168.1.0/24 -redact -thumb-only
-sudo vncshot -target 10.0.0.0/16 -source-addr 10.1.2.3
-sudo vncshot -target 192.168.1.0/24 -baseline /usr/local/vncshot/20261020-090000
-sudo vncshot -target 10.0.0.0/24 -manifest -webhook https://hooks.example.test/vncshot
-sudo vncshot -target 192.168.1.0/24 -config /root/vncshot.conf
-sudo vncshot -target 192.168.1.0/24 -keep 30
-sudo vncshot -prune 30 -prune-dry-run
-sudo vncshot -gui
+vncshot -target 192.168.1.0/24 -ports 5900,5901-5910
+vncshot -file hosts.txt -workers 100 -rate 150 -timeout 800ms
+vncshot -target 10.0.0.1-50 -out-dir /root/assessments
+vncshot -target 192.168.1.0/24 -word-list /root/parolalar.txt
+vncshot -target 10.0.0.0/16 -dry-run
+cat hosts.txt | vncshot -file - -ports 5900
+vncshot -target 192.168.1.0/24 -redact -thumb-only
+vncshot -target 10.0.0.0/16 -source-addr 10.1.2.3
+vncshot -target 192.168.1.0/24 -baseline /usr/local/vncshot/20261020-090000
+vncshot -target 10.0.0.0/24 -manifest -webhook https://hooks.example.test/vncshot
+vncshot -target 192.168.1.0/24 -config /root/vncshot.conf
+vncshot -target 192.168.1.0/24 -keep 30
+vncshot -prune 30 -prune-dry-run
+vncshot -gui
 vncshot -version
 ```
 
 Terminal çıktısı ANSI rengini ve canlı ilerleme çubuğunu yalnızca standart
 hata bir terminale bağlıyken kullanır; boru hattı, günlük dosyası veya CI
 toplayıcısı düz tek satırlık çıktı alır (satır başı yeniden çizimleri yerine
-tek bir `scanning complete` satırı). Terminalde de paleti kapatmak için
-`NO_COLOR` değişkenine boş olmayan bir değer verin veya `-no-color` bayrağını
-kullanın.
+tek bir `scanning complete` satırı). Çubuğun altında açık port, RFB servisi,
+parolasız host, zayıf kimlik bilgisi, ekran görüntüsü ve hata sayıları renkli
+olarak, sonda tamamlandıkça güncellenir; sıfırlar soluk, artan sayılar belirgin
+durur. Tarama bitmeden kaç bulgu olduğu okunabilir.
+Sürdürülen bir taramada yeniden kullanılan sonuçlar bu satıra baştan dahildir.
+Terminalde de paleti kapatmak için `NO_COLOR` değişkenine boş olmayan bir
+değer verin veya `-no-color` bayrağını kullanın.
 
 Araç parametresiz çalıştırıldığında kullanım metnini yazdırır ve tarama
 başlatmadan çıkar. `-version` araç adını, derleme sürümünü, GOOS/GOARCH ve Go
@@ -379,9 +383,8 @@ sırasında gömer.
 
 `-prune` çağrıyı bir bakım komutuna dönüştürür: hedef gerektirmez, `-out-dir`
 altındaki en yeni n tarama klasörü dışındakileri siler ve çıkar; böylece kendi
-başına zamanlanabilir. Varsayılan rapor kökü `/usr/local/vncshot` olduğu için
-root kontrolü yine uygulanır, ancak prune veya deneme çalıştırmasında yetki
-onayı istenmez. `-prune-dry-run` bu komutu (`-prune` ile veya tek başına
+başına zamanlanabilir. Varsayılan rapor kökü `/usr/local/vncshot` yazılabilir
+olmayabilir, ancak prune veya deneme çalıştırmasında yetki onayı istenmez. `-prune-dry-run` bu komutu (`-prune` ile veya tek başına
 `-keep` ile) önizler ya da GUI'de bir sonraki taramanın saklama geçişini
 önizler. Tek başına, pozitif bir `-prune` veya `-keep` değeri olmadan
 çalıştırıldığında önizlenecek bir politika olmadığı için hata vererek çıkar.
@@ -390,7 +393,7 @@ onayı istenmez. `-prune-dry-run` bu komutu (`-prune` ile veya tek başına
 
 `-dry-run` hedef ve port girdilerini genişletir, kapsamı yazdırır ve hiçbir
 paket gönderilmeden, hiçbir dizin oluşturulmadan çıkar. Yetki onayı istemez ve
-`-yes` gerektirmez, ancak açılıştaki root kontrolü yine uygulanır.
+`-yes` gerektirmez.
 
 `-h` aynı bayrak başvurusunu yazdırır ve `0` ile çıkar. Bilinmeyen bir bayrak
 `flag provided but not defined: <ad>` satırını ve kullanım metnini yazdırıp
@@ -442,7 +445,7 @@ JSON biçimi eşdeğerdir:
 }
 ```
 
-`-version`, ortam, yapılandırma dosyası ve root kontrollerinden önce
+`-version`, ortam ve yapılandırma dosyası kontrollerinden önce
 değerlendirilir; böylece bozuk veya eksik bir yapılandırma derleme bilgisini
 asla gizlemez ve bu bayrak komut satırından verilmelidir.
 
@@ -656,9 +659,11 @@ Genişletme sınırlıdır; böylece bir yazım hatası devasa bir tarama başla
 
 | Sınır | Değer | Davranış |
 |-------|-------|----------|
-| Tarama başına host:port çifti | 1.048.576 (2^20) | Hedefi veya port listesini daraltma mesajıyla reddedilir |
-| Tek CIDR belirtimindeki host sayısı | 65.536 (2^16, yani `/16` veya daha uzun) | Reddedilir; daha büyük blokları birkaç belirtime bölün |
-| Dosya veya stdin akışından okunan host sayısı | 1.048.576 (2^20) | Reddedilir; akış sınırın ötesinde tamponlanmaz |
+| Yalnızca `-target` ile tarama başına host:port çifti | 1.048.576 (2^20) | Hedefi veya port listesini daraltma mesajıyla reddedilir |
+| `-target` CIDR belirtimindeki host sayısı | 65.536 (2^16; IPv4 `/16` veya daha uzun, IPv6 `/112` veya daha uzun) | Reddedilir; bloğu bölün veya `-file` içine yazın |
+| `-file` veya stdin satırındaki tek CIDR | 16.777.216 (2^24; IPv4 `/8` veya daha uzun, IPv6 `/104` veya daha uzun) | `/8`'den geniş önek reddedilir |
+| Dosya veya stdin akışından okunan host sayısı | 16.777.216 (2^24) | Reddedilir; akış sınırın ötesinde tamponlanmaz |
+| `-file` verildiğinde host:port çifti | 16.777.216 (2^24) | Reddedilir; dosyayı veya port listesini daraltın |
 | Tek aralık belirtimindeki host sayısı (IPv4 ve IPv6) | 1.048.576 (2^20) | Reddedilir; daha büyük aralıkları birkaç belirtime bölün |
 | Word-list kaydı | 500 | Reddedilir |
 
@@ -689,23 +694,39 @@ Her `host:port` çifti için worker şunları yapar:
 6. **Kalıcılaştırma** — parolasız/zayıf parolalı hostlar için PNG yazılır ve
    sonuç bellekteki kümeye eklenir.
 
-Sonuçlar toplayıcıya akar; toplayıcı ilerleme çubuğunu, GUI olay akışını ve
-son sıralı çıktı kümesini besler. Ctrl+C bağlamı iptal eder; uçuştaki sondalar
+Sonuçlar toplayıcıya akar; toplayıcı ilerleme çubuğunu, canlı bulgu
+sayaçlarını, GUI olay akışını ve son sıralı çıktı kümesini besler. Ctrl+C
+bağlamı iptal eder; uçuştaki sondalar
 durur ve kısmi sonuçlar yine de yazılır.
 
 ## GUI
 
 ```bash
-sudo vncshot -gui
+vncshot -gui
 ```
 
 Bu, loopback üzerinde yerel bir web arayüzü başlatır ve oturum URL'sini
-terminale yazdırır. Form tarama seçeneklerini sunar: hedef veya hedef dosyası,
-portlar, worker sayısı, hız, bağlantı ve RFB zaman aşımları, rapor kökü,
+terminale yazdırır. New scan o taramaya ait seçenekleri açar: hedef veya hedef
+dosyası, portlar, worker sayısı, hız, bağlantı ve RFB zaman aşımları,
 JSON/HTML/PDF/CSV yol geçersiz kılmaları, ekran görüntüsü dizini, PDF atlama,
-paylaşımlı oturum, manifest, webhook URL'si, tutulacak tarama sayısı ve prune
-deneme çalıştırması anahtarı. `-config` formda yer almaz; başlatma komut
-satırında verilen değerler GUI'den başlatılan taramalara devralınır.
+paylaşımlı oturum, manifest ve parola listesi. Rapor kökü, tutulacak tarama
+sayısı, prune deneme çalıştırması ve webhook Settings altındadır ve
+değiştirilene kadar her taramaya uygulanır. Parola redaksiyonu Settings
+anahtarı değildir; GUI'yi `-redact` ile başlatın. `-config` bu ekranlarda yer
+almaz; başlatma komut satırında verilen değerler GUI'den başlatılan taramalara
+devralınır.
+
+Menü yalnızca çalışan görünümleri listeler: Dashboard, Live activity, Hosts,
+Findings, History, Settings ve About. Görünüm değiştirmek çalışan bir taramayı
+durdurmaz. New scan, iş listesinde ve Dashboard üzerinde tarama seçeneklerini
+açar: kapsam, hız, karşılaştırma, taramaya özel çıktı yolları, parolalar ve
+yetki onayı. Start scan sol menüye bir iş ekler; aynı anda en fazla altı tarama
+çalışır. Stop seçili taramayı iptal eder ve kısmi raporu bırakır. Delete
+taramayı menüden kaldırır ve klasörü, o tarama için kaydedilen rapor kökünün
+içindeyse siler. Findings, seçili taramanın o ana kadar bulduklarını listeler
+ve diğer taramalar sürerken kullanılabilir kalır. Settings yerinde kalan
+değerleri tutar: rapor kökü, tutulacak tarama sayısı ve webhook. Canlı pano
+`GET /api/feed` akışıdır.
 
 "Comparison" panelinde bir "Previous run" seçicisi bulunur. Rapor kökü
 altındaki tarama klasörlerini listeler ve bir sonraki tarama için birini temel
@@ -729,18 +750,20 @@ taşımayan sertifikalar `certificate` olarak etiketlenir. Saklama içeren bir
 taramadan sonra pano, bir veya daha fazla klasör silindiğinde (deneme
 çalıştırmasında silinecekse) `Removed N old run(s)` satırını gösterir.
 
-Redaksiyon başlatma zamanı seçeneği olarak kalır: "Delivery" paneli kaydedilen
-bir tercih olarak redaksiyon onay kutusunu tutar, ancak tarama hattı yalnızca
-GUI başlatılırken verilen `-redact` değerini uygular. O panodan başlatılan tüm
-taramaların raporlarını redakte etmek için `sudo vncshot -gui -redact`
-çalıştırın.
+Redaksiyon başlatma zamanı seçeneği olarak kalır. GUI'den başlatılan
+taramaların raporlarını redakte etmek için `vncshot -gui -redact` çalıştırın.
 
 "Previous runs" paneli rapor kökü altındaki tarama klasörlerini listeler
 (`GET /api/runs`, en yeni önce, en fazla son 100 kayıt). Bir tarama seçildiğinde
 JSON raporu panoya yüklenir (`POST /api/runs/open`); böylece eski bir tarama
-yeni tarama başlatmadan incelenebilir. Tarama çalışırken bu istek
-`409 Conflict` ile reddedilir. Tarama adları yalnızca zaman damgası klasör
+yeni tarama başlatmadan incelenebilir. Menüden başlatılan taramalar tekil tarama
+yuvasını kullanmaz; bu yüzden onlar sürerken eski bir tarama açılabilir.
+`POST /api/scan` ve `POST /api/runs/open`, o yuva doluyken `409 Conflict` döner.
+Tarama adları yalnızca zaman damgası klasör
 adları olarak doğrulanır; hazırlanmış bir ad rapor kökünün dışına çıkamaz.
+Her satır o klasörü silebilir (`DELETE /api/runs/{name}`); klasörle birlikte
+raporlar, ekran görüntüleri ve diğer dosyalar da silinir. Canlı bir taramanın
+yazdığı klasör `409 Conflict` ile reddedilir.
 
 Sayaçların altındaki "Run trend" şeridi en yeni taramaları çizer
 (`GET /api/trends`, en fazla 50): tarama başına bir sütun, parolasız ve zayıf
@@ -753,9 +776,9 @@ panonun sunduğu taramayla karşılaştırır (`POST /api/diff`) ve bulguların
 `Baseline <temel> → <hedef>` panelini açar. Panelde bir kapatma düğmesi vardır
 ve başka bir tarama geçerli hale geldiğinde gizlenir.
 
-Panel, işletim sisteminin renk şemasını izler: açık "paper" temasının, aynı
-CSS değişken kümesi üzerinden `prefers-color-scheme` bloğuyla otomatik bir
-koyu varyantı vardır; anahtar ve JavaScript gerekmez. Bulgu küçük
+Pano açık temayla açılır. Sol menüdeki denetim Açık, Koyu ve Sistem sunar.
+Sistem işletim sistemini izler. Kayıtlı bir seçim yoksa pano açık kalır ve
+seçim ilk boyamadan önce uygulanır. Bulgu küçük
 görüntüleri ham dosyaya gitmek yerine sayfa içi bir lightbox açar (Esc,
 arka plana tıklama veya Kapat düğmesi kapatır; odak küçük görüntüye döner)
 ve lightbox kopyalama/indirme için "tam boyut aç" bağlantısını korur. Her
@@ -770,8 +793,9 @@ için yeniden işaretlenmelidir.
 
 Yetki onay kutusu işaretlenmeden tarama başlayamaz; bu, GUI karşılığı `-yes`
 seçeneğidir. İlerleme, sayaçlar, bulgular ve ekran görüntüleri Server-Sent
-Events ile canlı güncellenir. Çalışan bir tarama iptal edilebilir ve tamamlanan
-tarama HTML, PDF ve JSON çıktılarına bağlantı verir.
+Events ile canlı güncellenir. Stop seçili taramayı iptal eder. Delete taramayı
+ve rapor klasörünü kaldırır. Tamamlanan tarama HTML, PDF ve JSON çıktılarına
+bağlantı verir.
 
 Güvenlik özellikleri:
 
@@ -780,14 +804,15 @@ Güvenlik özellikleri:
   URL sorgu parametresi olarak verilir, HttpOnly ve SameSite=Strict bir
   çerezde saklanır ve durum değiştiren isteklerde ayrıca `X-Vncshot-Token`
   başlığıyla gönderilmelidir.
-* `/files/` uç noktası yalnızca geçerli tarama klasörü içindeki dosyaları sunar.
+* `/files/` uç noktası yalnızca tek bir tarama klasörünün içindeki dosyaları sunar:
+  tekil tarama yuvası ya da `?scan=<id>` ile adlandırılan tarama.
 * Tarama klasörü dışındaki bir ekran görüntüsü dizini, herhangi bir sonda
   başlamadan reddedilir ve hata rapor kökünü işaret eder. `/files/` yalnızca
   tarama klasörü içinden hizmet verdiği için başka bir yere yazılan yakalamalar
   panoda bozuk küçük görseller olarak görünür; geçersiz kılmayı kaldırın veya
   tarama klasörünün içine yönlendirin.
-* GUI de root olarak çalışır; yazdırılan URL'ye sahip olan herkes tarayıcıyı
-  yönetebilir. URL'yi ve token'ı kimlik bilgisi olarak değerlendirin.
+* Yazdırılan URL'ye sahip olan herkes tarayıcıyı yönetebilir. URL'yi ve
+  token'ı kimlik bilgisi olarak değerlendirin.
 * Uzak erişim için loopback bağlamayı koruyup portu SSH üzerinden yönlendirin
   (`ssh -L 8080:127.0.0.1:<port> ...`); genel bir arayüze açmayın.
 
@@ -797,8 +822,8 @@ Portu sabitlemek için `-gui-port`, otomatik `xdg-open` çağrısını kapatmak 
 ![Bulgu tablosu ve tarama geçmişi](docs/screenshots/gui-findings.png)
 
 *Bulgular taşıma tipini, parola kaynağını ve yakalanan karenin küçük görselini
-taşır; küçük görsele tıklamak sayfa içi lightbox'ı açar. Sol ray önceki
-taramaları ve karşılaştırma eylemlerini tek tıkla erişilebilir tutar.*
+taşır; küçük görsele tıklamak sayfa içi lightbox'ı açar. Sol menü çalışan ve
+incelenmeyi bekleyen taramaları listeler.*
 
 ### GUI HTTP API
 
@@ -810,18 +835,26 @@ her uç nokta oturum çereziyle ve durum değiştiren isteklerde
 |--------|-----|------|
 | `GET` | `/` | Pano sayfası (oturumu kurmak için `?t=<token>` kabul eder) |
 | `GET` | `/api/state` | Geçerli tarama anlık görüntüsü: durum, sayaçlar, bulgular, çıktı bağlantıları |
-| `GET` | `/api/events` | Aynı anlık görüntünün Server-Sent Events akışı |
-| `POST` | `/api/scan` | Tarama başlat (`authorized: true` gerekir) |
-| `POST` | `/api/cancel` | Çalışan taramayı iptal et |
+| `GET` | `/api/events` | Tekil tarama anlık görüntüsünün Server-Sent Events akışı |
+| `POST` | `/api/scan` | Tekil taramayı başlat (`authorized: true` gerekir; yuva doluysa `409`) |
+| `POST` | `/api/cancel` | Tekil taramayı iptal et |
+| `GET` | `/api/scans` | Panodan başlatılan taramaların menü satırları |
+| `POST` | `/api/scans` | Başka bir tarama başlat (`authorized: true` gerekir; altı tarama çalışıyorsa `429`) |
+| `GET` | `/api/scans/{id}` | Bir pano taramasının anlık görüntüsü |
+| `POST` | `/api/scans/{id}/stop` | O taramayı iptal et, kısmi raporu bırak |
+| `DELETE` | `/api/scans/{id}` | Taramayı menüden kaldır ve rapor klasörünü sil |
+| `GET` | `/api/feed` | Server-Sent Events panosu: menü satırları, ardından tarama güncellemeleri |
 | `GET` | `/api/runs` | Rapor kökü altındaki önceki taramalar, en yeni önce |
+| `DELETE` | `/api/runs/{name}` | Bir önceki tarama klasörünü ve kayıtlarını sil (canlı tarama kullanıyorsa `409`) |
 | `POST` | `/api/runs/open` | Önceki bir taramayı panoya yükle |
 | `GET` | `/api/trends` | En yeni taramaların özet sayaçları (en fazla 50), trend şeridi için |
 | `POST` | `/api/diff` | İki önceki taramayı karşılaştır: `{base, target}` → `{new, resolved, changed}` |
-| `GET` | `/files/<yol>` | Geçerli tarama klasöründeki bir çıktıyı sun |
+| `GET` | `/files/<yol>` | Tekil tarama klasöründeki ya da `?scan=<id>` taramasındaki bir çıktıyı sun |
 
 Hata yanıtları standart HTTP durum kodlarını kullanır: geçersiz girdi için
 `400`, oturum yoksa `401`, token başlığı veya yetki yoksa `403`, eksik tarama
-veya çıktı için `404`, tarama zaten çalışıyorsa `409`, yanlış yöntem için `405`.
+veya çıktı için `404`, tekil tarama yuvası doluysa `409`, altı pano taraması
+çalışıyorsa `429`, yanlış yöntem için `405`.
 
 ## Çıktılar
 
@@ -1097,7 +1130,7 @@ başarıda `0`, herhangi bir hatada `1` olur ve ilk başarısız çıktı stderr
 adlandırılır:
 
 ```bash
-sudo vncshot -target 192.168.1.0/24 -manifest -sign-key /root/vncshot-signing.pem
+vncshot -target 192.168.1.0/24 -manifest -sign-key /root/vncshot-signing.pem
 # açık anahtarı inceleyiciye verin; bu makinede root gerekmez:
 sudo cat /root/vncshot-signing.pem.pub > vncshot-signing.pem.pub
 vncshot -verify-manifest /usr/local/vncshot/20261028-120000 -pub-key vncshot-signing.pem.pub
@@ -1170,7 +1203,7 @@ ayrılmış bulgu kategorileri listesi, her rapor yazıldıktan sonra çalışma
 `3` koduyla çıkmasını sağlar:
 
 ```bash
-sudo vncshot -target 192.168.1.0/24 -fail-on passwordless,new -yes
+vncshot -target 192.168.1.0/24 -fail-on passwordless,new -yes
 ```
 
 Kabul edilen kategoriler (büyük/küçük harf duyarsız, yinelenenler yok sayılır):
@@ -1303,7 +1336,7 @@ her turu bir öncekine göre otomatik olarak karşılaştırır. İlk tur verilm
 kendi bulur.
 
 ```bash
-sudo vncshot -file /root/scope.txt -interval 24h -keep 30 \
+vncshot -file /root/scope.txt -interval 24h -keep 30 \
   -slack-url https://hooks.slack.com/services/T000/B000/XXXX \
   -cert-warn 30
 ```
@@ -1360,10 +1393,10 @@ bir bakım komutu olarak yapar ve çıkar; böylece hedef vermeden çalıştır�
 
 ```bash
 # gece prune işlemini hiçbir şey silmeden önizle
-sudo vncshot -prune 30 -prune-dry-run
+vncshot -prune 30 -prune-dry-run
 
 # bir aralığın her taramasından sonra politikayı uygula
-sudo vncshot -target 10.0.0.0/24 -keep 30
+vncshot -target 10.0.0.0/24 -keep 30
 ```
 
 Silme bilinçli olarak dardır ve güvenli tarafta kalır:
@@ -1406,14 +1439,14 @@ aşımına saygı duyar ve proxy hataları bağlantı hatası sınıfına girer;
 `-retries` çalışmaya devam eder.
 
 ```bash
-sudo vncshot -file scope.txt -proxy socks5h://127.0.0.1:1080
+vncshot -file scope.txt -proxy socks5h://127.0.0.1:1080
 ```
 
 ## Kendi kendini kontrol
 
-`sudo vncshot -selfcheck`, hiçbir şey taramadan veya değiştirmeden ortamı
+`vncshot -selfcheck`, hiçbir şey taramadan veya değiştirmeden ortamı
 doğrular ve yalnızca tüm kontroller geçtiğinde 0 ile çıkar (uyarılar
-başarısızlık sayılmaz): root yetkisi, rapor kökü yazılabilirliği, sistem TLS
+başarısızlık sayılmaz): etkin kullanıcı (root değilse uyarı), rapor kökü yazılabilirliği, sistem TLS
 kök havuzu, `xdg-open` (GUI otomatik açma), saat makuluğu, loopback
 soketleri ve boş disk alanı (100 MiB altında uyarı). Bir tarama beklenmedik
 davrandığında veya yeni bir kurulumda ilk taramadan önce kullanın.
@@ -1456,24 +1489,25 @@ envanterlerde yalnızca önizlemeleri tutmak için `-thumb-only` kullanın,
 
 ## Sorun giderme
 
-**`error: root privileges required; re-run with sudo`**
-Komutu `sudo` ile çalıştırın. Yalnızca `-version` ve `-h` istisnadır.
-
 **`create report directory /usr/local/vncshot/...: permission denied`**
-İkilinin içine gömülü rapor kökü yazılabilir değil. Root olarak çalıştırın veya
-sahibi olduğunuz açık bir `-out-dir` verin.
+İkilinin içine gömülü rapor kökü yazılabilir değil. Sahibi olduğunuz açık bir
+`-out-dir` verin.
 
 **Raporlar `/usr/local/vncshot` yerine `/root/.local/share/vncshot` altında**
 Varsayılan kök yazılabilir değildi ve `-out-dir` verilmedi; tarama kullanıcı
 dizinine düştü. CLI nedeniyle birlikte bir uyarı yazdırır.
 
 **`refusing to scan N host:port pairs (limit 1048576)`**
-Aralığı daraltın, CIDR'ı bölün veya port listesini azaltın.
+`-target` taraması 2^20 çift sınırını aştı. Aralığı daraltın, CIDR'ı bölün veya port listesini azaltın.
+
+**`refusing to scan N host:port pairs (limit 16777216)`**
+`-file` veya stdin taraması 2^24 çift sınırını aştı (tek portla bir IPv4 `/8`). Dosyayı veya port listesini daraltın.
 
 **`CIDR ... is too large (… /16 or longer prefixes only …)`**
-`vncshot` CIDR belirtimi başına en fazla 65.536 host genişletir; bir `/8`
-bloğunu `/16` bloklarına bölün veya gerçekten sahibi olduğunuz alt ağlarla
-`-file` kullanın.
+`-target` CIDR'ı en fazla 65.536 host genişletir. `/16`'dan kısa bloğu bölün veya `-file` içine yazın.
+
+**`CIDR ... is too large (… /8 or longer prefixes only …)`**
+`-file` veya stdin satırı IPv4 `/8`'den (IPv6 `/104`) geniştir. `/8` ile `/32` arasındaki önekler genişletilir; daha geniş olanı bölün.
 
 **Bir host `open: true`, `rfb: false` gösteriyor**
 TCP portu yanıt verdi ancak servis RFB el sıkışmasını tamamlamadı. Protokol
@@ -1524,7 +1558,7 @@ taramayı daha küçük çalıştırmalara bölün.
 ## Paket yapısı
 
 ```
-main.go        CLI bayrakları, root kontrolü, GUI başlatma
+main.go        CLI bayrakları, GUI başlatma
 app/           tarama oturumu, çıktı düzeni, temel farkı, manifest, imzalama, fail-on, saklama, webhook
 config/        yapılandırma dosyası ve VNCSHOT_* ortam değişkenlerinden bayrak varsayılanları
 gui/           gömülü web arayüzü (index.html + HTTP sunucusu)

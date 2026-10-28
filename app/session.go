@@ -392,6 +392,17 @@ func (s *Session) RemainingTargets() int {
 	return len(s.remaining)
 }
 
+// LiveSummary is the counter strip while a scan is still running. Reused
+// resume results are included and Targets stays the full requested scope,
+// so the dashboard does not start from zero or climb with each probe.
+func (s *Session) LiveSummary() report.Summary {
+	sum := report.Summary{Targets: len(s.Targets)}
+	for _, r := range s.reused {
+		sum.Add(r)
+	}
+	return sum
+}
+
 // ExcludedTargets returns how many targets the exclusion list dropped from
 // the scope. Those endpoints were never contacted and produce no result.
 func (s *Session) ExcludedTargets() int {
@@ -423,6 +434,10 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 		LocalAddr:       s.sourceIP,
 		ProxyURL:        cfg.ProxyURL,
 		ShowProgress:    cfg.ShowProgress,
+		// Reused results are not probed again, but they are part of the
+		// summary the operator sees at the end. Seed the live row with
+		// them so a resumed scan does not start its counters at zero.
+		SeedResults: s.reused,
 	}
 	if progress != nil {
 		// Progress covers the full requested scope, not just the probes this

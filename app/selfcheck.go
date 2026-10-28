@@ -69,12 +69,14 @@ func SelfCheck(opts SelfCheckOptions) []Check {
 	}
 }
 
-// checkRoot verifies privileged execution. Scanning privileged ports and
-// raw RFB probing expect root, mirroring the CLI's root requirement.
+// checkRoot reports whether the process is privileged. Root is not required
+// to run; ports below 1024 and a report directory the user cannot write still
+// need extra permission, so a non-root process is a warning rather than a
+// failed check.
 func checkRoot() Check {
 	if euid := os.Geteuid(); euid != 0 {
-		return Check{Name: "root", Status: StatusFail,
-			Detail: fmt.Sprintf("not running as root (euid %d); re-run with sudo", euid)}
+		return Check{Name: "root", Status: StatusWarn,
+			Detail: fmt.Sprintf("running unprivileged (euid %d); ports below 1024 and an unwritable report directory need extra permission", euid)}
 	}
 	return Check{Name: "root", Status: StatusOK, Detail: "running as root (euid 0)"}
 }

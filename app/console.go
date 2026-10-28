@@ -13,12 +13,17 @@ import (
 // coloured; captured data (server names, addresses, passwords) is never
 // wrapped, so a terminal cannot mangle or highlight evidence.
 const (
-	ansiReset  = "\x1b[0m"
-	ansiGreen  = "\x1b[32m"
-	ansiCyan   = "\x1b[36m"
-	ansiYellow = "\x1b[33m"
-	ansiRed    = "\x1b[31m"
-	ansiBold   = "\x1b[1m"
+	ansiReset   = "\x1b[0m"
+	ansiGreen   = "\x1b[32m"
+	ansiCyan    = "\x1b[36m"
+	ansiYellow  = "\x1b[33m"
+	ansiRed     = "\x1b[31m"
+	ansiBold    = "\x1b[1m"
+	ansiDim     = "\x1b[2m"
+	ansiBoldRed = "\x1b[1;31m"
+	ansiBoldGrn = "\x1b[1;32m"
+	ansiBoldYlw = "\x1b[1;33m"
+	ansiBoldCyn = "\x1b[1;36m"
 )
 
 // Console renders terminal output with optional colour. A zero value prints
@@ -79,6 +84,30 @@ func (c Console) Red(s string) string { return c.paint(ansiRed, s) }
 
 // Bold marks section headings.
 func (c Console) Bold(s string) string { return c.paint(ansiBold, s) }
+
+// Dim marks secondary labels so the numbers stay the loudest part of a line.
+func (c Console) Dim(s string) string { return c.paint(ansiDim, s) }
+
+// Tone paints a positive count. Zero stays plain so a clean scan does not
+// look like an alarm. tone is cyan, green, yellow or red.
+func (c Console) Tone(value int, tone string) string {
+	text := strconv.Itoa(value)
+	if !c.Color || value == 0 {
+		return text
+	}
+	switch tone {
+	case "cyan":
+		return c.paint(ansiBoldCyn, text)
+	case "green":
+		return c.paint(ansiBoldGrn, text)
+	case "yellow":
+		return c.paint(ansiBoldYlw, text)
+	case "red":
+		return c.paint(ansiBoldRed, text)
+	default:
+		return text
+	}
+}
 
 // Count renders a summary counter value. Zero stays uncoloured so a clean
 // scan reads as monochrome; a positive insecure count is highlighted.

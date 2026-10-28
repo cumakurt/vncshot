@@ -106,43 +106,49 @@ type Summary struct {
 func Summarize(results []Result) Summary {
 	s := Summary{Targets: len(results)}
 	for _, r := range results {
-		if r.Open {
-			s.Open++
-		}
-		if r.RFB {
-			s.RFB++
-		}
-		if r.Passwordless {
-			s.Passwordless++
-		}
-		if r.Password != "" {
-			s.WeakCredentials++
-		}
-		if r.TLS {
-			s.TLS++
-		}
-		if r.Certificate != nil && r.Certificate.SelfSigned {
-			s.SelfSignedCerts++
-		}
-		// Posture flags are set by the caller before Summarize runs, so the
-		// counters agree with every rendered artifact and notification.
-		// ExpiringSoon counts flagged certificates; AcceptedFindings counts
-		// accepted endpoints that actually represent a finding, matching
-		// how the alarm predicate treats them.
-		if r.ExpiresSoon {
-			s.ExpiringSoon++
-		}
-		if r.Accepted && (r.Passwordless || r.Password != "") {
-			s.AcceptedFindings++
-		}
-		if r.Screenshot != "" {
-			s.Screenshots++
-		}
-		if r.Error != "" {
-			s.Errors++
-		}
+		s.Add(r)
 	}
 	return s
+}
+
+// Add folds one result into the running counters. Targets is left unchanged
+// so a live view can keep the planned scope while probes are still finishing.
+func (s *Summary) Add(r Result) {
+	if r.Open {
+		s.Open++
+	}
+	if r.RFB {
+		s.RFB++
+	}
+	if r.Passwordless {
+		s.Passwordless++
+	}
+	if r.Password != "" {
+		s.WeakCredentials++
+	}
+	if r.TLS {
+		s.TLS++
+	}
+	if r.Certificate != nil && r.Certificate.SelfSigned {
+		s.SelfSignedCerts++
+	}
+	// Posture flags are set by the caller before Summarize runs, so the
+	// counters agree with every rendered artifact and notification.
+	// ExpiringSoon counts flagged certificates; AcceptedFindings counts
+	// accepted endpoints that actually represent a finding, matching
+	// how the alarm predicate treats them.
+	if r.ExpiresSoon {
+		s.ExpiringSoon++
+	}
+	if r.Accepted && (r.Passwordless || r.Password != "") {
+		s.AcceptedFindings++
+	}
+	if r.Screenshot != "" {
+		s.Screenshots++
+	}
+	if r.Error != "" {
+		s.Errors++
+	}
 }
 
 // Addr returns the conventional "ip:port" form.

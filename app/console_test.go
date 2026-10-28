@@ -91,6 +91,25 @@ func TestConsoleColoredOutput(t *testing.T) {
 	if got := c.Count(2, false); got != "2" {
 		t.Errorf("Count(2, safe) = %q, want plain digits", got)
 	}
+	if got := c.Dim("targets:"); got != ansiDim+"targets:"+ansiReset {
+		t.Errorf("Dim = %q", got)
+	}
+	if got := c.Tone(0, "red"); got != "0" {
+		t.Errorf("Tone(0) = %q, want plain zero", got)
+	}
+	if got := c.Tone(4, "red"); got != ansiBoldRed+"4"+ansiReset {
+		t.Errorf("Tone(4, red) = %q", got)
+	}
+	if got := c.Tone(2, "green"); got != ansiBoldGrn+"2"+ansiReset {
+		t.Errorf("Tone(2, green) = %q", got)
+	}
+	plain := Console{}
+	if got := plain.Tone(7, "cyan"); got != "7" {
+		t.Errorf("Tone in plain mode = %q, want digits", got)
+	}
+	if got := plain.Dim("targets:"); got != "targets:" {
+		t.Errorf("Dim in plain mode = %q", got)
+	}
 	// Empty strings must not emit a dangling escape pair.
 	if got := c.Red(""); got != "" {
 		t.Errorf("Red(\"\") = %q, want empty", got)

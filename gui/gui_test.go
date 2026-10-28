@@ -678,6 +678,110 @@ func TestRunOpenConflictsWithRunningScan(t *testing.T) {
 	}
 }
 
+func TestDeleteRunRemovesRecords(t *testing.T) {
+	root := t.TempDir()
+	keep := "20260101-010101"
+	drop := "20260202-020202"
+	writeRun(t, root, keep, []report.Result{{IP: "192.0.2.1", Port: 5900}}, true, false)
+	dir := writeRun(t, root, drop, []report.Result{{IP: "192.0.2.2", Port: 5900}}, true, true)
+	if err := os.WriteFile(filepath.Join(dir, "screen.png"), []byte("png"), 0o600); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+	outside := filepath.Join(root, "keep.txt")
+	if err := os.WriteFile(outside, []byte("stay"), 0o600); err != nil {
+		t.Fatalf("write sibling: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, keep), filepath.Join(root, "20260303-030303")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	srv, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, body := doJSON(t, client, http.MethodDelete, ts.URL+"/api/runs/"+drop, nil, auth)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204 (%s)", resp.StatusCode, body)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("deleted run still present: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+		t.Fatalf("kept run: %v", err)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "stay" {
+		t.Fatalf("sibling file = %q, %v; want it unchanged", data, err)
+	}
+
+	resp, body = doJSON(t, client, http.MethodGet, ts.URL+"/api/runs", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("runs status = %d, want 200 (%s)", resp.StatusCode, body)
+	}
+	var runs []runInfo
+	if err := json.Unmarshal(body, &runs); err != nil {
+		t.Fatalf("decode runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Name != keep {
+		t.Fatalf("runs after delete = %+v, want only %s", runs, keep)
+	}
+
+	for _, name := range []string{"notes", "20260303-030303", "20260202-020202"} {
+		resp, body = doJSON(t, client, http.MethodDelete, ts.URL+"/api/runs/"+name, nil, auth)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("delete %q = %d, want 404 (%s)", name, resp.StatusCode, body)
+		}
+		if strings.Contains(string(body), root) {
+			t.Errorf("delete %q error leaks the report root", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+		t.Fatal("symlink delete followed its target")
+	}
+
+	resp, _ = doJSON(t, client, http.MethodGet, ts.URL+"/api/runs/"+keep, nil, auth)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET run item = %d, want 405", resp.StatusCode)
+	}
+
+	srv.run.mu.Lock()
+	srv.run.status = statusRunning
+	srv.run.runDir = filepath.Join(root, keep)
+	srv.run.mu.Unlock()
+	resp, body = doJSON(t, client, http.MethodDelete, ts.URL+"/api/runs/"+keep, nil, auth)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete live run = %d, want 409 (%s)", resp.StatusCode, body)
+	}
+	if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+		t.Fatalf("live run folder was removed: %v", err)
+	}
+
+	srv.run.mu.Lock()
+	srv.run.status = statusIdle
+	srv.run.runDir = ""
+	srv.run.mu.Unlock()
+	open, _ := doJSON(t, client, http.MethodPost, ts.URL+"/api/runs/open",
+		map[string]string{"name": keep}, auth)
+	if open.StatusCode != http.StatusOK {
+		t.Fatalf("open kept run = %d, want 200", open.StatusCode)
+	}
+	resp, body = doJSON(t, client, http.MethodDelete, ts.URL+"/api/runs/"+keep, nil, auth)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete opened run = %d, want 204 (%s)", resp.StatusCode, body)
+	}
+	stateResp, stateBody := doJSON(t, client, http.MethodGet, ts.URL+"/api/state", nil, nil)
+	if stateResp.StatusCode != http.StatusOK {
+		t.Fatalf("state status = %d, want 200", stateResp.StatusCode)
+	}
+	var state snapshot
+	if err := json.Unmarshal(stateBody, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if state.Status != statusIdle || state.RunDir != "" {
+		t.Fatalf("state after delete = status %q run_dir %q, want idle and empty", state.Status, state.RunDir)
+	}
+}
+
 func TestRunEndpointsRequireGuard(t *testing.T) {
 	root := t.TempDir()
 	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
@@ -693,6 +797,10 @@ func TestRunEndpointsRequireGuard(t *testing.T) {
 		map[string]string{"name": "20260202-020202"}, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("open without token header = %d, want 403", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, client, http.MethodDelete, ts.URL+"/api/runs/20260202-020202", nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("delete without token header = %d, want 403", resp.StatusCode)
 	}
 }
 
@@ -1459,7 +1567,7 @@ func TestFormPersistsRunOptionsButNotAuthorization(t *testing.T) {
 		t.Fatal("index.html has no formFields list")
 	}
 	fields := match[1]
-	for _, id := range []string{"baseline", "csv", "manifest", "webhook", "redact", "keep_runs", "prune_dry_run"} {
+	for _, id := range []string{"baseline", "csv", "manifest", "webhook", "keep_runs", "prune_dry_run"} {
 		if !strings.Contains(fields, `"`+id+`"`) {
 			t.Errorf("formFields is missing %q, so the control does not persist", id)
 		}
@@ -1486,6 +1594,11 @@ func TestDashboardWiresTrendsAndCompare(t *testing.T) {
 	for _, marker := range []string{
 		`"/api/trends"`,
 		`"/api/diff"`,
+		`"/api/runs/"`,
+		`function deleteRun`,
+		`id="scanBoard"`,
+		`id="findingFilters"`,
+		`data-i18n="Jobs"`,
 		`id="trendStrip"`,
 		`id="compareTitle"`,
 		`id="compareBody"`,
@@ -1497,6 +1610,31 @@ func TestDashboardWiresTrendsAndCompare(t *testing.T) {
 	}
 	if !strings.Contains(body, `class="block hidden" id="compareBlock"`) {
 		t.Error("compare panel does not start hidden")
+	}
+	if strings.Contains(body, `id="credNewScan"`) {
+		t.Error("credentials view still offers Open new scan")
+	}
+	for _, gone := range []string{
+		`id="nav-schedules"`,
+		`id="nav-profiles"`,
+		`id="nav-compliance"`,
+		`id="nav-guide"`,
+		`id="nav-credentials"`,
+		`id="nav-scope"`,
+		`id="nav-queue"`,
+		`id="scopeNewScan"`,
+		`id="view-schedules"`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("dead section still present: %s", gone)
+		}
+	}
+	del := regexp.MustCompile(`(?s)function deleteRun\(.*?function commitDeleteRun`).FindString(body)
+	if del == "" {
+		t.Fatal("index.html has no deleteRun function")
+	}
+	if strings.Contains(del, "window.confirm") {
+		t.Error("history delete still uses the browser confirm dialog")
 	}
 
 	match := regexp.MustCompile(`(?s)function compareGroup\(.*?\n  \}`).FindString(body)
@@ -1538,8 +1676,14 @@ func TestDashboardVisualAffordances(t *testing.T) {
 		// Accessibility hooks.
 		{"status is announced", `aria-live="polite"`},
 		{"focus ring for keyboard users", ":focus-visible"},
-		// Automatic dark theme driven by the existing token set.
-		{"automatic dark scheme", "@media (prefers-color-scheme: dark)"},
+		// Light is the default. Dark is an explicit token set, not the OS scheme.
+		{"light theme is the default", `data-theme="light"`},
+		{"dark theme tokens", `[data-theme="dark"]`},
+		{"theme toggle", `id="themeToggle"`},
+		{"live progress bar", `id="progressWrap"`},
+		{"running progress treatment", ".progress-wrap.live"},
+		{"counter pulse", ".counter.tick"},
+		{"live counter writer", "function setCounter"},
 	}
 	for _, tc := range cases {
 		if !strings.Contains(html, tc.need) {
@@ -1551,5 +1695,175 @@ func TestDashboardVisualAffordances(t *testing.T) {
 	// override it; a hardcoded white panel would stay bright on dark.
 	if strings.Contains(html, "background: #fff;") {
 		t.Error("index.html still hardcodes a white background instead of var(--panel)")
+	}
+}
+
+func TestRemoveRunDirRefusesPathsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := removeRunDir(root, outside); err == nil {
+		t.Fatal("delete outside the report root succeeded")
+	}
+	if err := removeRunDir(root, root); err == nil {
+		t.Fatal("delete of the report root succeeded")
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := removeRunDir(root, link); err == nil {
+		t.Fatal("delete followed a symlink")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("symlink target was removed: %v", err)
+	}
+
+	child := filepath.Join(root, "20260101-120000")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeRunDir(root, child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(child); !os.IsNotExist(err) {
+		t.Fatalf("run folder still exists: %v", err)
+	}
+}
+
+func TestScanCapacityRejectsExtraRunningScan(t *testing.T) {
+	outDir := t.TempDir()
+	srv, ts := newTestServer(t, Config{Scan: app.Config{OutDir: outDir}})
+	srv.jobsMu.Lock()
+	srv.ensureJobsLocked()
+	srv.running = maxConcurrentScans
+	srv.jobsMu.Unlock()
+
+	client := newClient(t)
+	doJSON(t, client, http.MethodGet, ts.URL+"/?t="+testToken, nil, nil)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+	resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/scans", map[string]any{
+		"target":     "127.0.0.1",
+		"ports":      "1",
+		"timeout_ms": 200,
+		"no_pdf":     true,
+		"authorized": true,
+		"out_dir":    outDir,
+	}, auth)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rejected scan left %d entries in the report root", len(entries))
+	}
+}
+
+func TestConcurrentScansAreIndependent(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			time.Sleep(3 * time.Second)
+			_ = conn.Close()
+		}
+	}()
+
+	outDir := t.TempDir()
+	srv, ts := newTestServer(t, Config{Scan: app.Config{OutDir: outDir}})
+	t.Cleanup(srv.cancelJobs)
+	client := newClient(t)
+	doJSON(t, client, http.MethodGet, ts.URL+"/?t="+testToken, nil, nil)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+	scan := map[string]any{
+		"target":         "127.0.0.1",
+		"ports":          fmt.Sprint(ln.Addr().(*net.TCPAddr).Port),
+		"timeout_ms":     4000,
+		"vnc_timeout_ms": 4000,
+		"workers":        1,
+		"no_pdf":         true,
+		"authorized":     true,
+		"out_dir":        outDir,
+	}
+
+	dirs := map[string]string{}
+	for i := 0; i < 2; i++ {
+		resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/scans", scan, auth)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("scan %d status = %d, body = %s", i, resp.StatusCode, body)
+		}
+		var started snapshot
+		if err := json.Unmarshal(body, &started); err != nil {
+			t.Fatalf("decode scan %d: %v", i, err)
+		}
+		if started.ID == "" || started.Status != statusRunning {
+			t.Fatalf("scan %d = id %q status %q, want a running scan", i, started.ID, started.Status)
+		}
+		dirs[started.ID] = started.RunDir
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("scan ids = %v, want two distinct scans", dirs)
+	}
+
+	resp, body := doJSON(t, client, http.MethodGet, ts.URL+"/api/scans", nil, auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", resp.StatusCode, body)
+	}
+	var listed jobList
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Jobs) != 2 {
+		t.Fatalf("jobs = %+v, want 2", listed.Jobs)
+	}
+
+	var removedID, removedDir string
+	for id, dir := range dirs {
+		removedID, removedDir = id, dir
+		break
+	}
+	resp, body = doJSON(t, client, http.MethodDelete, ts.URL+"/api/scans/"+removedID, nil, auth)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		_, statErr := os.Stat(removedDir)
+		if os.IsNotExist(statErr) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("deleted scan folder %s still exists (%v)", removedDir, statErr)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	resp, body = doJSON(t, client, http.MethodGet, ts.URL+"/api/scans", nil, auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list after delete status = %d, body = %s", resp.StatusCode, body)
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Jobs) != 1 || listed.Jobs[0].ID == removedID {
+		t.Fatalf("jobs after delete = %+v, want the other scan", listed.Jobs)
+	}
+	for id, dir := range dirs {
+		if id == removedID {
+			continue
+		}
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("remaining scan folder %s: %v", dir, err)
+		}
 	}
 }
