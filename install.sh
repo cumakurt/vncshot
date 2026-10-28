@@ -15,6 +15,10 @@
 #   ./install.sh --uninstall remove the installed binary (reports are kept)
 #   ./install.sh --uninstall --purge-reports
 #                             also delete the report directory and its reports
+#   ./install.sh --systemd [calendar]
+#                             install the systemd units and enable the timer
+#   ./install.sh --systemd-uninstall
+#                             remove the systemd units (scan.conf is kept)
 #
 set -euo pipefail
 
@@ -69,6 +73,11 @@ BUILD_ONLY=0
 INSTALL_BIN=1
 UNINSTALL=0
 PURGE_REPORTS=0
+SYSTEMD=0
+SYSTEMD_CALENDAR=""
+SYSTEMD_UNINSTALL=0
+SYSTEMD_DONE=0
+SYSTEMD_CALENDAR_USED=""
 
 usage() {
   cat <<EOF
@@ -86,12 +95,20 @@ Options:
   --uninstall        remove the installed binary; report directories are kept
   --purge-reports    together with --uninstall: also delete REPORT_DIR and the
                      reports inside it (asks for confirmation unless -y is set)
+  --systemd [cal]    additionally install vncshot.service/vncshot.timer and
+                     enable the timer; cal is an OnCalendar expression
+                     (default: daily at 03:30); requires root
+  --systemd-uninstall
+                     stop/disable vncshot.timer and remove the systemd units;
+                     /etc/vncshot/scan.conf is kept unless it is empty
   -h, --help         show this help
 
 Environment:
   GO_VERSION         preferred Go release (default: 1.22 or newer required)
   INSTALL_PREFIX     binary install prefix (default: /usr/local/bin)
   REPORT_DIR         root for timestamped report folders (default: /usr/local/vncshot)
+  SYSTEMD_UNIT_DIR   systemd unit directory (default: /etc/systemd/system)
+  VNCSHOT_CONF_DIR   directory holding scan.conf (default: /etc/vncshot)
   NO_COLOR           disable coloured output
 EOF
 }
@@ -104,6 +121,16 @@ while [[ $# -gt 0 ]]; do
     --no-install-bin) INSTALL_BIN=0 ;;
     --uninstall)     UNINSTALL=1 ;;
     --purge-reports) PURGE_REPORTS=1 ;;
+    --systemd)
+      SYSTEMD=1
+      # The optional calendar argument is only consumed when present and not
+      # another option, so "--systemd --uninstall" still parses correctly.
+      if [[ $# -ge 2 && "$2" != -* ]]; then
+        SYSTEMD_CALENDAR="$2"
+        shift
+      fi
+      ;;
+    --systemd-uninstall) SYSTEMD_UNINSTALL=1 ;;
     -h|--help)       usage; exit 0 ;;
     *)               printf 'unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
   esac
@@ -129,6 +156,38 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   fi
 fi
 
+if [[ "$SYSTEMD" -eq 1 ]]; then
+  if [[ "$UNINSTALL" -eq 1 || "$SYSTEMD_UNINSTALL" -eq 1 ]]; then
+    printf '%s\n' '--systemd cannot be combined with --uninstall or --systemd-uninstall' >&2
+    usage
+    exit 1
+  fi
+  if [[ "$BUILD_ONLY" -eq 1 ]]; then
+    printf '%s\n' '--systemd cannot be combined with --build-only' >&2
+    usage
+    exit 1
+  fi
+  # The timer unit points at the installed binary, so the install step must run.
+  if [[ "$INSTALL_BIN" -eq 0 ]]; then
+    printf '%s\n' '--systemd cannot be combined with --no-install-bin' >&2
+    usage
+    exit 1
+  fi
+fi
+
+if [[ "$SYSTEMD_UNINSTALL" -eq 1 ]]; then
+  if [[ "$BUILD_ONLY" -eq 1 ]]; then
+    printf '%s\n' '--systemd-uninstall cannot be combined with --build-only' >&2
+    usage
+    exit 1
+  fi
+  if [[ "$INSTALL_BIN" -eq 0 ]]; then
+    printf '%s\n' '--systemd-uninstall cannot be combined with --no-install-bin' >&2
+    usage
+    exit 1
+  fi
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -144,6 +203,13 @@ GO_VERSION_STR=""
 BINARY_PATH="$SCRIPT_DIR/vncshot"
 BINARY_SIZE=""
 REPORT_DIR="${REPORT_DIR:-/usr/local/vncshot}"
+# Systemd integration paths. Overridable so staged (packaging) installs and
+# dry runs can redirect the generated files, mirroring INSTALL_PREFIX/REPORT_DIR.
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+VNCSHOT_CONF_DIR="${VNCSHOT_CONF_DIR:-/etc/vncshot}"
+SYSTEMD_SERVICE_NAME="vncshot.service"
+SYSTEMD_TIMER_NAME="vncshot.timer"
+DEFAULT_SYSTEMD_CALENDAR="*-*-* 03:30:00"
 DEPS_INSTALLED=()
 DEPS_PRESENT=()
 
@@ -458,10 +524,15 @@ prepare_report_dir() {
 
 # do_uninstall removes the installed binary using the same prefix logic as
 # install_binary. Report directories are kept by default because reports
-# contain scan evidence; --purge-reports opts into deleting them.
+# contain scan evidence; --purge-reports opts into deleting them. The
+# systemd units are removed as well so nothing schedules a binary that is
+# about to disappear.
 do_uninstall() {
   local prefix="${INSTALL_PREFIX:-/usr/local/bin}"
   local target="$prefix/vncshot"
+
+  # Units first: failure here must never abort the binary removal below.
+  remove_systemd_units
 
   if [[ ! -e "$target" && ! -L "$target" ]]; then
     ok "already uninstalled: no binary at $target"
@@ -543,6 +614,214 @@ purge_report_dir() {
 }
 
 # ---------------------------------------------------------------------------
+# Systemd
+# ---------------------------------------------------------------------------
+
+# check_systemd_requirements refuses the systemd setup on hosts where it
+# cannot succeed: systemctl needs root to talk to PID 1, and without it the
+# generated units would never be scheduled.
+check_systemd_requirements() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    err "--systemd must run as root (systemctl enable needs root)"
+    detail "re-run with sudo"
+    return 1
+  fi
+  if ! have_cmd systemctl; then
+    err "systemctl was not found; systemd is not available on this host"
+    return 1
+  fi
+  return 0
+}
+
+# validate_calendar rejects a malformed OnCalendar expression up front when
+# systemd-analyze is present; otherwise the error would only surface when the
+# timer is (re)started. Without systemd-analyze the expression is passed
+# through and systemd itself reports the problem.
+validate_calendar() {
+  local calendar="$1"
+  if ! have_cmd systemd-analyze; then
+    return 0
+  fi
+  if ! systemd-analyze calendar "$calendar" >/dev/null 2>&1; then
+    err "invalid OnCalendar expression: $calendar"
+    detail "examples: '*-*-* 03:30:00', 'Mon..Fri 04:00:00', 'daily'"
+    return 1
+  fi
+  return 0
+}
+
+# write_scan_conf creates the environment-file style config the service unit
+# loads with EnvironmentFile=. A non-empty file is operator data and is never
+# overwritten; an empty one is regenerated.
+write_scan_conf() {
+  local conf="$VNCSHOT_CONF_DIR/scan.conf"
+
+  if [[ -s "$conf" ]]; then
+    ok "keeping existing $conf"
+    return 0
+  fi
+
+  mkdir -p "$VNCSHOT_CONF_DIR"
+  # VNCSHOT_ARGS must reach the file verbatim, so it is escaped below;
+  # every other VNCSHOT_* name is a literal example.
+  cat >"$conf" <<EOF
+# $conf — environment file loaded by $SYSTEMD_SERVICE_NAME.
+#
+# Every VNCSHOT_* variable maps to a vncshot flag: the flag name in
+# upper case with dashes replaced by underscores (-target -> VNCSHOT_TARGET).
+# See the README section "Configuration and precedence" for the full list.
+# Commented and empty values are ignored.
+
+# Targets: single IP, CIDR block, IPv4 range, or a file of targets.
+#VNCSHOT_TARGET=192.168.1.0/24
+
+# Ports to probe (list/ranges; the tool default is 5900).
+#VNCSHOT_PORTS=5900,5901-5910
+
+# Extra password candidates, one per line.
+#VNCSHOT_WORD_LIST=/etc/vncshot/wordlist.txt
+
+# Extra command-line arguments passed through by the unit (word-split on
+# spaces, e.g. -json -manifest).
+#VNCSHOT_ARGS=
+
+# The timer runs unattended, so the unit passes -yes and skips the
+# interactive authorization confirmation. Make sure the configured targets
+# are authorized before enabling the timer.
+EOF
+  chmod 0644 "$conf"
+  ok "wrote $conf"
+}
+
+# write_systemd_units (re)writes the oneshot service and the timer. Running
+# the setup again simply overwrites the units, which keeps the operation
+# idempotent.
+write_systemd_units() {
+  local calendar="$1"
+  local bin="$INSTALLED_BINARY"
+  local service="$SYSTEMD_UNIT_DIR/$SYSTEMD_SERVICE_NAME"
+  local timer="$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER_NAME"
+
+  mkdir -p "$SYSTEMD_UNIT_DIR"
+
+  # \$VNCSHOT_ARGS must stay literal: systemd expands it into extra
+  # ExecStart arguments (word-split on whitespace), not the shell here.
+  cat >"$service" <<EOF
+[Unit]
+Description=vncshot VNC security inventory scan
+Documentation=https://github.com/cumakurt/vncshot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=$VNCSHOT_CONF_DIR/scan.conf
+# -yes skips the interactive authorization confirmation; scheduled runs are
+# unattended by definition.
+ExecStart=$bin -yes \$VNCSHOT_ARGS
+EOF
+
+  cat >"$timer" <<EOF
+[Unit]
+Description=Run $SYSTEMD_SERVICE_NAME on a schedule
+
+[Timer]
+OnCalendar=$calendar
+Persistent=true
+Unit=$SYSTEMD_SERVICE_NAME
+
+[Install]
+WantedBy=timers.target
+EOF
+  chmod 0644 "$service" "$timer"
+  ok "wrote $service"
+  ok "wrote $timer"
+}
+
+# install_systemd writes the config and the units, then enables the timer.
+# A failing systemctl call only warns: the units are in place and the
+# operator can enable the timer manually.
+install_systemd() {
+  check_systemd_requirements || return 1
+
+  local calendar="${SYSTEMD_CALENDAR:-$DEFAULT_SYSTEMD_CALENDAR}"
+  validate_calendar "$calendar" || return 1
+
+  write_scan_conf || return 1
+  write_systemd_units "$calendar" || return 1
+
+  SYSTEMD_DONE=1
+  SYSTEMD_CALENDAR_USED="$calendar"
+
+  detail "running systemctl daemon-reload"
+  if ! systemctl daemon-reload; then
+    warn "systemctl daemon-reload failed; run it manually before using the timer"
+  fi
+
+  detail "enabling $SYSTEMD_TIMER_NAME (OnCalendar=$calendar)"
+  if systemctl enable --now "$SYSTEMD_TIMER_NAME"; then
+    ok "$SYSTEMD_TIMER_NAME enabled (next run: systemctl list-timers $SYSTEMD_TIMER_NAME)"
+  else
+    warn "systemctl enable --now $SYSTEMD_TIMER_NAME failed; check 'systemctl status $SYSTEMD_TIMER_NAME'"
+  fi
+
+  detail "next steps: review $VNCSHOT_CONF_DIR/scan.conf, then: systemctl restart $SYSTEMD_TIMER_NAME"
+}
+
+# remove_systemd_units stops and disables the timer and deletes the generated
+# unit files. It backs --systemd-uninstall and also runs during --uninstall,
+# so a removed binary is never scheduled again. Removal is deliberately
+# tolerant: a missing systemctl or a failing call only warns, because the
+# file removal still leaves the host clean. scan.conf holds operator
+# configuration and is kept unless it is empty.
+remove_systemd_units() {
+  local service="$SYSTEMD_UNIT_DIR/$SYSTEMD_SERVICE_NAME"
+  local timer="$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER_NAME"
+  local conf="$VNCSHOT_CONF_DIR/scan.conf"
+  local removed=0
+
+  if have_cmd systemctl && [[ -e "$timer" ]]; then
+    detail "stopping and disabling $SYSTEMD_TIMER_NAME"
+    if ! run_privileged systemctl disable --now "$SYSTEMD_TIMER_NAME"; then
+      warn "could not stop/disable $SYSTEMD_TIMER_NAME via systemctl (continuing)"
+    fi
+  fi
+
+  if [[ ! -e "$service" && ! -e "$timer" ]]; then
+    ok "no systemd units found in $SYSTEMD_UNIT_DIR"
+  fi
+
+  local unit
+  for unit in "$timer" "$service"; do
+    [[ -e "$unit" ]] || continue
+    if rm -f -- "$unit" 2>/dev/null || run_privileged rm -f -- "$unit"; then
+      ok "removed $unit"
+      removed=1
+    else
+      warn "cannot remove $unit (no write access; sudo is unavailable or needs a password)"
+    fi
+  done
+
+  if [[ "$removed" -eq 1 ]] && have_cmd systemctl; then
+    run_privileged systemctl daemon-reload \
+      || warn "systemctl daemon-reload failed; run it manually to refresh unit state"
+  fi
+
+  if [[ ! -e "$conf" ]]; then
+    ok "no scan.conf at $conf"
+  elif [[ -s "$conf" ]]; then
+    ok "kept $conf (operator configuration; delete it manually if unwanted)"
+  else
+    if rm -f -- "$conf" 2>/dev/null || run_privileged rm -f -- "$conf"; then
+      rmdir "$VNCSHOT_CONF_DIR" 2>/dev/null || true
+      ok "removed empty $conf"
+    else
+      warn "cannot remove empty $conf (no write access; sudo is unavailable or needs a password)"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
@@ -560,6 +839,9 @@ print_summary() {
 
   kv "Binary"    "${INSTALLED_BINARY:-$BINARY_PATH}"
   kv "Reports"   "$REPORT_DIR"
+  if [[ "$SYSTEMD_DONE" -eq 1 ]]; then
+    kv "Timer"   "$SYSTEMD_TIMER_NAME (OnCalendar=$SYSTEMD_CALENDAR_USED)"
+  fi
   kv "Size"      "${BINARY_SIZE:-n/a}"
   kv "Go"        "${GO_VERSION_STR:-not found}"
   kv "OS"        "$OS_NAME / $OS_ARCH"
@@ -583,6 +865,9 @@ print_summary() {
     printf "  ${C_DIM}Run:${C_RESET} ${C_BOLD}sudo ./vncshot -target 192.168.1.0/24${C_RESET}\n"
   fi
   printf "  ${C_DIM}vncshot requires root privileges for raw RFB probing.${C_RESET}\n"
+  if [[ "$SYSTEMD_DONE" -eq 1 ]]; then
+    printf "  ${C_DIM}Schedule:${C_RESET} ${C_BOLD}edit %s/scan.conf, then: systemctl restart %s${C_RESET}\n" "$VNCSHOT_CONF_DIR" "$SYSTEMD_TIMER_NAME"
+  fi
   printf "  ${C_DIM}%s${C_RESET}\n" "$RULE"
   printf "  ${C_DIM}Developer: Cuma KURT  ·  cumakurt@gmail.com${C_RESET}\n"
   printf "  ${C_DIM}github.com/cumakurt/vncshot  ·  linkedin.com/in/cuma-kurt-34414917${C_RESET}\n\n"
@@ -600,14 +885,30 @@ main() {
     exit 1
   fi
 
+  # Fail before the build when the systemd setup could never succeed; a full
+  # compile must not be paid for an operation that is refused anyway.
+  if [[ "$SYSTEMD" -eq 1 ]]; then
+    check_systemd_requirements || exit 1
+  fi
+
   if [[ "$UNINSTALL" -eq 1 ]]; then
     do_uninstall
+    return
+  fi
+
+  if [[ "$SYSTEMD_UNINSTALL" -eq 1 ]]; then
+    remove_systemd_units
     return
   fi
 
   local total=3
   if [[ "$INSTALL_BIN" -eq 1 ]]; then
     total=5
+  fi
+  # --systemd always ships with the binary install step, so it can only
+  # extend the five-step flow.
+  if [[ "$SYSTEMD" -eq 1 ]]; then
+    total=6
   fi
 
   step 1 "$total" "Detecting operating system"
@@ -646,6 +947,11 @@ main() {
 
     step 5 "$total" "Preparing report directory"
     prepare_report_dir || fail "report directory setup failed"
+  fi
+
+  if [[ "$SYSTEMD" -eq 1 ]]; then
+    step 6 "$total" "Installing systemd timer"
+    install_systemd || fail "systemd setup failed"
   fi
 
   print_summary "success"

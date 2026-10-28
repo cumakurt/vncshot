@@ -98,6 +98,8 @@ geçmişi; tümü loopback üzerinde.*
 - Sertifika süre takibi (`-cert-warn`): expires-soon rozetleri ve özet sayaçları
 - Zamanlanmış tarama (`-interval`) ve otomatik tur bazlı temel
   karşılaştırmalar; Prometheus metrik uç noktası (`-metrics-addr`)
+- Tüm tarama seçenekleri `/etc/vncshot/scan.conf` dosyasında olmak üzere,
+  `install.sh --systemd` ile kurulan isteğe bağlı systemd zamanlayıcısı
 - İzole segmentlere jumphost üzerinden ulaşmak için SOCKS5 proxy desteği (`-proxy`)
 - Yeni kurulumlar için ortam kendi kendini kontrolü (`-selfcheck`)
 - Yapılandırma dosyası (`-config`) ve `VNCSHOT_*` ortam değişkenlerinden
@@ -160,6 +162,7 @@ go build -o vncshot .
 ./install.sh -y               # etkileşimsiz
 ./install.sh --build-only     # bağımlılık kurulumunu atla
 ./install.sh --no-install-bin # sadece derle, sisteme kurma
+./install.sh --systemd        # ayrıca günlük systemd zamanlayıcısını kur ve etkinleştir
 ```
 
 `install.sh` Linux dağıtımının paket yöneticisini (apt, dnf, yum, pacman, apk,
@@ -204,6 +207,54 @@ sudo rm -rf /usr/local/vncshot     # tüm raporları ve ekran görüntülerini s
 
 `install.sh` tarafından indirilen önbellekteki Go arşivini de silmek için
 `~/.cache/vncshot-install` dizinini kaldırın.
+
+### systemd ile zamanlanmış tarama
+
+`install.sh --systemd`, taramayı bir systemd zamanlayıcısına dönüştürür.
+Normal derleme ve kurulumun ardından `/etc/systemd/system/vncshot.service`,
+`/etc/systemd/system/vncshot.timer` birimlerini ve `/etc/vncshot/scan.conf`
+altında örnek bir yapılandırmayı yazar, sonra zamanlayıcıyı etkinleştirir:
+
+```bash
+sudo ./install.sh --systemd                   # her gün 03:30'da
+sudo ./install.sh --systemd 'Mon..Fri 04:00'  # özel OnCalendar ifadesi
+```
+
+Tüm tarama seçenekleri, servisin `EnvironmentFile=` ile yüklediği
+`/etc/vncshot/scan.conf` dosyasından gelir. Her `VNCSHOT_*` değişkeni bir
+bayrağa karşılık gelir (`-target` → `VNCSHOT_TARGET`, `-ports` →
+`VNCSHOT_PORTS`, `-word-list` → `VNCSHOT_WORD_LIST`); üretilen dosya
+yorum satırı örnekleriyle gelir ve `VNCSHOT_ARGS` fazladan komut satırı
+argümanlarını olduğu gibi iletir. Birim taramayı `-yes` ile çalıştırır; bu,
+etkileşimli yetkilendirme onayını atlar — zamanlayıcıyı etkinleştirmeden
+önce yapılandırılan hedeflerin yetkili olduğunu doğrulayın. Zamanlayıcı
+`Persistent=true` kullanır; böylece kaçan bir tarama (makine kapalıyken)
+bir sonraki açılışta çalışır.
+
+Sonraki adımlar:
+
+```bash
+sudoedit /etc/vncshot/scan.conf        # VNCSHOT_TARGET vb. ayarlayın
+systemctl restart vncshot.timer        # yapılandırma değişikliklerini uygulayın
+systemctl list-timers vncshot.timer    # bir sonraki zamanlanan taramayı görün
+```
+
+İşlem idempotenttir: `--systemd` yeniden çalıştırıldığında birim dosyaları
+yeniden üretilir ve boş olmayan mevcut bir `scan.conf` dosyasının üzerine
+asla yazılmaz. `systemd-analyze` mevcutken bozuk bir `OnCalendar` ifadesi
+en baştan reddedilir; başarısız bir `systemctl` çağrısı yalnızca uyarı
+üretir — birimler yerinde kalır ve zamanlayıcı elle etkinleştirilebilir.
+Aşamalı (staged) kurulumlar için systemd yolları `SYSTEMD_UNIT_DIR` ve
+`VNCSHOT_CONF_DIR` ile yönlendirilebilir.
+
+Zamanlayıcıyı durdurup üretilen birimleri kaldırmak için (ikili dosya,
+raporlar ve `/etc/vncshot/scan.conf` korunur):
+
+```bash
+sudo ./install.sh --systemd-uninstall
+```
+
+`--uninstall` da birimler mevcut olduğunda onları kaldırır.
 
 ## Yetkiler
 
