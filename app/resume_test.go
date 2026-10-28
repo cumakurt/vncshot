@@ -116,6 +116,15 @@ func TestResumePlan(t *testing.T) {
 			reused:    []string{"192.0.2.1:5900", "192.0.2.2:5900", "192.0.2.3:5900"},
 		},
 		{
+			name: "a cancelled probe is probed again",
+			previous: []report.Result{
+				{IP: "192.0.2.1", Port: 5900, Open: true},
+				{IP: "192.0.2.2", Port: 5900, Open: true, Error: "context canceled"},
+			},
+			remaining: []string{"192.0.2.2:5900", "192.0.2.3:5900"},
+			reused:    []string{"192.0.2.1:5900"},
+		},
+		{
 			name:      "empty previous run scans everything",
 			previous:  nil,
 			remaining: []string{"192.0.2.1:5900", "192.0.2.2:5900", "192.0.2.3:5900"},

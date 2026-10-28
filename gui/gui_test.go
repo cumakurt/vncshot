@@ -213,52 +213,86 @@ func fakePlainRFB(t *testing.T, name string) int {
 			if err != nil {
 				return
 			}
-			go func() {
-				defer conn.Close()
-				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-				conn.Write([]byte("RFB 003.008\n"))
-				if _, err := io.ReadFull(conn, make([]byte, 12)); err != nil {
-					return
-				}
-				conn.Write([]byte{1, 1}) // None
-				if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
-					return
-				}
-				conn.Write([]byte{0, 0, 0, 0}) // SecurityResult OK
-				if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
-					return
-				}
-				var init []byte
-				init = append(init, 0, 2, 0, 2) // 2x2
-				init = append(init, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0)
-				init = append(init, 0, 0, 0, byte(len(name)))
-				init = append(init, []byte(name)...)
-				conn.Write(init)
+			go servePlainRFB(conn, name)
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
 
-				for {
-					var typ [1]byte
-					if _, err := io.ReadFull(conn, typ[:]); err != nil {
-						return
-					}
-					switch typ[0] {
-					case 0:
-						io.ReadFull(conn, make([]byte, 19))
-					case 2:
-						var hdr [3]byte
-						io.ReadFull(conn, hdr[:])
-						n := int(hdr[2]) | int(hdr[1])<<8
-						io.ReadFull(conn, make([]byte, n*4))
-					case 3:
-						io.ReadFull(conn, make([]byte, 9))
-						frame := []byte{0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0}
-						frame = append(frame, make([]byte, 2*2*4)...)
-						conn.Write(frame)
-						return
-					default:
-						return
-					}
-				}
-			}()
+// servePlainRFB answers one passwordless RFB 3.8 session and then closes.
+func servePlainRFB(conn net.Conn, name string) {
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	conn.Write([]byte("RFB 003.008\n"))
+	if _, err := io.ReadFull(conn, make([]byte, 12)); err != nil {
+		return
+	}
+	conn.Write([]byte{1, 1}) // None
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		return
+	}
+	conn.Write([]byte{0, 0, 0, 0}) // SecurityResult OK
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+		return
+	}
+	var init []byte
+	init = append(init, 0, 2, 0, 2) // 2x2
+	init = append(init, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0)
+	init = append(init, 0, 0, 0, byte(len(name)))
+	init = append(init, []byte(name)...)
+	conn.Write(init)
+
+	for {
+		var typ [1]byte
+		if _, err := io.ReadFull(conn, typ[:]); err != nil {
+			return
+		}
+		switch typ[0] {
+		case 0:
+			io.ReadFull(conn, make([]byte, 19))
+		case 2:
+			var hdr [3]byte
+			io.ReadFull(conn, hdr[:])
+			n := int(hdr[2]) | int(hdr[1])<<8
+			io.ReadFull(conn, make([]byte, n*4))
+		case 3:
+			io.ReadFull(conn, make([]byte, 9))
+			frame := []byte{0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0}
+			frame = append(frame, make([]byte, 2*2*4)...)
+			conn.Write(frame)
+			return
+		default:
+			return
+		}
+	}
+}
+
+// holdThenPlainRFB accepts the first connection and holds it until the peer
+// closes, then answers later connections as a passwordless RFB server.
+func holdThenPlainRFB(t *testing.T, name string) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		first := true
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			if first {
+				first = false
+				go func() {
+					defer conn.Close()
+					_, _ = io.Copy(io.Discard, conn)
+				}()
+				continue
+			}
+			go servePlainRFB(conn, name)
 		}
 	}()
 	return ln.Addr().(*net.TCPAddr).Port
@@ -1923,6 +1957,18 @@ func TestDashboardWiresTrendsAndCompare(t *testing.T) {
 	if strings.Contains(del, "window.confirm") {
 		t.Error("history delete still uses the browser confirm dialog")
 	}
+	if !strings.Contains(body, `className = "run-confirm"`) {
+		t.Error("history delete confirmation is not an in-page prompt")
+	}
+	if !strings.Contains(body, "commitDeleteRun(folder)") {
+		t.Error("a history run opened on the dashboard cannot be deleted")
+	}
+	if !strings.Contains(body, "userError") {
+		t.Error("a failed history delete is cleared by the next live snapshot")
+	}
+	if !strings.Contains(body, "historyStale") {
+		t.Error("a history reload in flight can drop the refresh after a delete")
+	}
 
 	match := regexp.MustCompile(`(?s)function compareGroup\(.*?\n  \}`).FindString(body)
 	if match == "" {
@@ -2219,5 +2265,163 @@ func TestConcurrentScansAreIndependent(t *testing.T) {
 		if _, err := os.Stat(dir); err != nil {
 			t.Fatalf("remaining scan folder %s: %v", dir, err)
 		}
+	}
+}
+
+// TestPauseResumeContinuesTheSameScan freezes a scan after one host is done
+// and checks the same job finishes the host that was still in flight.
+func TestPauseResumeContinuesTheSameScan(t *testing.T) {
+	fast := fakePlainRFB(t, "paused-fast")
+	slow := holdThenPlainRFB(t, "paused-slow")
+	outDir := t.TempDir()
+
+	srv, ts := newTestServer(t, Config{Scan: app.Config{OutDir: outDir}})
+	t.Cleanup(srv.cancelJobs)
+	client := newClient(t)
+	doJSON(t, client, http.MethodGet, ts.URL+"/?t="+testToken, nil, nil)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/scans/0123456789abcdef/pause", nil, auth)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("pause missing scan = %d, want 404 (%s)", resp.StatusCode, body)
+	}
+
+	scan := map[string]any{
+		"target":         "127.0.0.1",
+		"ports":          fmt.Sprintf("%d,%d", fast, slow),
+		"timeout_ms":     2000,
+		"vnc_timeout_ms": 8000,
+		"workers":        1,
+		"rate":           0,
+		"out_dir":        outDir,
+		"shared":         true,
+		"no_pdf":         true,
+		"authorized":     true,
+	}
+	resp, body = doJSON(t, client, http.MethodPost, ts.URL+"/api/scans", scan, auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", resp.StatusCode, body)
+	}
+	var started snapshot
+	if err := json.Unmarshal(body, &started); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+	if started.ID == "" {
+		t.Fatal("started scan has no id")
+	}
+
+	waitFor := func(want func(snapshot) bool) snapshot {
+		t.Helper()
+		deadline := time.Now().Add(20 * time.Second)
+		var state snapshot
+		for time.Now().Before(deadline) {
+			resp, raw := doJSON(t, client, http.MethodGet, ts.URL+"/api/scans/"+started.ID, nil, auth)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("poll status = %d, body = %s", resp.StatusCode, raw)
+			}
+			if err := json.Unmarshal(raw, &state); err != nil {
+				t.Fatalf("decode poll: %v", err)
+			}
+			if want(state) {
+				return state
+			}
+			if state.Status == statusFailed {
+				t.Fatalf("scan failed: %s", state.Error)
+			}
+			time.Sleep(30 * time.Millisecond)
+		}
+		t.Fatalf("timed out at status %q done %d/%d", state.Status, state.Done, state.Total)
+		return state
+	}
+
+	waitFor(func(state snapshot) bool {
+		return state.Status == statusRunning && state.Summary.Passwordless >= 1
+	})
+
+	resp, body = doJSON(t, client, http.MethodPost, ts.URL+"/api/scans/"+started.ID+"/pause", nil, auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pause status = %d, body = %s", resp.StatusCode, body)
+	}
+	paused := waitFor(func(state snapshot) bool {
+		return state.Status == statusPaused
+	})
+	if paused.ID != started.ID {
+		t.Fatalf("paused id = %q, want %q", paused.ID, started.ID)
+	}
+	if paused.Done < 1 || paused.Done >= paused.Total {
+		t.Fatalf("paused progress = %d/%d, want a partial scan", paused.Done, paused.Total)
+	}
+	if paused.Summary.Passwordless < 1 {
+		t.Fatalf("paused passwordless = %d, want the finished host kept", paused.Summary.Passwordless)
+	}
+
+	resp, body = doJSON(t, client, http.MethodPost, ts.URL+"/api/scans/"+started.ID+"/resume", nil, auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resume status = %d, body = %s", resp.StatusCode, body)
+	}
+	var resumed snapshot
+	if err := json.Unmarshal(body, &resumed); err != nil {
+		t.Fatalf("decode resume: %v", err)
+	}
+	if resumed.ID != started.ID || resumed.Status != statusRunning {
+		t.Fatalf("resume snapshot = id %q status %q, want the same running scan", resumed.ID, resumed.Status)
+	}
+	if resumed.Done < 1 {
+		t.Fatalf("resume started at %d probes, want the finished host counted", resumed.Done)
+	}
+
+	done := waitFor(func(state snapshot) bool {
+		return state.Status == statusCompleted
+	})
+	if done.Summary.Targets != 2 || done.Summary.Passwordless != 2 || done.Summary.Screenshots != 2 {
+		t.Fatalf("final summary = %+v, want 2 targets, 2 passwordless, 2 screenshots", done.Summary)
+	}
+	sawEarlier := false
+	for _, finding := range done.Findings {
+		if finding.Screenshot == "" {
+			t.Fatalf("finding %+v has no screenshot link", finding)
+		}
+		if strings.Contains(finding.Screenshot, "run=") {
+			sawEarlier = true
+		}
+		resp, body = doJSON(t, client, http.MethodGet, ts.URL+finding.Screenshot, nil, nil)
+		if resp.StatusCode != http.StatusOK || len(body) == 0 {
+			t.Fatalf("screenshot %s status = %d, bytes = %d", finding.Screenshot, resp.StatusCode, len(body))
+		}
+	}
+	if !sawEarlier {
+		t.Fatal("resumed findings lost the screenshot from the paused run")
+	}
+
+	var continued report.Document
+	var foundContinuation bool
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(outDir, entry.Name(), "vncshot_report.json"))
+		if err != nil {
+			continue
+		}
+		var doc report.Document
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatalf("parse %s: %v", entry.Name(), err)
+		}
+		if doc.ResumedFrom != "" {
+			continued = doc
+			foundContinuation = true
+		}
+	}
+	if !foundContinuation {
+		t.Fatal("continued report has no resumed_from")
+	}
+	if continued.Summary.Passwordless != 2 || len(continued.Results) != 2 {
+		t.Fatalf("continued report = %d results, passwordless %d", len(continued.Results), continued.Summary.Passwordless)
+	}
+
+	resp, body = doJSON(t, client, http.MethodPost, ts.URL+"/api/scans/"+started.ID+"/resume", nil, auth)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("resume after completion = %d, want 409 (%s)", resp.StatusCode, body)
 	}
 }

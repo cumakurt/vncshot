@@ -14,9 +14,10 @@ Use only on networks you own or have explicit written permission to test.
 
 ![vncshot GUI dashboard](docs/screenshots/gui-dashboard.png)
 
-*The local GUI, only on your authorized network, in the light theme. The rail lists the working
-views. A finished scan shows progress, severity, the counter strip and that
-scan on the board. Light, Dark and System sit at the bottom of the rail.*
+*The local GUI in the light theme. It listens on loopback only and is meant
+for use only on your authorized network. The rail lists the working views.
+A finished scan shows progress, severity, the counter strip and that scan on
+the board. Light, Dark and System sit at the bottom of the rail.*
 
 ## Table of contents
 
@@ -351,7 +352,7 @@ highlights insecure counts and then lists the report files.*
 | `-no-password-check` | `false` | Do not attempt any password. Passwordless hosts are still detected and screenshotted |
 | `-yes` | `false` | Skip the interactive authorization confirmation |
 | `-gui` | `false` | Start the local web GUI instead of a CLI scan |
-| `-gui-host` | `127.0.0.1` | GUI listen address (only on your authorized network) |
+| `-gui-host` | `127.0.0.1` | GUI listen address (loopback only; use it only on your authorized network) |
 | `-gui-port` | `0` | GUI listen port (`0` = pick a free port) |
 | `-gui-no-browser` | `false` | Do not open the GUI in a browser automatically |
 | `-proxy` | | SOCKS5 proxy for every probe, `socks5://` (local resolution) or `socks5h://` (proxy resolves); default port 1080 |
@@ -702,8 +703,9 @@ in-flight probes abort and the partial results are still written.
 vncshot -gui
 ```
 
-This starts a local web interface for use only on your authorized network and prints its session URL to
-the terminal. New scan opens the options for that run: target or target file,
+This starts a local web interface on loopback, meant for use only on your
+authorized network, and prints its session URL to the terminal. New scan
+opens the options for that run: target or target file,
 ports, workers, rate, connect and RFB timeouts, JSON/HTML/PDF/CSV path
 overrides, screenshot directory, skip PDF, shared session, manifest and the
 password list. Detecting passwordless hosts and capturing their screenshot
@@ -718,8 +720,10 @@ History, Settings and About. Switching views does not stop a scan. New scan,
 in the job list and on the Dashboard, opens the scan options: scope, pace,
 comparison, per-run output overrides, passwords and the authorization
 confirmation. Start scan adds a job to the list in the left rail; up to six
-scans run at the same time. Stop cancels the selected scan and keeps its
-partial report. Delete removes that scan from the menu and deletes its report
+scans run at the same time. Pause freezes the selected scan after the probes
+already in flight finish, and keeps the partial report. Resume continues
+that same scan from the targets it has not finished. Stop cancels the
+selected scan and keeps its partial report, without offering resume. Delete removes that scan from the menu and deletes its report
 folder when the folder sits inside the report root recorded for the scan.
 Findings lists what the selected scan has found so far, and stays usable while
 other scans continue. Settings holds the values that stay put: report root,
@@ -840,6 +844,8 @@ state-changing requests, the `X-Vncshot-Token` header.
 | `POST` | `/api/scans` | Start another scan (requires `authorized: true`; `429` when six are already running) |
 | `GET` | `/api/scans/{id}` | Snapshot of one dashboard scan |
 | `POST` | `/api/scans/{id}/stop` | Cancel that scan and keep its partial report |
+| `POST` | `/api/scans/{id}/pause` | Freeze that scan after in-flight probes finish; completed targets can be resumed |
+| `POST` | `/api/scans/{id}/resume` | Continue a paused scan from the targets it has not finished (`409` when it is not paused, `429` when six scans are already running) |
 | `DELETE` | `/api/scans/{id}` | Remove that scan from the menu and delete its report folder |
 | `GET` | `/api/feed` | Server-Sent Events board: menu rows, then per-scan updates |
 | `GET` | `/api/runs` | Previous runs under the report root, newest first |

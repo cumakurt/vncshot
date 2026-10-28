@@ -386,6 +386,17 @@ func (s *Session) ResumedTargets() int {
 	return len(s.reused)
 }
 
+// ReusedResults returns a copy of the results a resumed scan will keep
+// instead of probing again. The copy is safe for the caller to retain.
+func (s *Session) ReusedResults() []report.Result {
+	if s == nil || len(s.reused) == 0 {
+		return nil
+	}
+	out := make([]report.Result, len(s.reused))
+	copy(out, s.reused)
+	return out
+}
+
 // RemainingTargets returns how many targets this session still has to probe.
 // It equals len(Targets) - ResumedTargets().
 func (s *Session) RemainingTargets() int {

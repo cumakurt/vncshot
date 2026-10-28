@@ -315,6 +315,8 @@
   .pill.running { color: var(--ok); border-color: var(--ok-border); }
   .pill.running .dot { background: var(--ok); }
   .pill.completed .dot { background: var(--accent); }
+  .pill.paused { color: var(--warn-ink); border-color: var(--warn); }
+  .pill.paused .dot { background: var(--warn); }
   .pill.failed, .pill.cancelled { color: var(--danger); border-color: var(--danger-border); }
   .pill.failed .dot, .pill.cancelled .dot { background: var(--danger); }
   .scan-actions { display: flex; gap: 8px; margin-left: auto; }
@@ -539,6 +541,18 @@
   .run-name.current { color: var(--accent); }
   .run-meta { font-size: 12px; color: var(--muted); }
   .run-meta a { color: var(--ink-soft); margin-left: 8px; }
+  .run-confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--danger-border);
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+  .run-confirm .btn-mini { color: var(--ink); background: var(--panel); }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th {
     text-align: left;
@@ -904,7 +918,7 @@
         <button type="button" data-theme-choice="dark" data-i18n="Dark" aria-pressed="false">Dark</button>
         <button type="button" data-theme-choice="system" data-i18n="System" aria-pressed="false">System</button>
       </div>
-      <p><span data-i18n="Only on your authorized network">Only on your authorized network</span><br>vncshot <span id="version">dev</span></p>
+      <p><span data-i18n="Loopback only; authorized networks only">Loopback only; authorized networks only</span><br>vncshot <span id="version">dev</span></p>
     </div>
   </aside>
 
@@ -1080,6 +1094,8 @@
       <span id="rateLine"></span>
       <span id="credLine"></span>
       <span class="scan-actions">
+        <button class="btn btn-ghost" type="button" id="pauseScan" disabled data-i18n="Pause">Pause</button>
+        <button class="btn btn-ghost" type="button" id="resumeScan" disabled data-i18n="Resume">Resume</button>
         <button class="btn btn-ghost" type="button" id="cancel" disabled data-i18n="Stop">Stop</button>
         <button class="btn btn-ghost" type="button" id="deleteScan" disabled data-i18n="Delete">Delete</button>
         <span id="deleteScanAsk" class="hidden">
@@ -1274,7 +1290,7 @@
     </div>
     <div id="view-about" class="view">
       <div class="masthead"><div><h1 data-i18n="About">About</h1></div></div>
-      <p>vncshot <span id="aboutVersion">dev</span> <span data-i18n="is a local RFB survey bench. Use it only on your authorized network. It does not require root.">is a local RFB survey bench. Use it only on your authorized network. It does not require root.</span></p>
+      <p>vncshot <span id="aboutVersion">dev</span> <span data-i18n="is a local RFB survey bench. It listens on loopback only, so use it only on your authorized network. It does not require root.">is a local RFB survey bench. It listens on loopback only, so use it only on your authorized network. It does not require root.</span></p>
       <p class="hint" data-i18n="Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.">Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.</p>
     </div>
     <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true"
@@ -1370,9 +1386,19 @@
     var pill = $("statusPill");
     pill.className = "pill " + (status || "idle");
     $("statusText").textContent = t(status || "idle");
-    $("cancel").disabled = !(status === "running" && activeID);
-    $("deleteScan").disabled = !activeID;
-    if (!activeID && $("deleteScanAsk")) $("deleteScanAsk").classList.add("hidden");
+    $("pauseScan").disabled = !(status === "running" && activeID);
+    $("resumeScan").disabled = !(status === "paused" && activeID);
+    $("cancel").disabled = !((status === "running" || status === "paused") && activeID);
+    // A history folder opened from the list has no job id. Delete still has
+    // to remove that folder; gating the button on activeID made the click a no-op.
+    var folder = displayedRunName();
+    $("deleteScan").disabled = !(activeID || folder);
+    if (!activeID && !folder && $("deleteScanAsk")) $("deleteScanAsk").classList.add("hidden");
+  }
+
+  function displayedRunName() {
+    if (!viewingHistory) return "";
+    return runNameFromPath(state && state.run_dir);
   }
 
   // setCounter writes one live tally and pulses the card when the number
@@ -1527,7 +1553,7 @@
     "Jobs": "İşler",
     "Light": "Açık",
     "Dark": "Koyu",
-    "Only on your authorized network": "Yalnızca yetkili ağınızda",
+    "Loopback only; authorized networks only": "Yalnızca loopback; yalnızca yetkili ağlar",
     "Rail": "Menü",
     "Search": "Ara",
     "Scans": "Taramalar",
@@ -1550,6 +1576,7 @@
     "Open views": "Açık görünümler",
     "idle": "beklemede",
     "running": "çalışıyor",
+    "paused": "duraklatıldı",
     "completed": "tamamlandı",
     "cancelled": "iptal edildi",
     "notable": "önemli",
@@ -1637,11 +1664,11 @@
     "Events from the selected scan. Pause holds the list; new events stay buffered.": "Seçilen taramadaki olaylar. Duraklat listeyi tutar; yeni olaylar birikir.",
     "Filter events": "Olayları süz",
     "Pause": "Duraklat",
-    "Resume": "Sürdür",
+    "Resume": "Devam ettir",
     "Live log paused": "Canlı kayıt duraklatıldı",
     "Endpoints in the selected scan. Choosing one opens its detail.": "Seçilen taramadaki uç noktalar. Birini seçince ayrıntısı açılır.",
     "No hosts yet.": "Henüz host yok.",
-    "is a local RFB survey bench. Use it only on your authorized network. It does not require root.": "yerel bir RFB inceleme aracıdır. Yalnızca yetkili ağınızda kullanın. Root gerekmez.",
+    "is a local RFB survey bench. It listens on loopback only, so use it only on your authorized network. It does not require root.": "yerel bir RFB inceleme aracıdır. Yalnızca loopback üzerinde dinler; bu yüzden yalnızca yetkili ağınızda kullanın. Root gerekmez.",
     "Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.": "Klavye: Ctrl+K veya Cmd+K aramayı açar. ? kısayolları listeler. G ardından D, F, H, S veya N geçiş yapar.",
     "open full size": "tam boyutta aç",
     "Captured framebuffer": "Yakalanan ekran",
@@ -1892,8 +1919,24 @@
           meta.appendChild(a);
         });
       }
-      meta.appendChild(document.createTextNode(" "));
+      if (pendingDelete !== run.name) {
+        meta.appendChild(document.createTextNode(" "));
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn-mini";
+        remove.textContent = t("delete");
+        remove.setAttribute("aria-label", "Delete run " + run.name);
+        remove.title = t("delete this run and its report files");
+        remove.addEventListener("click", function () { deleteRun(run.name); });
+        meta.appendChild(remove);
+      }
+
+      li.appendChild(head);
+      li.appendChild(meta);
       if (pendingDelete === run.name) {
+        var askRow = document.createElement("div");
+        askRow.className = "run-confirm";
+        askRow.setAttribute("role", "group");
         var ask = document.createElement("span");
         ask.textContent = t("Delete this run and its files?");
         var yes = document.createElement("button");
@@ -1909,24 +1952,11 @@
           pendingDelete = "";
           renderHistory(historyRuns);
         });
-        meta.appendChild(ask);
-        meta.appendChild(document.createTextNode(" "));
-        meta.appendChild(yes);
-        meta.appendChild(document.createTextNode(" "));
-        meta.appendChild(no);
-      } else {
-        var remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "btn-mini";
-        remove.textContent = t("delete");
-        remove.setAttribute("aria-label", "Delete run " + run.name);
-        remove.title = t("delete this run and its report files");
-        remove.addEventListener("click", function () { deleteRun(run.name); });
-        meta.appendChild(remove);
+        askRow.appendChild(ask);
+        askRow.appendChild(yes);
+        askRow.appendChild(no);
+        li.appendChild(askRow);
       }
-
-      li.appendChild(head);
-      li.appendChild(meta);
       list.appendChild(li);
     });
 
@@ -1935,7 +1965,13 @@
   }
 
   var historyLoading = false;
+  var historyStale = false;
+  var historySeq = 0;
   var historyRuns = null;
+  // userError is a failure the page itself reported (a delete, for example).
+  // Live snapshots have an empty error field, and painting that used to hide
+  // the message before it could be read.
+  var userError = "";
 
   function savedBaseline() {
     try {
@@ -1973,27 +2009,39 @@
   }
 
   function loadHistory() {
-    if (historyLoading) return;
+    if (historyLoading) {
+      historyStale = true;
+      return;
+    }
     historyLoading = true;
+    var seq = ++historySeq;
     api("/api/runs")
       .then(function (res) {
         if (!res.ok) throw new Error(t("History unavailable."));
         return res.json();
       })
       .then(function (runs) {
+        if (seq !== historySeq || historyStale) return;
         historyRuns = runs;
         renderHistory(runs);
         fillBaselineOptions(runs);
         renderScanBoard();
       })
       .catch(function () {
+        if (seq !== historySeq || historyStale) return;
         $("historyList").textContent = "";
         var missing = document.createElement("div");
         missing.className = "empty";
         missing.textContent = t("History unavailable.");
         $("historyList").appendChild(missing);
       })
-      .then(function () { historyLoading = false; });
+      .then(function () {
+        if (seq !== historySeq) return;
+        historyLoading = false;
+        if (!historyStale) return;
+        historyStale = false;
+        loadHistory();
+      });
   }
 
   function openRun(name) {
@@ -2019,11 +2067,38 @@
     renderHistory(historyRuns);
   }
 
+  function showUserError(message) {
+    userError = message || "";
+    var box = $("errorBox");
+    if (!box) return;
+    if (!userError) {
+      box.classList.add("hidden");
+      box.textContent = "";
+      return;
+    }
+    box.classList.remove("hidden");
+    box.textContent = userError;
+  }
+
+  function forgetHistoryRun(name) {
+    if (!Array.isArray(historyRuns)) return;
+    historyRuns = historyRuns.filter(function (run) { return run.name !== name; });
+    renderHistory(historyRuns);
+    fillBaselineOptions(historyRuns);
+    renderScanBoard();
+  }
+
   function commitDeleteRun(name) {
     pendingDelete = "";
+    var previous = historyRuns;
+    forgetHistoryRun(name);
     api("/api/runs/" + encodeURIComponent(name), { method: "DELETE" })
       .then(function (res) {
-        if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
+        // 404 means the folder is already gone, so the stale row should stay gone.
+        if (!res.ok && res.status !== 404) {
+          return res.text().then(function (text) { throw new Error(text.trim() || res.statusText); });
+        }
+        showUserError("");
         var current = runNameFromPath(state && state.run_dir);
         if (current === name) {
           viewingHistory = false;
@@ -2035,8 +2110,14 @@
         toast(t("Deleted") + " " + name);
       })
       .catch(function (err) {
-        $("errorBox").classList.remove("hidden");
-        $("errorBox").textContent = err.message;
+        historyRuns = previous;
+        if (historyRuns) {
+          renderHistory(historyRuns);
+          fillBaselineOptions(historyRuns);
+          renderScanBoard();
+        }
+        showUserError(err.message);
+        toast(err.message);
       });
   }
 
@@ -2577,9 +2658,10 @@
       $("warningBox").classList.add("hidden");
     }
     if (s.error) {
+      userError = "";
       $("errorBox").classList.remove("hidden");
       $("errorBox").textContent = s.error;
-    } else {
+    } else if (!userError) {
       $("errorBox").classList.add("hidden");
     }
 
@@ -2950,6 +3032,32 @@
       });
   });
 
+  $("pauseScan").addEventListener("click", function () {
+    if (!activeID) return;
+    api("/api/scans/" + encodeURIComponent(activeID) + "/pause", { method: "POST" })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (text) { throw new Error(text.trim() || res.statusText); });
+        return res.json().then(rememberScan);
+      })
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  });
+
+  $("resumeScan").addEventListener("click", function () {
+    if (!activeID) return;
+    api("/api/scans/" + encodeURIComponent(activeID) + "/resume", { method: "POST" })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (text) { throw new Error(text.trim() || res.statusText); });
+        return res.json().then(rememberScan);
+      })
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  });
+
   $("cancel").addEventListener("click", function () {
     if (!activeID) return;
     api("/api/scans/" + encodeURIComponent(activeID) + "/stop", { method: "POST" })
@@ -2964,15 +3072,20 @@
   });
 
   $("deleteScan").addEventListener("click", function () {
-    if (!activeID) return;
+    if (!activeID && !displayedRunName()) return;
     $("deleteScanAsk").classList.remove("hidden");
   });
   $("deleteScanNo").addEventListener("click", function () {
     $("deleteScanAsk").classList.add("hidden");
   });
   $("deleteScanYes").addEventListener("click", function () {
-    if (!activeID) return;
+    var folder = displayedRunName();
+    if (!activeID && !folder) return;
     $("deleteScanAsk").classList.add("hidden");
+    if (!activeID) {
+      commitDeleteRun(folder);
+      return;
+    }
     var id = activeID;
     api("/api/scans/" + encodeURIComponent(id), { method: "DELETE" })
       .then(function (res) {
@@ -2984,10 +3097,12 @@
         renderMenu(menuJobs);
         if (activeID && scans[activeID]) render(scans[activeID]);
         else render(blankSnap());
+        loadHistory();
+        loadTrends();
       })
       .catch(function (err) {
-        $("errorBox").classList.remove("hidden");
-        $("errorBox").textContent = err.message;
+        showUserError(err.message);
+        toast(err.message);
       });
   });
 

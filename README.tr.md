@@ -14,9 +14,10 @@ Yalnızca sahibi olduğunuz veya açık yazılı izniniz bulunan ağlarda kullan
 
 ![vncshot GUI panosu](docs/screenshots/gui-dashboard.png)
 
-*Yerel GUI, yalnızca yetkili ağınızda, açık tema. Menü çalışan görünümleri listeler.
-Bitmiş bir tarama ilerlemeyi, önem derecesini, sayaç şeridini ve taramayı
-panoda gösterir. Açık, Koyu ve Sistem menünün altındadır.*
+*Yerel GUI, açık temada. Yalnızca loopback üzerinde dinler ve yalnızca yetkili
+ağınızda kullanılmak içindir. Menü çalışan görünümleri listeler. Bitmiş bir
+tarama ilerlemeyi, önem derecesini, sayaç şeridini ve taramayı panoda gösterir.
+Açık, Koyu ve Sistem menünün altındadır.*
 
 ## İçindekiler
 
@@ -361,7 +362,7 @@ sayaçları vurgular, ardından rapor yollarını listeler.*
 | `-no-password-check` | `false` | Hiç parola deneme. Parolasız hostlar yine tespit edilir ve ekran görüntüsü alınır |
 | `-yes` | `false` | Etkileşimli yetki onayını atla |
 | `-gui` | `false` | CLI taraması yerine yerel web GUI'sini başlat |
-| `-gui-host` | `127.0.0.1` | GUI dinleme adresi (yalnızca yetkili ağınızda) |
+| `-gui-host` | `127.0.0.1` | GUI dinleme adresi (yalnızca loopback; yalnızca yetkili ağınızda kullanın) |
 | `-gui-port` | `0` | GUI dinleme portu (`0` = boş port seç) |
 | `-gui-no-browser` | `false` | GUI'yi tarayıcıda otomatik açma |
 | `-proxy` | | Tüm sondalar için SOCKS5 proxy, `socks5://` (yerel çözümleme) veya `socks5h://` (proxy çözer); varsayılan port 1080 |
@@ -709,8 +710,9 @@ durur ve kısmi sonuçlar yine de yazılır.
 vncshot -gui
 ```
 
-Bu, yalnızca yetkili ağınızda kullanılacak yerel bir web arayüzü başlatır ve oturum URL'sini
-terminale yazdırır. New scan o taramaya ait seçenekleri açar: hedef veya hedef
+Bu, loopback üzerinde, yalnızca yetkili ağınızda kullanılmak üzere yerel bir
+web arayüzü başlatır ve oturum URL'sini terminale yazdırır. New scan o
+taramaya ait seçenekleri açar: hedef veya hedef
 dosyası, portlar, worker sayısı, hız, bağlantı ve RFB zaman aşımları,
 JSON/HTML/PDF/CSV yol geçersiz kılmaları, ekran görüntüsü dizini, PDF atlama,
 paylaşımlı oturum, manifest ve parola listesi. Parolasız hedefleri tespit
@@ -726,7 +728,10 @@ Findings, History, Settings ve About. Görünüm değiştirmek çalışan bir ta
 durdurmaz. New scan, iş listesinde ve Dashboard üzerinde tarama seçeneklerini
 açar: kapsam, hız, karşılaştırma, taramaya özel çıktı yolları, parolalar ve
 yetki onayı. Start scan sol menüye bir iş ekler; aynı anda en fazla altı tarama
-çalışır. Stop seçili taramayı iptal eder ve kısmi raporu bırakır. Delete
+çalışır. Pause seçili taramayı, sürmekte olan denemeler bitince dondurur ve
+kısmi raporu bırakır. Resume aynı taramayı bitmemiş hedeflerden devam
+ettirir. Stop seçili taramayı iptal eder ve kısmi raporu bırakır; bu tarama
+devam ettirilemez. Delete
 taramayı menüden kaldırır ve klasörü, o tarama için kaydedilen rapor kökünün
 içindeyse siler. Findings, seçili taramanın o ana kadar bulduklarını listeler
 ve diğer taramalar sürerken kullanılabilir kalır. Settings yerinde kalan
@@ -848,6 +853,8 @@ her uç nokta oturum çereziyle ve durum değiştiren isteklerde
 | `POST` | `/api/scans` | Başka bir tarama başlat (`authorized: true` gerekir; altı tarama çalışıyorsa `429`) |
 | `GET` | `/api/scans/{id}` | Bir pano taramasının anlık görüntüsü |
 | `POST` | `/api/scans/{id}/stop` | O taramayı iptal et, kısmi raporu bırak |
+| `POST` | `/api/scans/{id}/pause` | O taramayı sürmekte olan denemeler bitince dondur; tamamlanan hedefler devam ettirilebilir |
+| `POST` | `/api/scans/{id}/resume` | Duraklatılmış taramayı bitmemiş hedeflerden devam ettir (duraklatılmamışsa `409`, altı tarama çalışıyorsa `429`) |
 | `DELETE` | `/api/scans/{id}` | Taramayı menüden kaldır ve rapor klasörünü sil |
 | `GET` | `/api/feed` | Server-Sent Events panosu: menü satırları, ardından tarama güncellemeleri |
 | `GET` | `/api/runs` | Rapor kökü altındaki önceki taramalar, en yeni önce |

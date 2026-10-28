@@ -22,6 +22,7 @@ const maxConcurrentScans = 6
 var (
 	errJobNotFound = errors.New("scan not found")
 	errNotRunning  = errors.New("scan is not running")
+	errNotPaused   = errors.New("scan is not paused")
 	errTooManyJobs = errors.New("too many scans are running")
 )
 
@@ -91,20 +92,39 @@ func (s *server) handleScanRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	id := parts[0]
 	if len(parts) == 2 {
-		if parts[1] != "stop" || r.Method != http.MethodPost {
-			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		switch parts[1] {
+		case "stop":
+			snap, err := s.stopJob(id)
+			if err != nil {
+				writeJobError(w, err)
 				return
 			}
+			writeJSON(w, snap)
+		case "pause":
+			snap, err := s.pauseJob(id)
+			if err != nil {
+				writeJobError(w, err)
+				return
+			}
+			writeJSON(w, snap)
+		case "resume":
+			snap, code, err := s.resumeJob(id)
+			if err != nil {
+				if code == http.StatusTooManyRequests {
+					http.Error(w, err.Error(), code)
+					return
+				}
+				writeJobError(w, err)
+				return
+			}
+			writeJSON(w, snap)
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		snap, err := s.stopJob(id)
-		if err != nil {
-			writeJobError(w, err)
-			return
-		}
-		writeJSON(w, snap)
 		return
 	}
 	switch r.Method {
@@ -130,8 +150,10 @@ func writeJobError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errJobNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, errNotRunning):
+	case errors.Is(err, errNotRunning), errors.Is(err, errNotPaused):
 		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, errTooManyJobs):
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
 	default:
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
@@ -163,6 +185,7 @@ func (s *server) startJob(req scanRequest) (snapshot, int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &runState{
 		name:        scanName(req),
+		request:     req,
 		status:      statusRunning,
 		started:     time.Now(),
 		total:       len(session.Targets),
@@ -229,19 +252,220 @@ func (s *server) stopJob(id string) (snapshot, error) {
 		return snapshot{}, errJobNotFound
 	}
 	job.mu.Lock()
+	status := job.status
 	cancel := job.cancel
-	running := job.status == statusRunning
-	job.mu.Unlock()
-	if !running || cancel == nil {
+	switch status {
+	case statusPaused:
+		job.status = statusCancelled
+		job.pause = false
+		job.mu.Unlock()
+		s.pushEvent(job, "cancel", "paused scan stopped; it will not continue")
+		s.broadcast(job, true)
+		job.mu.Lock()
+		snap := s.snapshotOf(job)
+		job.mu.Unlock()
+		return snap, nil
+	case statusRunning:
+		// Stop wins over a pause that has not finished yet.
+		job.pause = false
+		if cancel == nil {
+			job.mu.Unlock()
+			return snapshot{}, errNotRunning
+		}
+		job.mu.Unlock()
+		cancel()
+		s.pushEvent(job, "cancel", "cancellation requested; finishing in-flight probes")
+		s.broadcast(job, true)
+		job.mu.Lock()
+		snap := s.snapshotOf(job)
+		job.mu.Unlock()
+		return snap, nil
+	default:
+		job.mu.Unlock()
 		return snapshot{}, errNotRunning
 	}
+}
+
+// pauseJob freezes a running scan after the probes already in flight finish.
+// Completed targets stay in the partial report so resume can skip them.
+func (s *server) pauseJob(id string) (snapshot, error) {
+	job := s.lookupJob(id)
+	if job == nil {
+		return snapshot{}, errJobNotFound
+	}
+	job.mu.Lock()
+	cancel := job.cancel
+	running := job.status == statusRunning
+	if !running || cancel == nil {
+		job.mu.Unlock()
+		return snapshot{}, errNotRunning
+	}
+	job.pause = true
+	job.mu.Unlock()
 	cancel()
-	s.pushEvent(job, "cancel", "cancellation requested; finishing in-flight probes")
+	s.pushEvent(job, "pause", "pause requested; finishing in-flight probes")
 	s.broadcast(job, true)
 	job.mu.Lock()
 	snap := s.snapshotOf(job)
 	job.mu.Unlock()
 	return snap, nil
+}
+
+// resumeJob continues a paused scan from the targets it has not finished.
+// The same job stays on the menu. Finished probes are reused, and a new run
+// folder holds the continued report.
+func (s *server) resumeJob(id string) (snapshot, int, error) {
+	job := s.lookupJob(id)
+	if job == nil {
+		return snapshot{}, http.StatusNotFound, errJobNotFound
+	}
+	job.mu.Lock()
+	if job.status != statusPaused {
+		job.mu.Unlock()
+		return snapshot{}, http.StatusConflict, errNotPaused
+	}
+	req := job.request
+	pausedDir := job.runDir
+	root := job.reportRoot
+	var pausedFor time.Duration
+	if !job.finished.IsZero() {
+		pausedFor = time.Since(job.finished)
+	}
+	// Claim the job before preparing the continuation so a second resume
+	// cannot start another run for the same scan.
+	job.status = statusRunning
+	job.pause = false
+	job.errMsg = ""
+	job.mu.Unlock()
+
+	if root == "" {
+		root = s.reportRoot()
+	}
+	req.Baseline = ""
+	req.Output = ""
+	req.HTML = ""
+	req.PDF = ""
+	req.CSV = ""
+	req.ScreenshotDir = ""
+	req.OutDir = root
+	req.Authorized = true
+
+	cfg, err := s.scanConfig(req)
+	if err != nil {
+		s.restorePaused(job, err)
+		return snapshot{}, http.StatusBadRequest, err
+	}
+	cfg.ResumeDir = pausedDir
+	cfg.Baseline = ""
+	cfg.Output = ""
+	cfg.HTML = ""
+	cfg.PDF = ""
+	cfg.CSV = ""
+	cfg.ScreenshotDir = ""
+	cfg.OutDir = root
+	cfg.OutDirExplicit = true
+
+	session, err := app.Prepare(cfg)
+	if err != nil {
+		s.restorePaused(job, err)
+		return snapshot{}, http.StatusBadRequest, err
+	}
+
+	s.jobsMu.Lock()
+	if s.jobs[job.id] == nil {
+		s.jobsMu.Unlock()
+		_ = removeRunDir(root, pausedDir)
+		_ = removeRunDir(root, session.RunDir)
+		return snapshot{}, http.StatusNotFound, errJobNotFound
+	}
+	if s.running >= maxConcurrentScans {
+		s.jobsMu.Unlock()
+		_ = removeRunDir(root, session.RunDir)
+		s.restorePaused(job, nil)
+		return snapshot{}, http.StatusTooManyRequests, errTooManyJobs
+	}
+	s.running++
+	job.accounted = true
+	s.jobsMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reused := session.ReusedResults()
+
+	job.mu.Lock()
+	if job.dropDir || job.status != statusRunning {
+		dropped := job.dropDir
+		job.mu.Unlock()
+		cancel()
+		s.releaseSlot(job)
+		if dropped {
+			_ = removeRunDir(root, pausedDir)
+		}
+		_ = removeRunDir(root, session.RunDir)
+		if !dropped {
+			s.restorePaused(job, nil)
+		}
+		return snapshot{}, http.StatusConflict, errNotPaused
+	}
+	job.evidence = append(job.evidence, pausedDir)
+	if pausedFor > 0 {
+		job.started = job.started.Add(pausedFor)
+	}
+	job.finished = time.Time{}
+	job.cancel = cancel
+	job.session = session
+	job.runDir = session.RunDir
+	job.reportRoot = root
+	job.credentials = len(session.Credentials)
+	job.jsonPath = session.JSONPath
+	job.htmlPath = session.HTMLPath
+	job.pdfPath = session.PDFPath
+	job.done = session.ResumedTargets()
+	job.total = len(session.Targets)
+	job.summary = session.LiveSummary()
+	job.results = reused
+	job.findings = notableFindings(reused)
+	job.files = nil
+	job.warning = session.FallbackWarning()
+	job.mu.Unlock()
+
+	s.pushEvent(job, "scan", fmt.Sprintf("resumed; %d probes already completed, %d remaining",
+		session.ResumedTargets(), session.RemainingTargets()))
+	s.broadcast(job, true)
+	go s.execute(ctx, job, session, cancel)
+
+	job.mu.Lock()
+	snap := s.snapshotOf(job)
+	job.mu.Unlock()
+	return snap, http.StatusOK, nil
+}
+
+// restorePaused puts a claimed scan back to paused when resume cannot start.
+func (s *server) restorePaused(job *runState, cause error) {
+	job.mu.Lock()
+	if job.dropDir || job.status == statusCancelled {
+		job.mu.Unlock()
+		return
+	}
+	job.status = statusPaused
+	job.pause = false
+	if cause != nil {
+		job.errMsg = cause.Error()
+	}
+	job.mu.Unlock()
+	s.broadcast(job, true)
+}
+
+// releaseSlot frees the concurrency slot reserved for a scan that did not
+// stay running. accounted is only touched while jobsMu is held.
+func (s *server) releaseSlot(job *runState) {
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	if job.accounted {
+		job.accounted = false
+		if s.running > 0 {
+			s.running--
+		}
+	}
 }
 
 // deleteJob drops a scan from the menu. A running scan is cancelled and its
@@ -259,6 +483,7 @@ func (s *server) deleteJob(id string) error {
 	cancel := job.cancel
 	runDir := job.runDir
 	root := job.reportRoot
+	evidence := append([]string(nil), job.evidence...)
 	if running {
 		job.dropDir = true
 	}
@@ -272,8 +497,18 @@ func (s *server) deleteJob(id string) error {
 		s.publishMenu()
 		return nil
 	}
-	if err := removeRunDir(root, runDir); err != nil {
-		return err
+	seen := map[string]struct{}{}
+	for _, dir := range append(evidence, runDir) {
+		if dir == "" {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		if err := removeRunDir(root, dir); err != nil {
+			return err
+		}
 	}
 	s.detachJob(id)
 	s.publishMenu()

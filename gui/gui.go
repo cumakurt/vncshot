@@ -227,6 +227,15 @@ type runState struct {
 	removedRuns int
 	session     *app.Session
 	cancel      context.CancelFunc
+	// request is the launch that started this scan. Pause keeps it so resume
+	// can probe the unfinished targets with the same scope and pace.
+	request scanRequest
+	// pause is set when the operator freezes a running scan. The writer
+	// reads it once, when the cancelled probe returns, and then clears it.
+	pause bool
+	// evidence lists run folders this scan already finished. Resume writes
+	// a new folder and still has to serve screenshots from the earlier ones.
+	evidence    []string
 	subscribers map[chan snapshot]struct{}
 	lastSent    time.Time
 	// flushPending is set when a progress frame was coalesced. A timer
@@ -238,6 +247,7 @@ type runState struct {
 const (
 	statusIdle      = "idle"
 	statusRunning   = "running"
+	statusPaused    = "paused"
 	statusCompleted = "completed"
 	statusCancelled = "cancelled"
 	statusFailed    = "failed"
@@ -333,7 +343,7 @@ func Run(cfg Config) error {
 
 	fmt.Fprintf(os.Stderr, "\n  vncshot GUI %s\n", cfg.Version)
 	fmt.Fprintf(os.Stderr, "  url:      %s\n", url)
-	fmt.Fprintf(os.Stderr, "  bind:     %s:%d (only on your authorized network)\n", host, addr.Port)
+	fmt.Fprintf(os.Stderr, "  bind:     %s:%d (loopback only; use it only on your authorized network)\n", host, addr.Port)
 	fmt.Fprintf(os.Stderr, "  token:    %s\n", token)
 	fmt.Fprintf(os.Stderr, "  reports:  %s\n\n", cfg.Scan.OutDir)
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop the GUI.\n\n")
@@ -545,6 +555,7 @@ func (s *server) execute(ctx context.Context, job *runState, session *app.Sessio
 	})
 
 	job.mu.Lock()
+	planned := job.total
 	job.done = out.Summary.Targets
 	job.summary = out.Summary
 	job.runDir = out.RunDir
@@ -571,7 +582,24 @@ func (s *server) execute(ctx context.Context, job *runState, session *app.Sessio
 		}
 	}
 	job.removedRuns = len(out.RemovedRuns)
+	pauseIt := job.pause
+	job.pause = false
 	switch {
+	case errors.Is(err, context.Canceled) && pauseIt:
+		job.status = statusPaused
+		// The planned scope stays on the counter. A row whose only error is
+		// the cancellation itself was not finished, so it does not count as
+		// progress the next resume will keep.
+		if planned > job.summary.Targets {
+			job.summary.Targets = planned
+		}
+		kept := 0
+		for _, result := range out.Results {
+			if result.Error != context.Canceled.Error() {
+				kept++
+			}
+		}
+		job.done = kept
 	case errors.Is(err, context.Canceled):
 		job.status = statusCancelled
 	case err != nil:
@@ -580,15 +608,25 @@ func (s *server) execute(ctx context.Context, job *runState, session *app.Sessio
 	default:
 		job.status = statusCompleted
 	}
+	status := job.status
 	dropDir := job.dropDir
 	runDir := job.runDir
+	root := job.reportRoot
+	evidence := append([]string(nil), job.evidence...)
 	job.mu.Unlock()
 
 	s.collectFiles(job, session.RunDir)
-	s.pushEvent(job, "scan", fmt.Sprintf("finished: %d open, %d passwordless", out.Summary.Open, out.Summary.Passwordless))
+	if status == statusPaused {
+		s.pushEvent(job, "pause", "paused; completed probes are kept")
+	} else {
+		s.pushEvent(job, "scan", fmt.Sprintf("finished: %d open, %d passwordless", out.Summary.Open, out.Summary.Passwordless))
+	}
 	s.broadcast(job, true)
 	if dropDir {
-		_ = removeRunDir(s.reportRoot(), runDir)
+		for _, dir := range evidence {
+			_ = removeRunDir(root, dir)
+		}
+		_ = removeRunDir(root, runDir)
 	}
 }
 
@@ -1462,22 +1500,8 @@ func writeEvent(w http.ResponseWriter, snap snapshot) {
 }
 
 func (s *server) handleFiles(w http.ResponseWriter, r *http.Request) {
-	var runDir string
-	if id := r.URL.Query().Get("scan"); id != "" {
-		job := s.lookupJob(id)
-		if job == nil {
-			http.NotFound(w, r)
-			return
-		}
-		job.mu.Lock()
-		runDir = job.runDir
-		job.mu.Unlock()
-	} else {
-		s.run.mu.Lock()
-		runDir = s.run.runDir
-		s.run.mu.Unlock()
-	}
-	if runDir == "" {
+	runDir, ok := s.fileRoot(r)
+	if !ok || runDir == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -1645,20 +1669,92 @@ func (s *server) reportLinks(job *runState) map[string]string {
 }
 
 // artifactLink maps an on-disk artifact to its /files URL, returning "" when
-// the file is outside that scan's run folder.
+// the file is outside that scan's run folders. A resumed scan keeps
+// screenshots in the folder it paused in, so those paths stay reachable.
 func (s *server) artifactLink(job *runState, path string) string {
-	if path == "" || job.runDir == "" {
+	if path == "" {
 		return ""
 	}
-	rel, err := filepath.Rel(job.runDir, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return ""
+	type folder struct {
+		dir     string
+		earlier bool
 	}
-	link := "/files/" + filepath.ToSlash(rel)
-	if job.id != "" {
-		link += "?scan=" + url.QueryEscape(job.id)
+	folders := make([]folder, 0, len(job.evidence)+1)
+	for _, dir := range job.evidence {
+		folders = append(folders, folder{dir: dir, earlier: true})
 	}
-	return link
+	if job.runDir != "" {
+		folders = append(folders, folder{dir: job.runDir})
+	}
+	for _, candidate := range folders {
+		rel, err := filepath.Rel(candidate.dir, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		link := "/files/" + filepath.ToSlash(rel)
+		if job.id == "" {
+			return link
+		}
+		query := url.Values{}
+		query.Set("scan", job.id)
+		if candidate.earlier {
+			query.Set("run", filepath.Base(candidate.dir))
+		}
+		return link + "?" + query.Encode()
+	}
+	return ""
+}
+
+// fileRoot is the directory /files/ may read for this request. The run
+// query selects an earlier folder of a resumed scan; anything else uses the
+// scan's current folder.
+func (s *server) fileRoot(r *http.Request) (string, bool) {
+	if id := r.URL.Query().Get("scan"); id != "" {
+		job := s.lookupJob(id)
+		if job == nil {
+			return "", false
+		}
+		job.mu.Lock()
+		defer job.mu.Unlock()
+		if runName := r.URL.Query().Get("run"); runName != "" {
+			if !validRunName(runName) {
+				return "", false
+			}
+			for _, dir := range job.evidence {
+				if filepath.Base(dir) != runName {
+					continue
+				}
+				if !dirInside(job.reportRoot, dir) {
+					continue
+				}
+				return dir, true
+			}
+			return "", false
+		}
+		if job.runDir == "" {
+			return "", false
+		}
+		return job.runDir, true
+	}
+	s.run.mu.Lock()
+	defer s.run.mu.Unlock()
+	if s.run.runDir == "" {
+		return "", false
+	}
+	return s.run.runDir, true
+}
+
+// dirInside reports whether dir is a child of root. The report root itself
+// is not a run folder, so it is rejected.
+func dirInside(root, dir string) bool {
+	if root == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 // countSelfSigned returns how many findings carry a self-signed certificate.
@@ -1854,6 +1950,18 @@ func validateScreenshotDir(dir, runRoot string) error {
 		return outside
 	}
 	return nil
+}
+
+// notableFindings keeps the same rows the live progress feed shows, so a
+// resumed scan can redraw what it already learned before the next probe.
+func notableFindings(results []report.Result) []finding {
+	var out []finding
+	for _, r := range results {
+		if r.Open || r.Passwordless || r.Password != "" || r.Error != "" {
+			out = append(out, toFinding(r))
+		}
+	}
+	return out
 }
 
 func toFinding(r report.Result) finding {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,6 +62,12 @@ func ResumePlan(previous []report.Result, targets []scanner.Target) (remaining [
 	for _, r := range previous {
 		key := r.Addr()
 		if _, ok := inScope[key]; !ok {
+			continue
+		}
+		// A probe aborted by pause or Ctrl+C records the cancellation as its
+		// error and did not finish. Treating that row as complete would skip
+		// the endpoint when the scan continues.
+		if r.Error == context.Canceled.Error() {
 			continue
 		}
 		// A duplicated address would produce two rows for one endpoint, so
