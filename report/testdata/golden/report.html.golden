@@ -340,7 +340,8 @@ h2 {
 }
 .cert-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
   gap: 6px 28px;
   margin: 11px 0 0;
 }
@@ -363,7 +364,8 @@ h2 {
   min-width: 0;
   color: var(--ink-soft);
   font-size: 12.5px;
-  word-break: break-word;
+  
+  overflow-wrap: anywhere;
 }
 .cert-hash-row {
   display: flex;
@@ -436,6 +438,11 @@ h2 {
   font-size: 12px;
 }
  
+.trend-cell { width: 120px; }
+.trend-spark { display: block; }
+.trend-track { fill: var(--hairline); }
+.trend-pass { fill: var(--danger); }
+.trend-weak { fill: var(--warning); }
 .trend-hot {
   color: var(--warning);
   font-weight: 600;

@@ -153,13 +153,41 @@ const maxRecentRuns = 10
 // this limit is treated as unreadable rather than slowing report writing.
 const maxTrendReportBytes = 32 << 20
 
-// recentRunData is one row of the "Recent runs" trend table.
+// recentRunData is one row of the "Recent runs" trend table. The bar widths
+// are derived pixel widths for the inline sparkline, scaled against the
+// busiest run in the set so the strip stays comparable.
 type recentRunData struct {
 	Name         string
 	GeneratedAt  string
 	Passwordless int
 	Weak         int
 	Errors       int
+	PassBar      int
+	WeakBar      int
+}
+
+// trendSparkWidth is the pixel width of the inline sparkline in the report.
+const trendSparkWidth = 96
+
+// applyTrendBars fills the sparkline segment widths. Rows with no findings
+// keep zero-width segments so the track alone is drawn. Integer arithmetic is
+// deterministic, which keeps the generated HTML byte-stable for equal inputs.
+func applyTrendBars(rows []recentRunData) {
+	busiest := 0
+	for _, row := range rows {
+		if total := row.Passwordless + row.Weak; total > busiest {
+			busiest = total
+		}
+	}
+	if busiest == 0 {
+		return
+	}
+	for i := range rows {
+		pass := rows[i].Passwordless * trendSparkWidth / busiest
+		weak := rows[i].Weak * trendSparkWidth / busiest
+		rows[i].PassBar = pass
+		rows[i].WeakBar = weak
+	}
 }
 
 // collectRecentRuns inspects the sibling run folders of the report being
@@ -206,6 +234,7 @@ func collectRecentRuns(path string) []recentRunData {
 			rows = append(rows, row)
 		}
 	}
+	applyTrendBars(rows)
 	return rows
 }
 
@@ -310,6 +339,8 @@ type htmlData struct {
 	// RecentRuns carries the sibling-run trend table; nil omits the
 	// section (single-run and offline usage).
 	RecentRuns []recentRunData
+	// TrendWidth is the pixel width of the inline trend sparkline.
+	TrendWidth int
 }
 
 // diffRowData is one line of a baseline comparison group.
@@ -375,6 +406,7 @@ func WriteHTMLWithOptions(path string, results []Result, opts Options) error {
 	// The trend table is read from the sibling run folders of the output
 	// path; nil (overridden path, no siblings) keeps the section out.
 	doc.RecentRuns = collectRecentRuns(path)
+	doc.TrendWidth = trendSparkWidth
 
 	for _, r := range opts.apply(results) {
 		dims := ""
@@ -1011,7 +1043,9 @@ h2 {
 }
 .cert-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  {{/* 270px keeps the full validity window on one line; narrower columns
+       clipped the trailing day of the date range. */}}
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
   gap: 6px 28px;
   margin: 11px 0 0;
 }
@@ -1034,7 +1068,8 @@ h2 {
   min-width: 0;
   color: var(--ink-soft);
   font-size: 12.5px;
-  word-break: break-word;
+  {{/* Long subjects and digests wrap instead of being clipped at the column edge. */}}
+  overflow-wrap: anywhere;
 }
 .cert-hash-row {
   display: flex;
@@ -1107,6 +1142,11 @@ h2 {
   font-size: 12px;
 }
 /* Recent runs trend ---------------------------------------------------- */
+.trend-cell { width: 120px; }
+.trend-spark { display: block; }
+.trend-track { fill: var(--hairline); }
+.trend-pass { fill: var(--danger); }
+.trend-weak { fill: var(--warning); }
 .trend-hot {
   color: var(--warning);
   font-weight: 600;
@@ -1443,7 +1483,7 @@ footer a:hover { border-bottom-color: var(--accent); }
       <table>
         <thead>
           <tr>
-            <th scope="col">Run</th><th scope="col">Generated</th><th scope="col">Passwordless</th><th scope="col">Weak creds</th><th scope="col">Errors</th>
+            <th scope="col">Run</th><th scope="col">Generated</th><th scope="col">Trend</th><th scope="col">Passwordless</th><th scope="col">Weak creds</th><th scope="col">Errors</th>
           </tr>
         </thead>
         <tbody>
@@ -1451,6 +1491,14 @@ footer a:hover { border-bottom-color: var(--accent); }
           <tr>
             <td class="mono">{{.Name}}</td>
             <td class="mono">{{.GeneratedAt}}</td>
+            <td class="trend-cell">
+              <svg class="trend-spark" width="{{$.TrendWidth}}" height="12" viewBox="0 0 {{$.TrendWidth}} 12"
+                   role="img" aria-label="{{.Passwordless}} passwordless and {{.Weak}} weak-password findings">
+                <rect class="trend-track" x="0" y="0" width="{{$.TrendWidth}}" height="12" rx="2"></rect>
+                <rect class="trend-pass" x="0" y="0" width="{{.PassBar}}" height="12" rx="2"></rect>
+                <rect class="trend-weak" x="{{.PassBar}}" y="0" width="{{.WeakBar}}" height="12" rx="2"></rect>
+              </svg>
+            </td>
             <td class="mono{{if gt .Passwordless 0}} trend-hot{{end}}">{{.Passwordless}}</td>
             <td class="mono{{if gt .Weak 0}} trend-hot{{end}}">{{.Weak}}</td>
             <td class="mono">{{.Errors}}</td>

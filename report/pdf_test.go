@@ -360,12 +360,12 @@ func TestWritePDFShowsWeakPassword(t *testing.T) {
 	stats := coverStats(Summarize(results))
 	var weak *statCell
 	for i := range stats {
-		if stats[i].label == "Weak creds" {
+		if stats[i].label == "WEAK\nCREDS" {
 			weak = &stats[i]
 		}
 	}
 	if weak == nil {
-		t.Fatalf("coverStats has no %q counter", "Weak creds")
+		t.Fatalf("coverStats has no %q counter", "WEAK\nCREDS")
 	}
 	if weak.value != "1" {
 		t.Fatalf("Weak creds = %q, want 1", weak.value)
@@ -563,12 +563,12 @@ func TestWritePDFWithTransportSecurity(t *testing.T) {
 	stats := coverStats(Summarize(results))
 	var tls *statCell
 	for i := range stats {
-		if stats[i].label == "TLS services" {
+		if stats[i].label == "TLS\nSERVICES" {
 			tls = &stats[i]
 		}
 	}
 	if tls == nil {
-		t.Fatal(`coverStats has no "TLS services" counter`)
+		t.Fatal("coverStats has no TLS services counter")
 	}
 	if tls.value != "1" {
 		t.Fatalf("TLS services = %q, want 1", tls.value)
@@ -859,12 +859,12 @@ func TestWritePDFCoverStatsIncludesSelfSigned(t *testing.T) {
 	stats := coverStats(Summarize(results))
 	var selfSigned *statCell
 	for i := range stats {
-		if stats[i].label == "Self-signed certs" {
+		if stats[i].label == "SELF\nSIGNED" {
 			selfSigned = &stats[i]
 		}
 	}
 	if selfSigned == nil {
-		t.Fatal(`coverStats has no "Self-signed certs" counter`)
+		t.Fatal("coverStats has no self-signed counter")
 	}
 	if selfSigned.value != "1" {
 		t.Fatalf("Self-signed certs = %q, want 1", selfSigned.value)

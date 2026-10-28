@@ -122,14 +122,11 @@ func WritePDFWithOptions(path string, results []Result, opts Options) error {
 	return nil
 }
 
-// statCell is one column of the cover stat strip. labelSize overrides the
-// default micro-label size; it is used for the longest label, whose text would
-// otherwise collide with the next column in the nine-column strip.
+// statCell is one column of the cover stat strip.
 type statCell struct {
-	label     string
-	value     string
-	color     pdfColor
-	labelSize float64
+	label string
+	value string
+	color pdfColor
 }
 
 // coverStats builds the stat strip cells. Warning and danger colours are
@@ -149,16 +146,19 @@ func coverStats(sum Summary) []statCell {
 		tlsColor = colorAccent
 	}
 
+	// Labels carry explicit line breaks: at nine columns a cell is only ~20mm
+	// wide, so the automatic wrap split words in half ("SELF-SIGNE / D").
+	// Keeping every line to at most eight characters fits the strip cleanly.
 	return []statCell{
-		{"Targets", itoa(sum.Targets), colorInk, 0},
-		{"Open ports", itoa(sum.Open), colorInk, 0},
-		{"RFB services", itoa(sum.RFB), colorInk, 0},
-		{"TLS services", itoa(sum.TLS), tlsColor, 0},
-		{"Self-signed certs", itoa(sum.SelfSignedCerts), colorInk, 5.0},
-		{"Passwordless", itoa(sum.Passwordless), colorWarning, 0},
-		{"Weak creds", itoa(sum.WeakCredentials), weakColor, 0},
-		{"Screenshots", itoa(sum.Screenshots), colorAccent, 0},
-		{"Errors", itoa(sum.Errors), errorColor, 0},
+		{"TARGETS", itoa(sum.Targets), colorInk},
+		{"OPEN\nPORTS", itoa(sum.Open), colorInk},
+		{"RFB\nSERVICES", itoa(sum.RFB), colorInk},
+		{"TLS\nSERVICES", itoa(sum.TLS), tlsColor},
+		{"SELF\nSIGNED", itoa(sum.SelfSignedCerts), colorInk},
+		{"NO\nAUTH", itoa(sum.Passwordless), colorWarning},
+		{"WEAK\nCREDS", itoa(sum.WeakCredentials), weakColor},
+		{"SHOTS", itoa(sum.Screenshots), colorAccent},
+		{"ERRORS", itoa(sum.Errors), errorColor},
 	}
 }
 
@@ -237,18 +237,18 @@ func writeCover(pdf *pdfType, results []Result, sum Summary) {
 		if i > 0 {
 			pad = 4
 		}
-		labelSize := 6.6
-		if stat.labelSize > 0 {
-			labelSize = stat.labelSize
-		}
-		pdf.SetFont(fontFamily, "", labelSize)
+		// Micro-labels wrap at word boundaries instead of tracking out of the
+		// column: at 9 columns each cell is only ~20mm wide, so letter-spaced
+		// labels collided with their neighbours. The size is small enough that
+		// the longest single word ("Passwordless") still fits the cell.
+		pdf.SetFont(fontFamily, "", 5.4)
 		colorMuted.text(pdf)
-		pdf.SetXY(x+pad, stripY+6)
-		pdf.CellFormat(statW-pad, 3.5, strings.ToUpper(sanitizePDFText(stat.label)), "", 0, "L", false, 0, "")
+		pdf.SetXY(x+pad, stripY+5)
+		pdf.MultiCell(statW-pad-1.5, 2.9, strings.ToUpper(sanitizePDFText(stat.label)), "", "L", false)
 
 		pdf.SetFont(fontFamily, "B", 16)
 		stat.color.text(pdf)
-		pdf.SetXY(x+pad, stripY+11)
+		pdf.SetXY(x+pad, stripY+12.5)
 		pdf.CellFormat(statW-pad, 8, stat.value, "", 0, "L", false, 0, "")
 	}
 

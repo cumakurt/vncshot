@@ -834,9 +834,11 @@ records only the `tls` flag and the `security_types` list, because it has a
 fixed flat schema.
 
 When the HTML report is written into a timestamped run folder, it also carries
-a small "Recent runs" trend table: the run name, generation timestamp,
-passwordless, weak-password and error counts of up to the 10 sibling runs
-written before it, newest first. The section is omitted entirely when the
+a small "Recent runs" trend table: the run name, generation timestamp, an
+inline SVG sparkline (red = passwordless, amber = weak passwords, scaled
+against the busiest run in the set), and the numeric passwordless,
+weak-password and error counts of up to the 10 sibling runs written before it,
+newest first. The section is omitted entirely when the
 output path is not inside a run folder or no sibling runs have a readable
 report, so a single-run or offline report is unaffected.
 

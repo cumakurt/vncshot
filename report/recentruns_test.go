@@ -134,3 +134,40 @@ func TestWriteHTMLRecentRunsSkipsUnreadableReports(t *testing.T) {
 	mustNotContain(t, html, ">20261021-090000<", "the run with a damaged report")
 	mustContain(t, html, ">20261020-090000<", "the readable sibling is still listed")
 }
+
+func TestApplyTrendBarsScalesAgainstBusiestRun(t *testing.T) {
+	rows := []recentRunData{
+		{Passwordless: 4, Weak: 2},
+		{Passwordless: 1, Weak: 0},
+		{Passwordless: 0, Weak: 0},
+	}
+	applyTrendBars(rows)
+
+	busiest := 6 // 4 passwordless + 2 weak
+	for i, row := range rows {
+		wantPass := row.Passwordless * trendSparkWidth / busiest
+		wantWeak := row.Weak * trendSparkWidth / busiest
+		if row.PassBar != wantPass || row.WeakBar != wantWeak {
+			t.Errorf("row %d bars = (%d, %d), want (%d, %d)",
+				i, row.PassBar, row.WeakBar, wantPass, wantWeak)
+		}
+		if row.PassBar > trendSparkWidth || row.WeakBar > trendSparkWidth {
+			t.Errorf("row %d bar exceeds the sparkline width", i)
+		}
+	}
+	if rows[0].PassBar+rows[0].WeakBar != trendSparkWidth {
+		t.Errorf("busiest run should fill the track, got %d", rows[0].PassBar+rows[0].WeakBar)
+	}
+}
+
+func TestApplyTrendBarsWithoutFindings(t *testing.T) {
+	rows := []recentRunData{{Passwordless: 0, Weak: 0}, {Passwordless: 0, Weak: 0}}
+	applyTrendBars(rows)
+
+	for i, row := range rows {
+		if row.PassBar != 0 || row.WeakBar != 0 {
+			t.Errorf("row %d should have no bar without findings, got (%d, %d)",
+				i, row.PassBar, row.WeakBar)
+		}
+	}
+}

@@ -843,8 +843,10 @@ ve düz bir şemaya sahip olduğu için yalnızca `tls` bayrağını ve
 
 HTML raporu zaman damgalı bir tarama klasörüne yazıldığında küçük bir
 "Recent runs" trend tablosu da taşır: kendisinden önce yazılmış en fazla 10
-kardeş taramanın adı, üretim zaman damgası, parolasız, zayıf parola ve hata
-sayıları, en yeni önce. Çıktı yolu bir tarama klasörünün içinde değilse veya
+kardeş taramanın adı, üretim zaman damgası, satır içi SVG sparkline'ı
+(kırmızı = parolasız, amber = zayıf parola; kümedeki en yoğun taramaya göre
+ölçeklenir) ve sayısal parolasız, zayıf parola ve hata sayıları, en yeni
+önce. Çıktı yolu bir tarama klasörünün içinde değilse veya
 okunabilir raporu olan kardeş tarama yoksa bölüm tamamen atılır; böylece tek
 taramalı veya çevrimdışı bir rapor etkilenmez.
 
