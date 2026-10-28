@@ -42,8 +42,11 @@ previous-run history, all on loopback.*
 - [Output](#output)
   - [JSON schema](#json-schema)
   - [CSV format](#csv-format)
+  - [SARIF output](#sarif-output)
   - [Manifest](#manifest)
+  - [Manifest signing and verification](#manifest-signing-and-verification)
   - [Baseline comparison](#baseline-comparison)
+  - [Failing on findings (-fail-on)](#failing-on-findings--fail-on)
   - [Webhook notifications](#webhook-notifications)
   - [Acceptance and exclusion lists](#acceptance-and-exclusion-lists)
   - [Certificate expiry tracking](#certificate-expiry-tracking)
@@ -83,6 +86,8 @@ previous-run history, all on loopback.*
 - JSON + self-contained HTML report (base64 thumbnails, filter, modal)
 - In-process PDF report export (no external tools required)
 - CSV export with a stable column order for spreadsheets and pipelines
+- SARIF 2.1.0 output (`-sarif`) for CI/SAST dashboards, with stable rule ids
+  and deterministic ordering
 - Report redaction (`-redact`) and preview-only HTML (`-thumb-only`) for
   sharing evidence without the secrets or the full-resolution frames
 - Run retention (`-keep`, `-prune`) with guarded deletion and a dry-run mode
@@ -90,6 +95,11 @@ previous-run history, all on loopback.*
   `security_types` and a `tls` flag
 - Baseline comparison against a previous run (new, resolved and changed findings)
 - SHA-256 manifest of every run artifact (`-manifest`) for evidence integrity
+- Manifest signing (`-sign-key`) and offline verification
+  (`-verify-manifest`) with ed25519, so copied evidence folders stay
+  provable on any machine
+- CI exit-code control (`-fail-on`): fail the run with code 3 when any
+  requested finding category is present
 - Optional notifications on completion: webhook, Slack, SMTP e-mail and
   syslog CEF events (`-webhook`, `-slack-url`, `-mail-server`, `-syslog`)
 - Acceptance list for known findings (`-accept`) and exclusion list for
@@ -256,8 +266,11 @@ generated report files.*
 | `-html` | `<run-dir>/vncshot_report.html` | HTML report path |
 | `-pdf` | `<run-dir>/vncshot_report.pdf` | PDF report path (generated in-process) |
 | `-csv` | `<run-dir>/vncshot_report.csv` | CSV report path |
+| `-sarif` | | SARIF 2.1.0 report path (default `<run-dir>/vncshot_report.sarif` when set) |
 | `-baseline` | | Previous run directory; findings are compared with it |
 | `-manifest` | `false` | Write `<run-dir>/manifest.json` with SHA-256 digests of every artifact |
+| `-sign-key` | | ed25519 PKCS#8 private key that signs the manifest; generated with mode `0600` when missing (requires `-manifest`) |
+| `-fail-on` | | Exit with code 3 when any of these finding categories match: `new`, `resolved`, `changed`, `passwordless`, `weak`, `self-signed`, `cert-expiring` (comma-separated) |
 | `-redact` | `false` | Replace captured passwords with `REDACTED` in JSON/HTML/PDF |
 | `-thumb-only` | `false` | Embed only the preview image, not the full-resolution capture, in HTML |
 | `-keep` | `0` | Keep only the newest n run folders after a scan (`0` = keep all) |
@@ -290,6 +303,8 @@ generated report files.*
 | `-metrics-addr` | | Serve Prometheus text metrics on this address (use loopback) |
 | `-interval` | `0s` | Rescan forever with this pause between rounds, diffing against the previous round |
 | `-selfcheck` | `false` | Verify the environment (root, report root, TLS roots, browser, clock, loopback, disk) and exit |
+| `-verify-manifest` | | Verify the signed manifest and every artifact of this run directory, then exit (no root needed) |
+| `-pub-key` | | Public key for `-verify-manifest` (default `<sign-key>.pub`) |
 
 The `-gui-*` flags only apply together with `-gui`.
 
@@ -890,6 +905,33 @@ RFC 3339 in UTC. Rows are sorted by IP and port, exactly like the other
 artifacts. The file is written `0600` because it records which endpoints accept
 a weak credential.
 
+### SARIF output
+
+`-sarif <path>` writes a [SARIF](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+2.1.0 JSON log, so findings can be ingested by CI dashboards, GitHub code
+scanning integrations and SAST tooling. Relative paths are created inside the
+run directory; the default file name is `vncshot_report.sarif`. The file is
+written before the manifest, so `-manifest` covers it.
+
+Findings are mapped to stable rule ids:
+
+| Rule id | Level | Condition |
+|---------|-------|-----------|
+| `passwordless-vnc` | `error` | The endpoint accepts connections without authentication (security type `None`) |
+| `weak-credentials` | `error` | The endpoint accepts a weak or word-list password |
+| `tls-self-signed` | `warning` | The established TLS session presents a self-signed certificate |
+| `certificate-expiring` | `warning` | The peer certificate expires within the `-cert-warn` window |
+
+One SARIF result is emitted per finding, so an endpoint that is both
+self-signed and expiring produces two results. Messages name the endpoint
+(e.g. `VNC endpoint 10.0.0.5:5900 accepts connections without authentication
+(security type None)`) but never the captured password itself. The
+`runs[].tool.driver` block records the tool name `vncshot`, the build version
+and the project URL; `rules[]` describes every referenced rule. Results are
+sorted by host and port, so repeated scans produce byte-stable logs for a
+given result set. A clean scan produces valid SARIF with an empty `results`
+array.
+
 ### Manifest
 
 `-manifest` writes `<run-dir>/manifest.json` after every other artifact, so
@@ -919,6 +961,40 @@ each size and digest against this file.
 A verification helper exists in the code (`app.VerifyManifest`) for tooling
 that re-hashes a run folder and reports the first missing, extra or modified
 file; it is not exposed as a CLI flag.
+
+### Manifest signing and verification
+
+`-sign-key <path>` signs the manifest with ed25519. The key must be a PEM
+PKCS#8 private key; when the file does not exist, a key pair is generated on
+the spot: the private key is written to `<path>` with mode `0600` and the
+public key to `<path>.pub`, and a notice is printed. Signing happens after
+the manifest is finalized, so `<run-dir>/manifest.sig` always covers the
+exact `manifest.json` bytes as written — a base64-encoded ed25519 signature.
+
+`-sign-key` requires `-manifest`, because there is otherwise no manifest to
+sign. The signature file is written `0600` like every other artifact.
+
+`-verify-manifest <run-dir>` is an offline command (like `-prune`, it exits
+without scanning and does not require root): it verifies the ed25519
+signature over `manifest.json` and then re-hashes every artifact listed in
+it. The public key comes from `-pub-key <path>`, defaulting to
+`<sign-key>.pub` when `-sign-key` is given. It reads nothing but the run
+directory and the key file, so an assessor can verify a copied evidence
+folder on any machine, long after the scan environment is gone. Exit is `0`
+on success and `1` on any failure, with the first failing artifact named on
+stderr:
+
+```bash
+sudo vncshot -target 192.168.1.0/24 -manifest -sign-key /root/vncshot-signing.pem
+# hand the public key to the reviewer, who needs no root on this host:
+sudo cat /root/vncshot-signing.pem.pub > vncshot-signing.pem.pub
+vncshot -verify-manifest /usr/local/vncshot/20261028-120000 -pub-key vncshot-signing.pem.pub
+# -> manifest signature and artifacts verified: /usr/local/vncshot/20261028-120000
+```
+
+Keep the private key on the scanning host and hand the `.pub` file to
+reviewers: with it, anyone can prove that neither the manifest nor a single
+artifact byte was altered after the scan.
 
 ### Baseline comparison
 
@@ -971,6 +1047,44 @@ display labels as the reports: `no auth`, `weak`, `rfb`, `open` and `closed`.
   ]
 }
 ```
+
+### Failing on findings (-fail-on)
+
+Findings are data, not tool failures: a completed scan always exits `0` so its
+reports and notifications are produced first. Pipelines that need a hard
+signal can add one with `-fail-on`, a comma-separated list of finding
+categories that makes the run exit with code `3` after every report has been
+written:
+
+```bash
+sudo vncshot -target 192.168.1.0/24 -fail-on passwordless,new -yes
+```
+
+Accepted categories (case-insensitive, duplicates are ignored):
+
+| Category | Matches when |
+|----------|--------------|
+| `passwordless` | Any result with `passwordless: true` |
+| `weak` | Any result with a weak (built-in list or `-word-list`) password |
+| `self-signed` | Any TLS result whose peer certificate is self-signed |
+| `cert-expiring` | Any certificate expiring within the `-cert-warn` window |
+| `new` | The baseline comparison reports new findings (requires `-baseline`) |
+| `resolved` | The baseline comparison reports resolved findings (requires `-baseline`) |
+| `changed` | The baseline comparison reports changed findings (requires `-baseline`) |
+
+`new`, `resolved` and `changed` compare two runs, so they require `-baseline`
+(or `-interval`, which diffs against the previous round automatically);
+without either, the flag combination is rejected at parse time before any
+packet is sent. When one or more categories match, a summary line such as
+
+```
+fail-on matched: passwordless (2 passwordless host(s)), new (3 new finding(s))
+```
+
+is printed on stderr and the process exits `3`. With `-interval` the check is
+evaluated per round: the first matching round stops the loop and exits `3`.
+Note that `-interval` cannot be combined with `-baseline`, so its baseline
+categories rely on the automatic per-round diff.
 
 ### Webhook notifications
 
@@ -1199,11 +1313,12 @@ new deployments before the first scan.
 | `0` | Scan completed, help printed, or `-version` printed |
 | `1` | Configuration, authorization, target, I/O or report error |
 | `2` | Unknown command-line flag (flag package usage error) |
+| `3` | `-fail-on` matched at least one requested finding category; all reports were written first |
 | `130` | Interrupted with Ctrl+C or SIGTERM; partial results were written |
 
-A completed scan that found exposed hosts still exits `0`: findings are data,
-not a tool failure. Use the JSON summary or the webhook if a pipeline needs to
-fail on findings.
+A completed scan that found exposed hosts still exits `0` unless `-fail-on`
+was requested: findings are data, not a tool failure. Use `-fail-on`, the
+JSON summary or the webhook if a pipeline needs to fail on findings.
 
 ## Performance tuning
 
@@ -1294,13 +1409,13 @@ smaller runs.
 
 ```
 main.go        CLI flags, root check, GUI bootstrap
-app/           scan session, artifact layout, baseline diff, manifest, retention, webhook
+app/           scan session, artifact layout, baseline diff, manifest, signing, fail-on, retention, webhook
 config/        flag defaults from a config file and VNCSHOT_* environment variables
 gui/           embedded web UI (index.html + HTTP server)
 scanner/       target expansion, worker pool, rate limiting, retry and per-host limits
 vnc/           RFB 3.3/3.7/3.8 client, None-auth and weak-password auth, TLS/VeNCrypt, raw capture
 screenshot/    PNG persistence
-report/        Result model, JSON/HTML/PDF/CSV exporters, certificate evidence, embedded PDF font
+report/        Result model, JSON/HTML/PDF/CSV/SARIF exporters, certificate evidence, embedded PDF font
 ```
 
 ## Dependencies

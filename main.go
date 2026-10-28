@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,6 +37,7 @@ import (
 	"vncshot/app"
 	configfile "vncshot/config"
 	"vncshot/gui"
+	"vncshot/report"
 	"vncshot/scanner"
 )
 
@@ -55,59 +57,66 @@ var (
 )
 
 type config struct {
-	target        string
-	file          string
-	ports         string
-	timeout       time.Duration
-	vncTimeout    time.Duration
-	workers       int
-	rate          int
-	retries       int
-	sourceAddr    string
-	outDir        string
-	outDirSet     bool
-	output        string
-	html          string
-	pdf           string
-	csv           string
-	baseline      string
-	resume        string
-	manifest      bool
-	accept        string
-	exclude       string
-	certWarnDays  int
-	proxyURL      string
-	slackURL      string
-	mailServer    string
-	mailFrom      string
-	mailTo        string
-	mailNoTLS     bool
-	mailUser      string
-	syslogAddr    string
-	metricsAddr   string
-	interval      time.Duration
-	selfcheck     bool
-	webhook       string
-	noPDF         bool
-	screenshotDir string
-	shared        bool
-	wordList      string
-	noDefaultPw   bool
-	noPasswordChk bool
-	assumeYes     bool
-	gui           bool
-	host          string
-	port          int
-	noBrowser     bool
-	configPath    string
-	showVersion   bool
-	redact        bool
-	thumbOnly     bool
-	keepRuns      int
-	prune         int
-	pruneSet      bool
-	pruneDryRun   bool
-	dryRun        bool
+	target         string
+	file           string
+	ports          string
+	timeout        time.Duration
+	vncTimeout     time.Duration
+	workers        int
+	rate           int
+	retries        int
+	sourceAddr     string
+	outDir         string
+	outDirSet      bool
+	output         string
+	html           string
+	pdf            string
+	csv            string
+	sarif          string
+	baseline       string
+	resume         string
+	manifest       bool
+	signKey        string
+	verifyManifest string
+	pubKey         string
+	failOn         string
+	// failOnCategories is the parsed and validated -fail-on value.
+	failOnCategories []string
+	accept           string
+	exclude          string
+	certWarnDays     int
+	proxyURL         string
+	slackURL         string
+	mailServer       string
+	mailFrom         string
+	mailTo           string
+	mailNoTLS        bool
+	mailUser         string
+	syslogAddr       string
+	metricsAddr      string
+	interval         time.Duration
+	selfcheck        bool
+	webhook          string
+	noPDF            bool
+	screenshotDir    string
+	shared           bool
+	wordList         string
+	noDefaultPw      bool
+	noPasswordChk    bool
+	assumeYes        bool
+	gui              bool
+	host             string
+	port             int
+	noBrowser        bool
+	configPath       string
+	showVersion      bool
+	redact           bool
+	thumbOnly        bool
+	keepRuns         int
+	prune            int
+	pruneSet         bool
+	pruneDryRun      bool
+	dryRun           bool
 }
 
 func (c config) appConfig() app.Config {
@@ -132,6 +141,7 @@ func (c config) appConfig() app.Config {
 		HTML:               c.html,
 		PDF:                c.pdf,
 		CSV:                c.csv,
+		SARIF:              c.sarif,
 		ScreenshotDir:      c.screenshotDir,
 		Baseline:           c.baseline,
 		ResumeDir:          c.resume,
@@ -181,9 +191,11 @@ func splitAddresses(value string) []string {
 }
 
 func main() {
-	// The app package builds outbound requests (webhook User-Agent), so it
-	// needs the version that install.sh injected at build time.
+	// The app package builds outbound requests (webhook User-Agent) and the
+	// SARIF driver descriptor, so both need the version that install.sh
+	// injected at build time.
 	app.Version = version
+	report.SARIFDriverVersion = version
 
 	// Running the tool without arguments is a request for usage, not a scan.
 	if len(os.Args) == 1 {
@@ -212,6 +224,17 @@ func main() {
 		return
 	}
 
+	// -verify-manifest is an offline evidence check, not a scan: it must
+	// work on any machine without root and without the scan-time
+	// environment, so it runs before the privilege check like -selfcheck.
+	if cfg.verifyManifest != "" {
+		if err := runVerifyManifest(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Raw RFB probing and the shared report tree under /usr/local/vncshot
 	// require root; fail fast instead of producing a half-working scan.
 	if err := requireRoot(); err != nil {
@@ -231,9 +254,27 @@ func main() {
 		return
 	}
 
+	// The signing key is loaded (or generated) once, before any scan, so a
+	// broken key file fails the invocation before any probe starts and the
+	// GUI and CLI rounds share the same key.
+	var signKey ed25519.PrivateKey
+	if cfg.signKey != "" {
+		key, generated, err := app.LoadOrCreateSignKey(cfg.signKey)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if generated {
+			fmt.Fprintf(os.Stderr, "sign-key: generated ed25519 key pair %s and %s\n", cfg.signKey, cfg.signKey+".pub")
+		}
+		signKey = key
+	}
+
 	if cfg.gui {
+		scanCfg := cfg.appConfig()
+		scanCfg.SignKey = signKey
 		err = gui.Run(gui.Config{
-			Scan:        cfg.appConfig(),
+			Scan:        scanCfg,
 			Version:     version,
 			Host:        cfg.host,
 			Port:        cfg.port,
@@ -241,7 +282,7 @@ func main() {
 			Reason:      "gui",
 		})
 	} else {
-		err = runCLI(cfg)
+		err = runCLI(cfg, signKey)
 	}
 
 	if err != nil {
@@ -272,9 +313,13 @@ func parseFlags() (config, error) {
 	flag.StringVar(&cfg.html, "html", "", "HTML report path (default <run-dir>/"+appName+"_report.html)")
 	flag.StringVar(&cfg.pdf, "pdf", "", "PDF report path (default <run-dir>/"+appName+"_report.pdf)")
 	flag.StringVar(&cfg.csv, "csv", "", "CSV report path (default <run-dir>/"+appName+"_report.csv)")
+	flag.StringVar(&cfg.sarif, "sarif", "", "SARIF 2.1.0 report path (default <run-dir>/"+appName+"_report.sarif when set)")
 	flag.StringVar(&cfg.baseline, "baseline", "", "previous run directory to compare against")
 	flag.StringVar(&cfg.resume, "resume", "", "continue a previously interrupted run; completed targets are reused")
 	flag.BoolVar(&cfg.manifest, "manifest", false, "write a SHA-256 checksum manifest for the run artifacts")
+	flag.StringVar(&cfg.signKey, "sign-key", "", "ed25519 PKCS#8 private key that signs the manifest; generated with mode 0600 when missing (requires -manifest)")
+	flag.StringVar(&cfg.verifyManifest, "verify-manifest", "", "verify the signed manifest and every artifact of this run directory, then exit (no root needed)")
+	flag.StringVar(&cfg.pubKey, "pub-key", "", "public key for -verify-manifest (default <sign-key>.pub)")
 	flag.BoolVar(&cfg.redact, "redact", false, "replace captured passwords with a placeholder (safe to share)")
 	flag.BoolVar(&cfg.thumbOnly, "thumb-only", false, "embed only preview images in the HTML report (smaller file)")
 	flag.IntVar(&cfg.keepRuns, "keep", 0, "keep only the newest N run folders after a scan (0 = keep all)")
@@ -291,6 +336,7 @@ func parseFlags() (config, error) {
 	flag.StringVar(&cfg.syslogAddr, "syslog", "", "send a CEF message to this syslog receiver (udp://host:port or tcp://host:port)")
 	flag.StringVar(&cfg.accept, "accept", "", "file listing approved endpoints (ip:port [reason]) whose findings are not alarmed about")
 	flag.StringVar(&cfg.exclude, "exclude", "", "file with IPs, CIDR ranges or ip:port entries that are never contacted")
+	flag.StringVar(&cfg.failOn, "fail-on", "", "exit with code 3 when any of these finding categories match: new, resolved, changed, passwordless, weak, self-signed, cert-expiring (comma-separated)")
 	flag.IntVar(&cfg.certWarnDays, "cert-warn", 30, "days ahead of expiry to flag TLS certificates (0 disables)")
 	flag.StringVar(&cfg.proxyURL, "proxy", "", "outbound proxy for all probes, socks5://[user:pass@]host[:port] (socks5h resolves through the proxy)")
 	flag.StringVar(&cfg.metricsAddr, "metrics-addr", "", "serve scan counters in Prometheus text exposition on this address (use 127.0.0.1:PORT)")
@@ -365,7 +411,56 @@ func parseFlags() (config, error) {
 		return cfg, err
 	}
 
+	// -fail-on drives the process exit code, so it only applies to the CLI
+	// loop; the GUI owns its own lifecycle.
+	if cfg.failOn != "" {
+		categories, err := resolveFailOn(cfg.failOn, cfg.baseline, cfg.interval)
+		if err != nil {
+			return cfg, err
+		}
+		if cfg.gui {
+			return cfg, fmt.Errorf("fail-on cannot be combined with -gui: the GUI does not control the process exit code")
+		}
+		cfg.failOnCategories = categories
+	}
+	// A signing key that only feeds -verify-manifest (to derive the public
+	// key path) never signs anything, so -manifest is only required when a
+	// scan will actually run.
+	if cfg.signKey != "" && !cfg.manifest && cfg.verifyManifest == "" {
+		return cfg, fmt.Errorf("sign-key requires -manifest: there is no manifest to sign")
+	}
+	if cfg.pubKey != "" && cfg.verifyManifest == "" {
+		return cfg, fmt.Errorf("pub-key is only used together with -verify-manifest")
+	}
+	if cfg.verifyManifest != "" && cfg.pubKey == "" && cfg.signKey == "" {
+		return cfg, fmt.Errorf("verify-manifest requires -pub-key or -sign-key to locate the public key")
+	}
+
 	return cfg, nil
+}
+
+// resolveFailOn parses and validates the -fail-on value. The baseline
+// categories compare two runs, so they need either an explicit -baseline or
+// the automatic per-round baseline of -interval.
+func resolveFailOn(failOn, baseline string, interval time.Duration) ([]string, error) {
+	categories, err := app.ParseFailOnCategories(failOn)
+	if err != nil {
+		return nil, err
+	}
+	var baselineOnly []string
+	for _, category := range categories {
+		if app.IsBaselineFailOnCategory(category) {
+			baselineOnly = append(baselineOnly, category)
+		}
+	}
+	if len(baselineOnly) == 0 {
+		return categories, nil
+	}
+	if baseline == "" && interval <= 0 {
+		return nil, fmt.Errorf("fail-on %s requires -baseline (or -interval, which diffs against the previous round)",
+			strings.Join(baselineOnly, ","))
+	}
+	return categories, nil
 }
 
 // validateNotificationFlags rejects misconfigured notification endpoints at
@@ -449,7 +544,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "https://www.linkedin.com/in/cuma-kurt-34414917/\n")
 }
 
-func runCLI(cfg config) error {
+func runCLI(cfg config, signKey ed25519.PrivateKey) error {
 	// A dry run only expands the scope locally, so it neither needs the
 	// authorization prompt nor touches the network.
 	if cfg.dryRun {
@@ -491,7 +586,7 @@ func runCLI(cfg config) error {
 			fmt.Fprintf(os.Stderr, "\n=== round %d ===\n", round+1)
 		}
 		roundStart := time.Now()
-		out, err := runRound(ctx, cfg, round, reportRoot)
+		out, err := runRound(ctx, cfg, signKey, round, reportRoot)
 		if err != nil {
 			return err
 		}
@@ -503,6 +598,16 @@ func runCLI(cfg config) error {
 		}
 		if metrics != nil {
 			metrics.Publish(out)
+		}
+		// The exit-code decision is the last step of a completed round: the
+		// reports are already on disk, because findings are data, not a
+		// tool failure. With -interval a match stops the loop.
+		if cfg.failOn != "" {
+			if matches := app.EvaluateFailOn(out.Results, out.Diff, cfg.failOnCategories,
+				time.Now().UTC(), certWarnWindow(cfg.certWarnDays)); len(matches) > 0 {
+				fmt.Fprintf(os.Stderr, "fail-on matched: %s\n", failOnSummary(matches))
+				os.Exit(3)
+			}
 		}
 		if cfg.interval <= 0 {
 			return nil
@@ -530,10 +635,12 @@ func runCLI(cfg config) error {
 
 // runRound prepares and scans once. From the second round of an -interval
 // invocation the previous round in the same report root is the diff baseline,
-// which is what turns a repeated scan into a change feed.
-func runRound(ctx context.Context, cfg config, round int, reportRoot string) (app.Outcome, error) {
+// which is what turns a repeated scan into a change feed. The signKey may be
+// nil when -sign-key was not configured.
+func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round int, reportRoot string) (app.Outcome, error) {
 	scanCfg := cfg.appConfig()
 	scanCfg.ShowProgress = true
+	scanCfg.SignKey = signKey
 	if round > 0 && cfg.interval > 0 {
 		if previous, ok, err := app.PreviousRun(reportRoot); err != nil {
 			return app.Outcome{}, fmt.Errorf("choose baseline for round %d: %w", round+1, err)
@@ -587,8 +694,14 @@ func runRound(ctx context.Context, cfg config, round int, reportRoot string) (ap
 	if out.CSV != "" {
 		fmt.Fprintf(os.Stderr, "csv:   %s\n", out.CSV)
 	}
+	if out.SARIF != "" {
+		fmt.Fprintf(os.Stderr, "sarif: %s\n", out.SARIF)
+	}
 	if out.Manifest != "" {
 		fmt.Fprintf(os.Stderr, "manifest: %s\n", out.Manifest)
+	}
+	if out.Signature != "" {
+		fmt.Fprintf(os.Stderr, "signature: %s\n", out.Signature)
 	}
 	if len(out.RemovedRuns) > 0 {
 		fmt.Fprintf(os.Stderr, "retention:   removed %d old run(s)\n", len(out.RemovedRuns))
@@ -622,6 +735,42 @@ func rateText(rate int) string {
 		return "unlimited"
 	}
 	return fmt.Sprintf("%d/s", rate)
+}
+
+// certWarnWindow converts the -cert-warn day count into the duration the
+// expiry checks use. Zero disables the window, matching the flag semantics.
+func certWarnWindow(days int) time.Duration {
+	return time.Duration(days) * 24 * time.Hour
+}
+
+// failOnSummary renders the matched categories for the exit-3 line, for
+// example "passwordless (1 passwordless host(s)), new (3 new finding(s))".
+func failOnSummary(matches []app.FailOnMatch) string {
+	parts := make([]string, 0, len(matches))
+	for _, match := range matches {
+		parts = append(parts, fmt.Sprintf("%s (%s)", match.Category, match.Detail()))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// runVerifyManifest checks the detached manifest signature and then every
+// artifact digest of a run directory. It is deliberately offline: only the
+// run directory and the public key are read, so an assessor can verify a
+// copied evidence folder on any machine.
+func runVerifyManifest(cfg config) error {
+	publicPath := cfg.pubKey
+	if publicPath == "" {
+		publicPath = cfg.signKey + ".pub"
+	}
+	publicKey, err := app.LoadSignPublicKey(publicPath)
+	if err != nil {
+		return err
+	}
+	if err := app.VerifySignedManifest(cfg.verifyManifest, publicKey); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "manifest signature and artifacts verified: %s\n", cfg.verifyManifest)
+	return nil
 }
 
 // requireRoot enforces privileged execution. Raw RFB probing and the shared
