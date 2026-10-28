@@ -281,3 +281,33 @@ func TestLoadBaselineErrors(t *testing.T) {
 		}
 	})
 }
+
+// Accepted findings are operator-approved: they stay in the result set but
+// must not alarm, so the diff never reports them as new. A peer that is not
+// on the acceptance list is still reported.
+func TestCompareSkipsAcceptedNewFindings(t *testing.T) {
+	accepted := reachableResult("10.0.0.1", 5900)
+	accepted.Accepted = true
+	fresh := reachableResult("10.0.0.2", 5900)
+
+	diff := Compare("baseline", nil, []report.Result{accepted, fresh})
+	if len(diff.New) != 1 || diff.New[0].Addr() != "10.0.0.2:5900" {
+		t.Fatalf("new = %+v, want only the non-accepted 10.0.0.2:5900", diff.New)
+	}
+}
+
+// Excluding an accepted finding from New must not disturb the resolved
+// bookkeeping for the rest of the current results.
+func TestCompareAcceptedFindingDoesNotHideResolved(t *testing.T) {
+	accepted := reachableResult("10.0.0.1", 5900)
+	accepted.Accepted = true
+	resolved := reachableResult("10.0.0.2", 5900)
+
+	diff := Compare("baseline", []report.Result{resolved}, []report.Result{accepted})
+	if len(diff.Resolved) != 1 || diff.Resolved[0].Addr() != "10.0.0.2:5900" {
+		t.Errorf("resolved = %+v, want 10.0.0.2:5900", diff.Resolved)
+	}
+	if len(diff.New) != 0 {
+		t.Errorf("new = %+v, want none", diff.New)
+	}
+}

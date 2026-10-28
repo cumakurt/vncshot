@@ -53,6 +53,12 @@ func Compare(baselineRun string, baseline, current []report.Result) *Diff {
 
 		previous, ok := before[key]
 		if !ok {
+			// An accepted finding is operator-approved: it stays in the
+			// result set and summary, but it must not alarm, so it is not
+			// reported as new.
+			if now.Accepted {
+				continue
+			}
 			diff.New = append(diff.New, now)
 			continue
 		}

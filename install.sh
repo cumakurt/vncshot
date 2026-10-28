@@ -12,6 +12,9 @@
 #   ./install.sh --build-only skip dependency installation
 #   ./install.sh --no-install-bin
 #                             build only, do not install into the binary prefix
+#   ./install.sh --uninstall remove the installed binary (reports are kept)
+#   ./install.sh --uninstall --purge-reports
+#                             also delete the report directory and its reports
 #
 set -euo pipefail
 
@@ -64,6 +67,8 @@ kv() {
 ASSUME_YES=0
 BUILD_ONLY=0
 INSTALL_BIN=1
+UNINSTALL=0
+PURGE_REPORTS=0
 
 usage() {
   cat <<EOF
@@ -78,6 +83,9 @@ Options:
   --build-only       skip dependency installation, just compile
   --no-install-bin   build only; do not install binary or report directory
   --install-bin      keep the binary install step (default; accepted for compatibility)
+  --uninstall        remove the installed binary; report directories are kept
+  --purge-reports    together with --uninstall: also delete REPORT_DIR and the
+                     reports inside it (asks for confirmation unless -y is set)
   -h, --help         show this help
 
 Environment:
@@ -94,11 +102,32 @@ while [[ $# -gt 0 ]]; do
     --build-only)    BUILD_ONLY=1 ;;
     --install-bin)   INSTALL_BIN=1 ;;
     --no-install-bin) INSTALL_BIN=0 ;;
+    --uninstall)     UNINSTALL=1 ;;
+    --purge-reports) PURGE_REPORTS=1 ;;
     -h|--help)       usage; exit 0 ;;
     *)               printf 'unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
   esac
   shift
 done
+
+# Flag combinations that make no sense together are rejected before any work.
+if [[ "$PURGE_REPORTS" -eq 1 && "$UNINSTALL" -eq 0 ]]; then
+  printf '%s\n' '--purge-reports requires --uninstall' >&2
+  usage
+  exit 1
+fi
+if [[ "$UNINSTALL" -eq 1 ]]; then
+  if [[ "$BUILD_ONLY" -eq 1 ]]; then
+    printf '%s\n' '--uninstall cannot be combined with --build-only' >&2
+    usage
+    exit 1
+  fi
+  if [[ "$INSTALL_BIN" -eq 0 ]]; then
+    printf '%s\n' '--uninstall cannot be combined with --no-install-bin' >&2
+    usage
+    exit 1
+  fi
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -424,6 +453,96 @@ prepare_report_dir() {
 }
 
 # ---------------------------------------------------------------------------
+# Uninstall
+# ---------------------------------------------------------------------------
+
+# do_uninstall removes the installed binary using the same prefix logic as
+# install_binary. Report directories are kept by default because reports
+# contain scan evidence; --purge-reports opts into deleting them.
+do_uninstall() {
+  local prefix="${INSTALL_PREFIX:-/usr/local/bin}"
+  local target="$prefix/vncshot"
+
+  if [[ ! -e "$target" && ! -L "$target" ]]; then
+    ok "already uninstalled: no binary at $target"
+  elif [[ ! -f "$target" && ! -L "$target" ]]; then
+    fail "refusing to remove $target: not a regular file"
+  else
+    # Try the unprivileged removal first (user-writable prefixes such as
+    # ~/.local/bin need no sudo), then fall back to privilege.
+    if rm -f -- "$target" 2>/dev/null || run_privileged rm -f -- "$target"; then
+      ok "removed $target"
+    else
+      fail "cannot remove $target (no write access; sudo is unavailable or needs a password)"
+    fi
+  fi
+
+  if [[ "$PURGE_REPORTS" -eq 1 ]]; then
+    purge_report_dir || exit 1
+  else
+    ok "reports preserved: $REPORT_DIR kept (reports contain scan evidence)"
+  fi
+}
+
+# purge_report_dir deletes REPORT_DIR itself, including every report inside
+# it. Reports hold scan evidence, so this is opt-in and guarded: dangerous
+# paths are rejected, and deletion needs interactive confirmation unless -y
+# was given (or stdin is not a terminal, in which case the purge is refused).
+purge_report_dir() {
+  local dir="$REPORT_DIR"
+
+  if [[ -z "$dir" ]]; then
+    err "REPORT_DIR is empty; refusing to purge an unknown directory"
+    return 1
+  fi
+
+  # Compare against dangerous targets without trailing slashes so "///" and
+  # "$HOME/" are judged the same as "/" and "$HOME".
+  local norm="$dir"
+  while [[ "$norm" == */ && "$norm" != "/" ]]; do
+    norm="${norm%/}"
+  done
+
+  if [[ -z "$norm" || "$norm" == "/" ]]; then
+    err "refusing to purge REPORT_DIR=$dir: the filesystem root is not a valid target"
+    return 1
+  fi
+  if [[ -n "$HOME" && "$norm" == "$HOME" ]]; then
+    err "refusing to purge REPORT_DIR=$dir: it equals the home directory"
+    return 1
+  fi
+
+  if [[ ! -d "$dir" ]]; then
+    ok "no report directory at $dir; nothing to purge"
+    return 0
+  fi
+
+  warn "this permanently deletes EVERY report under $dir — scan evidence cannot be recovered"
+
+  if [[ "$ASSUME_YES" -ne 1 ]]; then
+    if ! [[ -t 0 ]]; then
+      err "purging reports needs confirmation, but stdin is not a terminal"
+      detail "re-run interactively, or pass -y to confirm non-interactively"
+      return 1
+    fi
+    local answer=""
+    read -r answer || answer=""
+    if [[ "$answer" != "yes" ]]; then
+      warn "confirmation not received; reports kept and nothing deleted"
+      return 1
+    fi
+  fi
+
+  # Try the unprivileged removal first, then fall back to privilege.
+  if rm -rf -- "$dir" 2>/dev/null || run_privileged rm -rf -- "$dir"; then
+    ok "removed report directory $dir and all reports inside it"
+  else
+    err "failed to remove $dir (no write access; sudo is unavailable or needs a password)"
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
@@ -479,6 +598,11 @@ main() {
   if [[ "$(uname -s)" != "Linux" ]]; then
     err "unsupported operating system: $(uname -s) (vncshot supports Linux only)"
     exit 1
+  fi
+
+  if [[ "$UNINSTALL" -eq 1 ]]; then
+    do_uninstall
+    return
   fi
 
   local total=3
