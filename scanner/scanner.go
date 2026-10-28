@@ -252,6 +252,7 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 				res.TLS = vncRes.TLS
 				res.Passwordless = vncRes.Passwordless
 				res.ServerName = vncRes.ServerName
+				res.ProductHint = productHint(vncRes.RFBVersion, vncRes.ServerName)
 				res.ScreenWidth = vncRes.Width
 				res.ScreenHeight = vncRes.Height
 				res.Certificate = certificateOf(vncRes)
@@ -297,6 +298,7 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 	res.TLS = vncRes.TLS
 	res.Certificate = certificateOf(vncRes)
 	res.ServerName = vncRes.ServerName
+	res.ProductHint = productHint(vncRes.RFBVersion, vncRes.ServerName)
 	res.ScreenWidth = vncRes.Width
 	res.ScreenHeight = vncRes.Height
 

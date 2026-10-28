@@ -567,12 +567,15 @@ arızasını araştırır.
 
 ### Hedef genişletme
 
-`-target` tek adres, CIDR bloğu, kapsayıcı son oktet aralığı (`10.0.0.10-20`)
-veya IPv6 adresi/CIDR kabul eder. `-file` aynı sözdizimini satır başına bir
-kayıt olarak okur; `#` yorumları ve boş satırlar yok sayılır ve `-file -`
-listeyi dosya yerine standart girdiden okur. İki kaynak birleştirilebilir ve
-tekrarlar ayıklanır. `-ports` virgülle ayrılmış port listesi ve kapsayıcı
-aralıklar kabul eder.
+`-target` tek adres, CIDR bloğu, kapsayıcı son oktet aralığı (`10.0.0.10-20`),
+IPv6 adresi/CIDR veya IPv6 aralığı kabul eder (`2001:db8::1-2001:db8::a` veya
+kısa biçim `2001:db8::1-::a`; sağ uçtaki eksik baş guruplar sol uçtan
+tamamlanır). Aralık uçları aynı aileden olmalıdır (ikisi de IPv4 veya ikisi de
+IPv6); 4-içinde-6 eşlenmiş adresler (`::ffff:a.b.c.d`) IPv4 sayılır. `-file`
+aynı sözdizimini satır başına bir kayıt olarak okur; `#` yorumları ve boş
+satırlar yok sayılır ve `-file -` listeyi dosya yerine standart girdiden okur.
+İki kaynak birleştirilebilir ve tekrarlar ayıklanır. `-ports` virgülle
+ayrılmış port listesi ve kapsayıcı aralıklar kabul eder.
 
 Genişletme sınırlıdır; böylece bir yazım hatası devasa bir tarama başlatamaz:
 
@@ -581,6 +584,7 @@ Genişletme sınırlıdır; böylece bir yazım hatası devasa bir tarama başla
 | Tarama başına host:port çifti | 1.048.576 (2^20) | Hedefi veya port listesini daraltma mesajıyla reddedilir |
 | Tek CIDR belirtimindeki host sayısı | 65.536 (2^16, yani `/16` veya daha uzun) | Reddedilir; daha büyük blokları birkaç belirtime bölün |
 | Dosya veya stdin akışından okunan host sayısı | 1.048.576 (2^20) | Reddedilir; akış sınırın ötesinde tamponlanmaz |
+| Tek aralık belirtimindeki host sayısı (IPv4 ve IPv6) | 1.048.576 (2^20) | Reddedilir; daha büyük aralıkları birkaç belirtime bölün |
 | Word-list kaydı | 500 | Reddedilir |
 
 Hedefler hiçbir paket gönderilmeden önce genişletilir; geçersiz bir girdi
@@ -845,6 +849,7 @@ delil anlık bir görüntüdür, canlı oturum değildir.*
       },
       "attempts": 1,
       "server_name": "lab-pc",
+      "product_hint": "RealVNC",
       "screen_width": 1920,
       "screen_height": 1080,
       "screenshot": "/usr/local/vncshot/20261026-205304/screenshots/192.0.2.10_5900_20261026-205304.png",
@@ -875,6 +880,7 @@ Sonuç alanları:
 | `certificate` | object | Kurulmuş bir TLS oturumundan eş sertifika kanıtı; aksi halde yok |
 | `attempts` | int | Kullanılan bağlantı denemesi, sıfırsa yok |
 | `server_name` | string | `ServerInit` masaüstü adı, boşsa yok |
+| `product_hint` | string | Yalnızca sunucunun gönüllü olarak verdiği verilerden (masaüstü adı ve RFB banner sürümü) türetilen kaba triyaj ipucu, örn. `RealVNC` veya `legacy RFB 3.3 (older or embedded stack)`. Sezgiseldir, kimliklendirme değildir: yanlış olabilir veya boş kalabilir; asla aktif bir sondalama değildir. Bilinmiyorsa yok |
 | `screen_width`, `screen_height` | int | Çerçeve tamponu geometrisi, bilinmiyorsa yok |
 | `screenshot` | string | PNG'nin mutlak yolu, yakalama yoksa yok |
 | `error` | string | Kapalı portlarda yok; kısmi hatalarda bulunur |

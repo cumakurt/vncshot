@@ -559,11 +559,15 @@ otherwise look for a nonexistent network fault.
 ### Target expansion
 
 `-target` accepts a single address, a CIDR block, an inclusive last-octet
-range (`10.0.0.10-20`) or an IPv6 address/CIDR. `-file` reads the same syntax
-one entry per line, with `#` comments and blank lines ignored, and `-file -`
-reads the list from standard input instead of a file. Both sources can be
-combined and duplicates are removed. `-ports` accepts a comma-separated
-list of ports and inclusive ranges.
+range (`10.0.0.10-20`), an IPv6 address/CIDR or an IPv6 range
+(`2001:db8::1-2001:db8::a`, or the shorthand `2001:db8::1-::a`, where the
+missing leading groups of the right endpoint are filled in from the left
+one). Range endpoints must belong to the same family (both IPv4 or both
+IPv6); 4-in-6 mapped addresses (`::ffff:a.b.c.d`) count as IPv4. `-file`
+reads the same syntax one entry per line, with `#` comments and blank lines
+ignored, and `-file -` reads the list from standard input instead of a file.
+Both sources can be combined and duplicates are removed. `-ports` accepts a
+comma-separated list of ports and inclusive ranges.
 
 Expansion is bounded so a typo cannot start a massive scan:
 
@@ -572,6 +576,7 @@ Expansion is bounded so a typo cannot start a massive scan:
 | Host:port pairs per run | 1,048,576 (2^20) | Rejected with a message to narrow the target or port list |
 | Hosts per single CIDR spec | 65,536 (2^16, i.e. `/16` or longer) | Rejected; split larger blocks into several specs |
 | Hosts read from a file or stdin stream | 1,048,576 (2^20) | Rejected; the stream is not buffered beyond the cap |
+| Hosts per single range spec (IPv4 and IPv6) | 1,048,576 (2^20) | Rejected; split larger ranges into several specs |
 | Word-list entries | 500 | Rejected |
 
 Targets are expanded before any packet is sent, so an invalid input fails
@@ -834,6 +839,7 @@ evidence is a snapshot and never a live session.*
       },
       "attempts": 1,
       "server_name": "lab-pc",
+      "product_hint": "RealVNC",
       "screen_width": 1920,
       "screen_height": 1080,
       "screenshot": "/usr/local/vncshot/20261026-205304/screenshots/192.0.2.10_5900_20261026-205304.png",
@@ -864,6 +870,7 @@ Result fields:
 | `certificate` | object | Peer certificate evidence from an established TLS session, omitted otherwise |
 | `attempts` | int | Connection attempts used, omitted when zero |
 | `server_name` | string | Desktop name from `ServerInit`, omitted when empty |
+| `product_hint` | string | Best-effort triage hint derived only from volunteered data (desktop name and RFB banner version), e.g. `RealVNC` or `legacy RFB 3.3 (older or embedded stack)`. Heuristic, not identification: it may be wrong or empty and is never an active probe. Omitted when unknown |
 | `screen_width`, `screen_height` | int | Framebuffer geometry, omitted when unknown |
 | `screenshot` | string | Absolute path of the PNG, omitted when no capture |
 | `error` | string | Omitted for closed ports; present for partial failures |

@@ -17,6 +17,136 @@ import (
 	"vncshot/vnc"
 )
 
+func TestExpandSpecIPv6Ranges(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    string
+		want    []string
+		wantErr string
+	}{
+		{
+			name: "full form range",
+			spec: "2001:db8::a-2001:db8::c",
+			want: []string{"2001:db8::a", "2001:db8::b", "2001:db8::c"},
+		},
+		{
+			name: "shorthand range fills leading groups from the start",
+			spec: "2001:db8::1-::3",
+			want: []string{"2001:db8::1", "2001:db8::2", "2001:db8::3"},
+		},
+		{
+			name: "shorthand range with several groups",
+			spec: "2001:db8::ff-::101",
+			want: []string{"2001:db8::ff", "2001:db8::100", "2001:db8::101"},
+		},
+		{
+			name: "shorthand end equals start",
+			spec: "2001:db8::7-::7",
+			want: []string{"2001:db8::7"},
+		},
+		{
+			name:    "mixed endpoints ipv4 start ipv6 end",
+			spec:    "192.168.1.1-2001:db8::1",
+			wantErr: "mixes IPv4 and IPv6 endpoints",
+		},
+		{
+			name:    "mixed endpoints ipv6 start ipv4 end",
+			spec:    "2001:db8::1-192.168.1.1",
+			wantErr: "mixes IPv4 and IPv6 endpoints",
+		},
+		{
+			name:    "numeric last octet is ipv4 only",
+			spec:    "2001:db8::1-10",
+			wantErr: `invalid range end "10"`,
+		},
+		{
+			name:    "reversed shorthand range",
+			spec:    "2001:db8::5-::1",
+			wantErr: "is reversed",
+		},
+		{
+			name:    "shorthand with malformed group",
+			spec:    "2001:db8::1-::zz",
+			wantErr: `invalid range end "::zz"`,
+		},
+		{
+			name:    "shorthand with too many groups",
+			spec:    "2001:db8::1-::1:2:3:4:5:6:7:8:9",
+			wantErr: `invalid range end`,
+		},
+		{
+			name: "range over the budget is rejected",
+			// 2^32-1 addresses between ::0 and ::ffff:ffff:ffff:ffff inside
+			// one /64, far beyond the per-range budget.
+			spec:    "2001:db8::-2001:db8:0:0:ffff:ffff:ffff:ffff",
+			wantErr: "expands to more than 1048576 addresses",
+		},
+		{
+			name: "range at the budget boundary expands",
+			spec: "2001:db8::-2001:db8::3ff",
+			want: nil, // checked by count below; the full list is asserted separately
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := expandSpec(tt.spec)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expandSpec(%q) error = nil, want error containing %q", tt.spec, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expandSpec(%q) error = %q, want it to contain %q", tt.spec, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expandSpec(%q) error = %v", tt.spec, err)
+			}
+			if tt.want == nil {
+				if len(got) != 0x400 {
+					t.Fatalf("expandSpec(%q) = %d addresses, want 1024", tt.spec, len(got))
+				}
+				if got[0] != "2001:db8::" || got[len(got)-1] != "2001:db8::3ff" {
+					t.Fatalf("expandSpec(%q) endpoints = %q..%q, want 2001:db8::..2001:db8::3ff", tt.spec, got[0], got[len(got)-1])
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("expandSpec(%q) = %v, want %v", tt.spec, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExpandSpecIPv6RangeIsSortedAscending(t *testing.T) {
+	got, err := expandSpec("2001:db8:0:0:0:0:0:9-2001:db8::b")
+	if err != nil {
+		t.Fatalf("expandSpec error = %v", err)
+	}
+	want := []string{"2001:db8::9", "2001:db8::a", "2001:db8::b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expandSpec = %v, want ascending %v", got, want)
+	}
+}
+
+func TestParseTargetsDedupesIPv6Ranges(t *testing.T) {
+	// The overlapping expansion is deduplicated in scan order, exactly like
+	// the IPv4 path: first occurrence wins, order is stable.
+	got, err := parseTargets("2001:db8::1-::3", "-", []int{5900}, strings.NewReader("2001:db8::2\n"))
+	if err != nil {
+		t.Fatalf("parseTargets error = %v", err)
+	}
+	want := []Target{
+		{IP: "2001:db8::1", Port: 5900},
+		{IP: "2001:db8::2", Port: 5900},
+		{IP: "2001:db8::3", Port: 5900},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseTargets = %v, want %v", got, want)
+	}
+}
+
 func TestParsePorts(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -414,6 +544,30 @@ func TestProbeRecordsAttemptsWhenRetryStaysClosed(t *testing.T) {
 	}
 	if res.Attempts != 2 {
 		t.Errorf("Attempts = %d, want 2 so the retry is visible", res.Attempts)
+	}
+}
+
+func TestProbeRecordsProductHint(t *testing.T) {
+	fn := func(context.Context, string, vnc.Options) (*vnc.Result, error) {
+		return &vnc.Result{
+			Passwordless: true,
+			RFBVersion:   "3.8",
+			ServerName:   "node-7 (TigerVNC)",
+		}, nil
+	}
+
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{}, fn)
+	if res.ProductHint != "TigerVNC" {
+		t.Errorf("ProductHint = %q, want %q", res.ProductHint, "TigerVNC")
+	}
+
+	// Without volunteered data the hint stays empty and is omitted from JSON.
+	fn2 := func(context.Context, string, vnc.Options) (*vnc.Result, error) {
+		return &vnc.Result{}, nil
+	}
+	res2 := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{}, fn2)
+	if res2.ProductHint != "" {
+		t.Errorf("ProductHint = %q, want empty", res2.ProductHint)
 	}
 }
 

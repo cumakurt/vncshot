@@ -2,8 +2,10 @@ package scanner
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"strconv"
@@ -197,7 +199,9 @@ func hostsFromReader(r io.Reader, label string) ([]string, error) {
 }
 
 // expandSpec turns one user-facing spec into a list of IP strings.
-// Supported forms: single IP, CIDR, "a.b.c.d-e.f.g.h" and "a.b.c.d-n".
+// Supported forms: single IP, CIDR, "a.b.c.d-e.f.g.h", "a.b.c.d-n" and
+// IPv6 ranges ("2001:db8::1-2001:db8::a" or the shorthand
+// "2001:db8::1-::a").
 func expandSpec(spec string) ([]string, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
@@ -250,18 +254,24 @@ func expandRange(spec string) ([]string, error) {
 	left = strings.TrimSpace(left)
 	right = strings.TrimSpace(right)
 	if !ok || left == "" || right == "" {
-		return nil, fmt.Errorf("invalid range %q (want a.b.c.d-e.f.g.h or a.b.c.d-n)", spec)
+		return nil, fmt.Errorf("invalid range %q (want a.b.c.d-e.f.g.h, a.b.c.d-n or 2001:db8::1-::a)", spec)
 	}
 
 	start := net.ParseIP(left)
 	if start == nil {
 		return nil, fmt.Errorf("invalid range start %q", left)
 	}
-	start4 := start.To4()
-	if start4 == nil {
-		return nil, fmt.Errorf("ranges are supported for IPv4 only")
+	// 4-in-6 mapped addresses (::ffff:a.b.c.d) are treated as IPv4, the
+	// same family decision the CIDR path makes through normalizeIP.
+	if start4 := start.To4(); start4 != nil {
+		return expandRange4(spec, start4, right)
 	}
+	return expandRange6(spec, start, right)
+}
 
+// expandRange4 expands an IPv4 range. right is a full IPv4 address or a
+// last-octet number ("10.0.0.1-200").
+func expandRange4(spec string, start4 net.IP, right string) ([]string, error) {
 	var end net.IP
 	if end = net.ParseIP(right); end == nil {
 		n, err := strconv.Atoi(right)
@@ -272,7 +282,7 @@ func expandRange(spec string) ([]string, error) {
 	}
 	end4 := end.To4()
 	if end4 == nil {
-		return nil, fmt.Errorf("invalid range end %q", right)
+		return nil, fmt.Errorf("range %q mixes IPv4 and IPv6 endpoints", spec)
 	}
 
 	startInt := ipToUint32(start4)
@@ -289,6 +299,92 @@ func expandRange(spec string) ([]string, error) {
 		hosts = append(hosts, normalizeIP(uint32ToIP(v)))
 	}
 	return hosts, nil
+}
+
+// expandRange6 expands an inclusive IPv6 range. right may be a full address
+// or the trailing-group shorthand ("::a"), whose missing leading groups are
+// taken from the start address. The expansion budget is the same
+// address-count budget the IPv4 path enforces, and the same explicit error
+// (no silent truncation) is produced when the range exceeds it.
+func expandRange6(spec string, start net.IP, right string) ([]string, error) {
+	start16 := start.To16()
+	end, err := parseIPv6RangeEnd(spec, right, start16)
+	if err != nil {
+		return nil, err
+	}
+
+	// 128-bit big-endian arithmetic keeps the same per-range budget as IPv4
+	// without overflowing on a typo spanning most of the address space.
+	startInt := new(big.Int).SetBytes(start16)
+	endInt := new(big.Int).SetBytes(end)
+	if endInt.Cmp(startInt) < 0 {
+		return nil, fmt.Errorf("range %q is reversed", spec)
+	}
+	diff := new(big.Int).Sub(endInt, startInt)
+	if diff.Cmp(big.NewInt(maxTargets)) > 0 {
+		return nil, fmt.Errorf("range %q expands to more than %d addresses", spec, maxTargets)
+	}
+
+	hosts := make([]string, 0, int(diff.Int64())+1)
+	cur := make(net.IP, 16)
+	copy(cur, start16)
+	for {
+		hosts = append(hosts, normalizeIP(cur))
+		if bytes.Equal(cur, end) {
+			return hosts, nil
+		}
+		incIP(cur)
+	}
+}
+
+// parseIPv6RangeEnd parses the end of an IPv6 range. A value starting with
+// "::" is shorthand: it carries only the trailing groups and the missing
+// leading groups are copied from start, so "2001:db8::1-::a" ends at
+// 2001:db8::a, not at the address ::a.
+func parseIPv6RangeEnd(spec, value string, start net.IP) (net.IP, error) {
+	if !strings.HasPrefix(value, "::") {
+		end := net.ParseIP(value)
+		if end == nil {
+			return nil, fmt.Errorf("invalid range end %q", value)
+		}
+		if end.To4() != nil {
+			return nil, fmt.Errorf("range %q mixes IPv4 and IPv6 endpoints", spec)
+		}
+		return end.To16(), nil
+	}
+
+	groups := strings.Split(value[2:], ":")
+	if len(groups) > 8 {
+		return nil, fmt.Errorf("invalid range end %q", value)
+	}
+	end := make(net.IP, 16)
+	copy(end, start[:16-len(groups)*2])
+	for i, g := range groups {
+		// A bare "" (extra "::") or a group wider than 4 hex digits is not
+		// valid shorthand; error instead of guessing the intent.
+		if g == "" || len(g) > 4 {
+			return nil, fmt.Errorf("invalid range end %q", value)
+		}
+		v, err := strconv.ParseUint(g, 16, 16)
+		if err != nil {
+			return nil, fmt.Errorf("invalid range end %q", value)
+		}
+		end[16-len(groups)*2+2*i] = byte(v >> 8)
+		end[16-len(groups)*2+2*i+1] = byte(v)
+	}
+	return end, nil
+}
+
+// incIP adds one to a big-endian address in place. Ranges are bounded by
+// maxTargets long before the address space wraps, so the carry-out case
+// cannot be reached by the callers.
+func incIP(b []byte) {
+	for i := len(b) - 1; i >= 0; i-- {
+		b[i]++
+		if b[i] != 0 {
+			return
+		}
+	}
 }
 
 func nextIP(ip net.IP) net.IP {

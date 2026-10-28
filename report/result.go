@@ -38,8 +38,15 @@ type Result struct {
 	ExpiresSoon bool `json:"expires_soon,omitempty"`
 	// Attempts is how many TCP connection attempts were needed, which
 	// exposes flaky hosts that only answered after a retry.
-	Attempts     int       `json:"attempts,omitempty"`
-	ServerName   string    `json:"server_name,omitempty"`
+	Attempts   int    `json:"attempts,omitempty"`
+	ServerName string `json:"server_name,omitempty"`
+	// ProductHint is a best-effort triage hint derived only from data the
+	// server already volunteered (the desktop name and the RFB banner
+	// version); it is never the result of an active probe. It is a
+	// heuristic and may be wrong: treat it as a lead for triage, not as a
+	// verified product identification. Omitted when nothing unambiguous
+	// was recognized.
+	ProductHint  string    `json:"product_hint,omitempty"`
 	ScreenWidth  int       `json:"screen_width,omitempty"`
 	ScreenHeight int       `json:"screen_height,omitempty"`
 	Screenshot   string    `json:"screenshot,omitempty"`
