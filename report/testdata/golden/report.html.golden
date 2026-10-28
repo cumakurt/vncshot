@@ -435,6 +435,11 @@ h2 {
   color: var(--muted);
   font-size: 12px;
 }
+ 
+.trend-hot {
+  color: var(--warning);
+  font-weight: 600;
+}
 .diff-empty {
   margin: 0;
   padding: 4px 0 2px;
@@ -713,6 +718,8 @@ footer a:hover { border-bottom-color: var(--accent); }
     </div>
     
   </section>
+
+  
 
   
 

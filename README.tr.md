@@ -682,6 +682,17 @@ yeni tarama başlatmadan incelenebilir. Tarama çalışırken bu istek
 `409 Conflict` ile reddedilir. Tarama adları yalnızca zaman damgası klasör
 adları olarak doğrulanır; hazırlanmış bir ad rapor kökünün dışına çıkamaz.
 
+Sayaçların altındaki "Run trend" şeridi en yeni taramaları çizer
+(`GET /api/trends`, en fazla 50): tarama başına bir sütun, parolasız ve zayıf
+parola sayıları için üst üste yığılmış çubuklar; bu sayılar en yoğun taramaya
+göre ölçeklenir ve vurgulanır. Bir sütuna tıklamak, o taramayı geçmiş listesiyle
+aynı akışla açar; okunamayan raporu olan taramalar atlanır. Geçmiş panelindeki
+geçerli olmayan her tarama ayrıca bir "compare" eylemi sunar: bu eylem o taramayı
+panonun sunduğu taramayla karşılaştırır (`POST /api/diff`) ve bulguların
+üstünde yeni, çözülen ve değişen uç noktaları listeleyen
+`Baseline <temel> → <hedef>` panelini açar. Panelde bir kapatma düğmesi vardır
+ve başka bir tarama geçerli hale geldiğinde gizlenir.
+
 Form değerleri sayfa yenilenmesinden sonra `localStorage` içinde korunur
 (hedef, portlar, zaman aşımları, çıktı yolları, parola seçenekleri ve diğer
 form alanları). Yetki onay kutusu bilinçli olarak asla saklanmaz ve her tarama
@@ -733,6 +744,8 @@ her uç nokta oturum çereziyle ve durum değiştiren isteklerde
 | `POST` | `/api/cancel` | Çalışan taramayı iptal et |
 | `GET` | `/api/runs` | Rapor kökü altındaki önceki taramalar, en yeni önce |
 | `POST` | `/api/runs/open` | Önceki bir taramayı panoya yükle |
+| `GET` | `/api/trends` | En yeni taramaların özet sayaçları (en fazla 50), trend şeridi için |
+| `POST` | `/api/diff` | İki önceki taramayı karşılaştır: `{base, target}` → `{new, resolved, changed}` |
 | `GET` | `/files/<yol>` | Geçerli tarama klasöründeki bir çıktıyı sun |
 
 Hata yanıtları standart HTTP durum kodlarını kullanır: geçersiz girdi için
@@ -776,6 +789,13 @@ geçerlilik aralığı, TLS sürümü, şifre paketi ve SHA-256 parmak izi) gör
 uç nokta tabloları ise kısa güven durumunu ve bitiş tarihini gösterir. CSV sabit
 ve düz bir şemaya sahip olduğu için yalnızca `tls` bayrağını ve
 `security_types` listesini kaydeder.
+
+HTML raporu zaman damgalı bir tarama klasörüne yazıldığında küçük bir
+"Recent runs" trend tablosu da taşır: kendisinden önce yazılmış en fazla 10
+kardeş taramanın adı, üretim zaman damgası, parolasız, zayıf parola ve hata
+sayıları, en yeni önce. Çıktı yolu bir tarama klasörünün içinde değilse veya
+okunabilir raporu olan kardeş tarama yoksa bölüm tamamen atılır; böylece tek
+taramalı veya çevrimdışı bir rapor etkilenmez.
 
 Klasör adı, yerel tarama başlangıç zamanının `YYYYMMDD-HHMMSS` biçimidir (GUI
 ve temel karşılaştırma bu düzene dayanır). Ekran görüntüsü adları aynı biçimde

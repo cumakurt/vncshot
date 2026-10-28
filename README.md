@@ -673,6 +673,17 @@ older run can be reviewed without starting a scan; the request is rejected
 with `409 Conflict` while a scan is running. Run names are validated as bare
 timestamp folder names, so a crafted name cannot escape the report root.
 
+A "Run trend" strip under the counters plots the newest runs
+(`GET /api/trends`, up to 50): one column per run with stacked bars for the
+passwordless and weak-password counts, highlighted and scaled against the
+busiest run. Clicking a column opens that run through the same flow as the
+history list; runs without a readable report are skipped. Each non-current
+run in the history panel also offers a "compare" action: it diffs that run
+against the run the dashboard is serving (`POST /api/diff`) and opens a
+`Baseline <base> → <target>` panel above the findings with the new, resolved
+and changed endpoints. The panel has a close button and is hidden whenever
+another run becomes current.
+
 Form values survive a page reload in `localStorage` (target, ports, timeouts,
 output paths, password options and the other form fields). The authorization
 checkbox is deliberately never persisted and must be ticked again for every
@@ -724,6 +735,8 @@ state-changing requests, the `X-Vncshot-Token` header.
 | `POST` | `/api/cancel` | Cancel the running scan |
 | `GET` | `/api/runs` | Previous runs under the report root, newest first |
 | `POST` | `/api/runs/open` | Load a previous run into the dashboard |
+| `GET` | `/api/trends` | Summary counters of the newest runs (up to 50) for the trend strip |
+| `POST` | `/api/diff` | Compare two previous runs: `{base, target}` → `{new, resolved, changed}` |
 | `GET` | `/files/<path>` | Serve an artifact of the current run folder |
 
 Error responses use the standard HTTP status codes: `400` for invalid input,
@@ -768,6 +781,13 @@ issuer, validity window, TLS version, cipher and SHA-256 fingerprint), while
 the endpoint tables show the compact trust state and expiry date. The CSV
 records only the `tls` flag and the `security_types` list, because it has a
 fixed flat schema.
+
+When the HTML report is written into a timestamped run folder, it also carries
+a small "Recent runs" trend table: the run name, generation timestamp,
+passwordless, weak-password and error counts of up to the 10 sibling runs
+written before it, newest first. The section is omitted entirely when the
+output path is not inside a run folder or no sibling runs have a readable
+report, so a single-run or offline report is unaffected.
 
 The folder name is the local scan start time in `YYYYMMDD-HHMMSS` form (the
 GUI and the baseline comparison rely on this layout). Screenshot names use the

@@ -3,10 +3,12 @@ package report
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"image"
 	"image/png"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -138,6 +140,108 @@ func capDiff[T any](entries []T, limit int) ([]T, int) {
 	return entries[:limit], len(entries) - limit
 }
 
+// reportRunLayout matches the timestamped run folder names the scanner
+// writes under the report root.
+const reportRunLayout = "20060102-150405"
+
+// maxRecentRuns bounds the "Recent runs" trend table so rendering the report
+// of a long-lived report tree stays cheap.
+const maxRecentRuns = 10
+
+// maxTrendReportBytes caps the JSON report read for the trend table. Run
+// reports hold per-result rows but no embedded imagery, so anything beyond
+// this limit is treated as unreadable rather than slowing report writing.
+const maxTrendReportBytes = 32 << 20
+
+// recentRunData is one row of the "Recent runs" trend table.
+type recentRunData struct {
+	Name         string
+	GeneratedAt  string
+	Passwordless int
+	Weak         int
+	Errors       int
+}
+
+// collectRecentRuns inspects the sibling run folders of the report being
+// written and returns the newest maxRecentRuns summaries, newest first. The
+// section is only produced when the output folder is itself a timestamped
+// run folder inside a report root, so an overridden -html path, a single-run
+// offline report and the golden fixtures are unaffected. A nil result omits
+// the section entirely.
+func collectRecentRuns(path string) []recentRunData {
+	runDir := filepath.Dir(path)
+	if _, err := time.ParseInLocation(reportRunLayout, filepath.Base(runDir), time.Local); err != nil {
+		return nil
+	}
+	root := filepath.Dir(runDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+
+	// Symlinks are skipped: a linked folder can point anywhere on the host.
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 || entry.Name() == filepath.Base(runDir) {
+			continue
+		}
+		if _, err := time.ParseInLocation(reportRunLayout, entry.Name(), time.Local); err != nil {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	// Folder names are local start timestamps, so descending name order is
+	// newest first and the output is deterministic.
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	if len(names) > maxRecentRuns {
+		names = names[:maxRecentRuns]
+	}
+
+	var rows []recentRunData
+	for _, name := range names {
+		if row, ok := readRecentRun(root, name); ok {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// readRecentRun loads the summary counters of one sibling run folder.
+// Unreadable or malformed reports are skipped so a damaged run cannot fail
+// the report being written.
+func readRecentRun(root, name string) (recentRunData, bool) {
+	path := filepath.Join(root, name, "vncshot_report.json")
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxTrendReportBytes {
+		return recentRunData{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return recentRunData{}, false
+	}
+	var doc struct {
+		GeneratedAt time.Time `json:"generated_at"`
+		Summary     Summary   `json:"summary"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return recentRunData{}, false
+	}
+	generated := doc.GeneratedAt
+	if generated.IsZero() {
+		generated = info.ModTime()
+	}
+	return recentRunData{
+		Name:         name,
+		GeneratedAt:  generated.UTC().Format("2006-01-02 15:04:05 UTC"),
+		Passwordless: doc.Summary.Passwordless,
+		Weak:         doc.Summary.WeakCredentials,
+		Errors:       doc.Summary.Errors,
+	}, true
+}
+
 type cardData struct {
 	IP             string
 	Port           string
@@ -203,6 +307,9 @@ type htmlData struct {
 	Rows         []rowData
 	Certificates []certificateEntryData
 	Diff         *htmlDiffData
+	// RecentRuns carries the sibling-run trend table; nil omits the
+	// section (single-run and offline usage).
+	RecentRuns []recentRunData
 }
 
 // diffRowData is one line of a baseline comparison group.
@@ -265,6 +372,9 @@ func WriteHTMLWithOptions(path string, results []Result, opts Options) error {
 	if hasBaselineSection(diff) {
 		doc.Diff = buildHTMLDiff(diff)
 	}
+	// The trend table is read from the sibling run folders of the output
+	// path; nil (overridden path, no siblings) keeps the section out.
+	doc.RecentRuns = collectRecentRuns(path)
 
 	for _, r := range opts.apply(results) {
 		dims := ""
@@ -996,6 +1106,11 @@ h2 {
   color: var(--muted);
   font-size: 12px;
 }
+/* Recent runs trend ---------------------------------------------------- */
+.trend-hot {
+  color: var(--warning);
+  font-weight: 600;
+}
 .diff-empty {
   margin: 0;
   padding: 4px 0 2px;
@@ -1315,6 +1430,35 @@ footer a:hover { border-bottom-color: var(--accent); }
       {{end}}
     </div>
     {{end}}
+  </section>
+  {{end}}
+
+  {{if .RecentRuns}}
+  <section class="section" aria-label="Recent runs trend">
+    <div class="section-head">
+      <h2>Recent runs</h2>
+      <span class="section-note">Passwordless and weak-password counts of the {{len .RecentRuns}} runs before this one</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Run</th><th scope="col">Generated</th><th scope="col">Passwordless</th><th scope="col">Weak creds</th><th scope="col">Errors</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .RecentRuns}}
+          <tr>
+            <td class="mono">{{.Name}}</td>
+            <td class="mono">{{.GeneratedAt}}</td>
+            <td class="mono{{if gt .Passwordless 0}} trend-hot{{end}}">{{.Passwordless}}</td>
+            <td class="mono{{if gt .Weak 0}} trend-hot{{end}}">{{.Weak}}</td>
+            <td class="mono">{{.Errors}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
   </section>
   {{end}}
 

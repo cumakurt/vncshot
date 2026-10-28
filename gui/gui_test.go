@@ -696,6 +696,203 @@ func TestRunEndpointsRequireGuard(t *testing.T) {
 	}
 }
 
+func TestTrendsEndpointReturnsNewestCounters(t *testing.T) {
+	root := t.TempDir()
+	writeRun(t, root, "20260101-010101", []report.Result{
+		{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true, Passwordless: true},
+	}, false, false)
+	writeRun(t, root, "20260202-020202", []report.Result{
+		{IP: "192.0.2.2", Port: 5900, Open: true, RFB: true, Password: "hunter2", TLS: true},
+		{IP: "192.0.2.3", Port: 5900, Open: true, RFB: true},
+	}, false, false)
+	// A run with a damaged report is skipped silently.
+	broken := writeRun(t, root, "20260303-030303", nil, false, false)
+	if err := os.WriteFile(filepath.Join(broken, "vncshot_report.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("corrupt report: %v", err)
+	}
+	// Non-run folders are ignored entirely.
+	if err := os.MkdirAll(filepath.Join(root, "notes"), 0o700); err != nil {
+		t.Fatalf("create non-run dir: %v", err)
+	}
+
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+
+	resp, body := doJSON(t, client, http.MethodGet, ts.URL+"/api/trends", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("trends status = %d, want 200 (%s)", resp.StatusCode, body)
+	}
+	var trends []trendPoint
+	if err := json.Unmarshal(body, &trends); err != nil {
+		t.Fatalf("decode trends: %v", err)
+	}
+	if len(trends) != 2 {
+		t.Fatalf("trends = %d entries, want 2 (the unreadable run is skipped)", len(trends))
+	}
+	if trends[0].Name != "20260202-020202" || trends[1].Name != "20260101-010101" {
+		t.Fatalf("trend order = %q, %q; want newest first", trends[0].Name, trends[1].Name)
+	}
+	latest := trends[0]
+	if latest.Targets != 2 || latest.Open != 2 || latest.RFB != 2 || latest.TLS != 1 ||
+		latest.Weak != 1 || latest.Passwordless != 0 || latest.Screenshots != 0 || latest.Errors != 0 {
+		t.Errorf("latest trend = %+v, want the run summary counters", latest)
+	}
+	if latest.GeneratedAt == "" {
+		t.Error("generated_at is empty, want the report timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339, latest.GeneratedAt); err != nil {
+		t.Errorf("generated_at %q is not RFC3339: %v", latest.GeneratedAt, err)
+	}
+	if trends[1].Passwordless != 1 {
+		t.Errorf("older trend passwordless = %d, want 1", trends[1].Passwordless)
+	}
+	if strings.Contains(string(body), root) {
+		t.Errorf("trends payload leaks the report root %q", root)
+	}
+}
+
+func TestTrendsCapsWindowAtFiftyRuns(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 52; i++ {
+		writeRun(t, root, fmt.Sprintf("20260101-%06d", i), []report.Result{
+			{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true},
+		}, false, false)
+	}
+
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+
+	_, body := doJSON(t, client, http.MethodGet, ts.URL+"/api/trends", nil, nil)
+	var trends []trendPoint
+	if err := json.Unmarshal(body, &trends); err != nil {
+		t.Fatalf("decode trends: %v", err)
+	}
+	if len(trends) != 50 {
+		t.Fatalf("trends = %d entries, want the 50-run window", len(trends))
+	}
+	if trends[0].Name != "20260101-000051" {
+		t.Errorf("newest trend = %q, want the newest run", trends[0].Name)
+	}
+	if trends[49].Name != "20260101-000002" {
+		t.Errorf("oldest trend = %q, want the fiftieth run", trends[49].Name)
+	}
+}
+
+func TestTrendsAndDiffRequireGuard(t *testing.T) {
+	root := t.TempDir()
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, _ := doJSON(t, client, http.MethodGet, ts.URL+"/api/trends", nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("trends without cookie = %d, want 401", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, client, http.MethodGet, ts.URL+"/api/diff", nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("diff without cookie = %d, want 401", resp.StatusCode)
+	}
+	login(t, client, ts.URL)
+	// Authenticated, but trends only accepts GET.
+	resp, _ = doJSON(t, client, http.MethodPost, ts.URL+"/api/trends", map[string]any{}, auth)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("trends with POST = %d, want 405", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, client, http.MethodPost, ts.URL+"/api/diff",
+		map[string]string{"base": "20260101-010101", "target": "20260101-010101"}, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("diff without token header = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestDiffEndpointComparesRuns(t *testing.T) {
+	root := t.TempDir()
+	writeRun(t, root, "20260101-010101", []report.Result{
+		{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true, Password: "hunter2",
+			SecurityTypes: []string{"VNC authentication"}, ServerName: "lab-pc"},
+		{IP: "192.0.2.2", Port: 5900, Open: true, RFB: true, Passwordless: true},
+	}, false, false)
+	writeRun(t, root, "20260202-020202", []report.Result{
+		// 192.0.2.1 became passwordless: a changed finding.
+		{IP: "192.0.2.1", Port: 5900, Open: true, RFB: true, Passwordless: true,
+			SecurityTypes: []string{"VNC authentication"}, ServerName: "lab-pc"},
+		// 192.0.2.2 disappeared: a resolved finding.
+		// 192.0.2.3 is brand new.
+		{IP: "192.0.2.3", Port: 5900, Open: true, RFB: true, Passwordless: true, ServerName: "kiosk"},
+	}, false, false)
+
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/diff",
+		map[string]string{"base": "20260101-010101", "target": "20260202-020202"}, auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("diff status = %d, want 200 (%s)", resp.StatusCode, body)
+	}
+	var diff diffResponse
+	if err := json.Unmarshal(body, &diff); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if len(diff.New) != 1 || diff.New[0].Addr != "192.0.2.3:5900" || diff.New[0].ServerName != "kiosk" {
+		t.Errorf("new = %+v, want 192.0.2.3:5900 kiosk", diff.New)
+	}
+	if len(diff.Resolved) != 1 || diff.Resolved[0].Addr != "192.0.2.2:5900" {
+		t.Errorf("resolved = %+v, want 192.0.2.2:5900", diff.Resolved)
+	}
+	if len(diff.Changed) != 1 {
+		t.Fatalf("changed = %+v, want one entry", diff.Changed)
+	}
+	change := diff.Changed[0]
+	if change.Addr != "192.0.2.1:5900" || change.Reason != "became passwordless" {
+		t.Errorf("changed = %+v, want 192.0.2.1:5900 became passwordless", change)
+	}
+	if !reflect.DeepEqual(change.SecurityTypes, []string{"VNC authentication"}) {
+		t.Errorf("changed security_types = %v, want the target run's types", change.SecurityTypes)
+	}
+	if strings.Contains(string(body), root) {
+		t.Errorf("diff payload leaks the report root %q", root)
+	}
+}
+
+func TestDiffRejectsInvalidAndUnknownRuns(t *testing.T) {
+	root := t.TempDir()
+	writeRun(t, root, "20260101-010101", []report.Result{{IP: "192.0.2.1", Port: 5900}}, false, false)
+	// A run-shaped folder without a JSON report must not be diffable.
+	if err := os.MkdirAll(filepath.Join(root, "20260202-020202"), 0o700); err != nil {
+		t.Fatalf("create empty run dir: %v", err)
+	}
+
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+	login(t, client, ts.URL)
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+
+	for _, tc := range []struct {
+		base, target string
+		want         int
+	}{
+		{"../20260101-010101", "20260101-010101", http.StatusBadRequest},
+		{"notes", "20260101-010101", http.StatusBadRequest},
+		{"20260101-010101", "/etc/passwd", http.StatusBadRequest},
+		{"20260505-050505", "20260101-010101", http.StatusNotFound},
+		{"20260101-010101", "20260202-020202", http.StatusNotFound},
+	} {
+		resp, body := doJSON(t, client, http.MethodPost, ts.URL+"/api/diff",
+			map[string]string{"base": tc.base, "target": tc.target}, auth)
+		if resp.StatusCode != tc.want {
+			t.Errorf("diff base=%q target=%q = %d, want %d (%s)",
+				tc.base, tc.target, resp.StatusCode, tc.want, body)
+		}
+		if strings.Contains(string(body), root) {
+			t.Errorf("diff base=%q target=%q error leaks the report root", tc.base, tc.target)
+		}
+	}
+}
+
 func TestSnapshotExposesTransportAndRetryData(t *testing.T) {
 	srv, _ := newTestServer(t, Config{})
 	srv.run.findings = []finding{toFinding(report.Result{
@@ -1272,5 +1469,44 @@ func TestFormPersistsRunOptionsButNotAuthorization(t *testing.T) {
 	}
 	if !strings.Contains(html, "authorized.checked = false") {
 		t.Error("loadForm no longer clears the authorization checkbox")
+	}
+}
+
+// TestDashboardWiresTrendsAndCompare guards the new panels: the trend strip
+// and the compare action must call the guarded JSON API, the compare panel
+// must start hidden, and the comparison renderer must write server strings
+// with textContent rather than building markup by string.
+func TestDashboardWiresTrendsAndCompare(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded page: %v", err)
+	}
+	body := string(page)
+
+	for _, marker := range []string{
+		`"/api/trends"`,
+		`"/api/diff"`,
+		`id="trendStrip"`,
+		`id="compareTitle"`,
+		`id="compareBody"`,
+		`id="compareClose"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("index.html is missing %s", marker)
+		}
+	}
+	if !strings.Contains(body, `class="block hidden" id="compareBlock"`) {
+		t.Error("compare panel does not start hidden")
+	}
+
+	match := regexp.MustCompile(`(?s)function compareGroup\(.*?\n  \}`).FindString(body)
+	if match == "" {
+		t.Fatal("index.html has no compareGroup renderer")
+	}
+	if strings.Contains(match, "innerHTML") {
+		t.Error("compareGroup builds markup by string; it must use textContent")
+	}
+	if !strings.Contains(match, "textContent") {
+		t.Error("compareGroup does not write textContent")
 	}
 }

@@ -281,6 +281,108 @@
   .counter.hot .v { color: var(--warn); }
   .counter.good .v { color: var(--accent); }
 
+  /* Trend strip: one column per previous run, stacked passwordless + weak
+     bars, clickable to open the run. */
+  .trend-strip {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 12px 10px;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: #fff;
+    min-height: 108px;
+  }
+  .trend-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    min-width: 46px;
+    padding: 4px 2px;
+    border: 0;
+    border-radius: var(--radius);
+    background: none;
+    font: inherit;
+    cursor: pointer;
+  }
+  .trend-col:hover { background: var(--accent-soft); }
+  .trend-col:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .trend-count {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .trend-count.hot { color: var(--warn); font-weight: 700; }
+  .trend-bar {
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: stretch;
+    width: 22px;
+    height: 56px;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--paper-2);
+    overflow: hidden;
+  }
+  .trend-seg { width: 100%; }
+  .trend-seg.pwless { background: var(--danger); }
+  .trend-seg.weak { background: var(--warn); }
+  .trend-name {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  /* Baseline compare panel opened from the run history. */
+  .btn-mini {
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: #fff;
+    padding: 3px 9px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .btn-mini:hover { border-color: var(--accent); color: var(--accent); }
+  .compare-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px;
+  }
+  .compare-groups .group-label {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 5px;
+    margin-bottom: 6px;
+  }
+  .compare-groups ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  .compare-groups li {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    padding: 4px 0;
+    border-bottom: 1px dotted #e8e1d7;
+    color: var(--ink-soft);
+  }
+  .compare-groups .none { color: var(--muted); font-size: 12px; }
+
   .block { margin-top: 30px; }
   .block-head {
     display: flex;
@@ -625,6 +727,14 @@
       <div class="counter"><div class="k">Errors</div><div class="v" id="cErrors">0</div></div>
     </div>
 
+    <div class="block" id="trendsBlock">
+      <div class="block-head">
+        <h2>Run trend</h2>
+        <span class="hint">passwordless + weak credentials per run · click a column to open it</span>
+      </div>
+      <div class="trend-strip" id="trendStrip"><div class="empty">No run history yet.</div></div>
+    </div>
+
     <div class="block" id="reportsBlock">
       <div class="block-head">
         <h2>Reports</h2>
@@ -633,6 +743,14 @@
       <div class="reports" id="reportLinks">
         <div class="empty">Reports appear here when the scan finishes.</div>
       </div>
+    </div>
+
+    <div class="block hidden" id="compareBlock">
+      <div class="block-head">
+        <h2 id="compareTitle">Baseline comparison</h2>
+        <button type="button" class="btn-mini" id="compareClose">Close</button>
+      </div>
+      <div class="compare-groups" id="compareBody"></div>
     </div>
 
     <div class="block">
@@ -821,6 +939,18 @@
       } else {
         meta.textContent = "no report data";
       }
+      // The compare action diffs this run against the run the dashboard is
+      // currently serving, so it only exists with a current run selected.
+      if (!isCurrent && current) {
+        meta.appendChild(document.createTextNode(" "));
+        var compare = document.createElement("button");
+        compare.type = "button";
+        compare.className = "btn-mini";
+        compare.textContent = "compare";
+        compare.title = "compare with " + current;
+        compare.addEventListener("click", function () { compareWithCurrent(run.name); });
+        meta.appendChild(compare);
+      }
       // Artifact URLs only exist for the run the server currently serves;
       // history entries are opened through the API instead of guessed paths.
       if (isCurrent) {
@@ -908,6 +1038,160 @@
         $("errorBox").classList.remove("hidden");
         $("errorBox").textContent = err.message;
       });
+  }
+
+  var trendRuns = null;
+
+  // loadTrends fetches the per-run counters for the trend strip. The strip
+  // is a convenience view, so a failed request keeps the last render and
+  // never raises over the dashboard.
+  function loadTrends() {
+    api("/api/trends")
+      .then(function (res) {
+        if (!res.ok) throw new Error("trends unavailable");
+        return res.json();
+      })
+      .then(function (trends) {
+        trendRuns = Array.isArray(trends) ? trends : [];
+        renderTrends();
+      })
+      .catch(function () { /* keep the last strip */ });
+  }
+
+  // renderTrends draws one column per run, older runs on the left so the
+  // strip reads like a timeline. The bars stack the weak (warn) and
+  // passwordless (danger) counts, scaled against the busiest run.
+  function renderTrends() {
+    var strip = $("trendStrip");
+    if (!trendRuns || !trendRuns.length) {
+      strip.innerHTML = '<div class="empty">No run history yet.</div>';
+      return;
+    }
+    strip.innerHTML = "";
+    var runs = trendRuns.slice().reverse();
+    var peak = 1;
+    runs.forEach(function (run) {
+      peak = Math.max(peak, (run.passwordless || 0) + (run.weak || 0));
+    });
+    var barHeight = 56;
+    runs.forEach(function (run) {
+      var pwless = run.passwordless || 0;
+      var weak = run.weak || 0;
+      var total = pwless + weak;
+      var col = document.createElement("button");
+      col.type = "button";
+      col.className = "trend-col";
+      col.title = run.name + ": " + total + " insecure (" + pwless +
+        " passwordless, " + weak + " weak), " + (run.targets || 0) +
+        " targets, " + (run.errors || 0) + " errors";
+
+      var count = document.createElement("span");
+      count.className = "trend-count" + (total ? " hot" : "");
+      count.textContent = total;
+
+      var bar = document.createElement("span");
+      bar.className = "trend-bar";
+      var seg = function (cls, n) {
+        if (!n) return;
+        var s = document.createElement("span");
+        s.className = "trend-seg " + cls;
+        // A small count still renders a visible sliver; a clean run keeps
+        // the empty track.
+        s.style.height = Math.max(4, Math.round((n / peak) * barHeight)) + "px";
+        bar.appendChild(s);
+      };
+      seg("weak", weak);
+      seg("pwless", pwless);
+
+      // The timestamp is YYYYMMDD-HHMMSS; the clock part keeps the axis
+      // readable while the full name stays in the tooltip.
+      var name = document.createElement("span");
+      name.className = "trend-name";
+      name.textContent = String(run.name).slice(-6);
+
+      col.appendChild(count);
+      col.appendChild(bar);
+      col.appendChild(name);
+      col.addEventListener("click", function () { openRun(run.name); });
+      strip.appendChild(col);
+    });
+  }
+
+  // compareWithCurrent diffs a history run against the run the dashboard is
+  // serving. Errors surface in the existing errorBox.
+  function compareWithCurrent(base) {
+    var target = runNameFromPath(state && state.run_dir);
+    if (!target) {
+      $("errorBox").classList.remove("hidden");
+      $("errorBox").textContent = "Open or finish a run before comparing.";
+      return;
+    }
+    api("/api/diff", { method: "POST", body: JSON.stringify({ base: base, target: target }) })
+      .then(function (res) {
+        if (!res.ok) return res.text().then(function (t) { throw new Error(t.trim() || res.statusText); });
+        return res.json();
+      })
+      .then(function (diff) { renderCompare(base, target, diff); })
+      .catch(function (err) {
+        $("errorBox").classList.remove("hidden");
+        $("errorBox").textContent = err.message;
+      });
+  }
+
+  // compareGroup renders one New / Resolved / Changed list. All server
+  // strings are written with textContent, so no run name or server banner
+  // can inject markup.
+  function compareGroup(label, entries, withReason) {
+    var group = document.createElement("div");
+    var head = document.createElement("div");
+    head.className = "group-label";
+    head.textContent = label + " (" + entries.length + ")";
+    group.appendChild(head);
+    if (!entries.length) {
+      var none = document.createElement("div");
+      none.className = "none";
+      none.textContent = "no entries";
+      group.appendChild(none);
+      return group;
+    }
+    var list = document.createElement("ul");
+    entries.forEach(function (entry) {
+      var li = document.createElement("li");
+      var span = document.createElement("span");
+      var line = entry.addr || "";
+      if (entry.server_name) line += " · " + entry.server_name;
+      if (entry.security_types && entry.security_types.length) {
+        line += " · " + entry.security_types.join(", ");
+      }
+      span.textContent = line;
+      li.appendChild(span);
+      if (withReason && entry.reason) {
+        var tag = document.createElement("span");
+        tag.className = "tag hot";
+        tag.textContent = entry.reason;
+        li.appendChild(tag);
+      }
+      list.appendChild(li);
+    });
+    group.appendChild(list);
+    return group;
+  }
+
+  function renderCompare(base, target, diff) {
+    $("compareTitle").textContent = "Baseline " + base + " → " + target;
+    var body = $("compareBody");
+    body.innerHTML = "";
+    body.appendChild(compareGroup("New", diff.new || []));
+    body.appendChild(compareGroup("Resolved", diff.resolved || []));
+    body.appendChild(compareGroup("Changed", diff.changed || [], true));
+    var block = $("compareBlock");
+    block.classList.remove("hidden");
+    block.scrollIntoView({ block: "nearest" });
+  }
+
+  function hideCompare() {
+    $("compareBlock").classList.add("hidden");
+    $("compareBody").innerHTML = "";
   }
 
   // Form values survive reloads, except the authorization checkbox which
@@ -1084,10 +1368,11 @@
     renderFindings(s);
     renderLog(s);
 
-    // A finished scan just wrote a new run folder; refresh the history so it
-    // appears without a manual reload.
+    // A finished scan just wrote a new run folder; refresh the history and
+    // the trend strip so it appears without a manual reload.
     if (lastStatus === "running" && s.status !== "running") {
       loadHistory();
+      loadTrends();
     }
     lastStatus = s.status;
 
@@ -1095,6 +1380,9 @@
     // can change when a previous run is opened.
     if (lastRunDir !== s.run_dir) {
       lastRunDir = s.run_dir;
+      // A comparison rendered for the previous run is stale once another
+      // run becomes current.
+      hideCompare();
       if (historyRuns) renderHistory(historyRuns);
     }
   }
@@ -1173,8 +1461,11 @@
       });
   });
 
+  $("compareClose").addEventListener("click", hideCompare);
+
   loadForm();
   loadHistory();
+  loadTrends();
   api("/api/state").then(function (res) { return res.json(); }).then(render).catch(function () {});
   connect();
 })();

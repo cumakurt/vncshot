@@ -137,15 +137,18 @@ type certificateView struct {
 
 // runInfo is one entry of the run history shown in the dashboard.
 type runInfo struct {
-	Name      string          `json:"name"`
-	Started   string          `json:"started"`
-	Files     []string        `json:"files"`
-	HasHTML   bool            `json:"has_html"`
-	HasPDF    bool            `json:"has_pdf"`
-	HasJSON   bool            `json:"has_json"`
-	Size      int64           `json:"size"`
-	Summary   *report.Summary `json:"summary"`
-	startedAt time.Time
+	Name    string          `json:"name"`
+	Started string          `json:"started"`
+	Files   []string        `json:"files"`
+	HasHTML bool            `json:"has_html"`
+	HasPDF  bool            `json:"has_pdf"`
+	HasJSON bool            `json:"has_json"`
+	Size    int64           `json:"size"`
+	Summary *report.Summary `json:"summary"`
+	// GeneratedAt is the report's own generation timestamp (RFC 3339),
+	// empty when the run has no readable report.
+	GeneratedAt string `json:"generated_at,omitempty"`
+	startedAt   time.Time
 }
 
 type snapshot struct {
@@ -231,6 +234,15 @@ const (
 	// maxRunHistory bounds the history payload so a long-lived report tree
 	// cannot make the dashboard request arbitrarily expensive.
 	maxRunHistory = 100
+	// maxTrendRuns bounds the trend strip window. The cap counts every
+	// candidate folder, including ones whose report cannot be read, so the
+	// payload size stays predictable even in a tree with damaged runs.
+	maxTrendRuns = 50
+	// maxRunReportBytes bounds the JSON report read into memory by
+	// readRunDocument. Run reports hold per-result rows but no embedded
+	// imagery, so anything beyond this limit is treated as unreadable
+	// rather than stalling the history and trend endpoints.
+	maxRunReportBytes = 32 << 20
 )
 
 type server struct {
@@ -329,6 +341,8 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/cancel", s.guard(s.handleCancel))
 	mux.HandleFunc("/api/runs", s.guard(s.handleRuns))
 	mux.HandleFunc("/api/runs/open", s.guard(s.handleRunOpen))
+	mux.HandleFunc("/api/trends", s.guard(s.handleTrends))
+	mux.HandleFunc("/api/diff", s.guard(s.handleDiff))
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
 	mux.HandleFunc("/files/", s.guard(s.handleFiles))
 	return mux
@@ -657,6 +671,9 @@ func describeRun(dir, name string, started time.Time) runInfo {
 	}
 	summary := doc.Summary
 	info.Summary = &summary
+	if !doc.GeneratedAt.IsZero() {
+		info.GeneratedAt = doc.GeneratedAt.UTC().Format(time.RFC3339)
+	}
 	return info
 }
 
@@ -670,6 +687,14 @@ const (
 // runs from older or external producers still open.
 func readRunDocument(path string) (report.Document, error) {
 	var doc report.Document
+	// Bound the read so an oversized report cannot stall the endpoints that
+	// parse every run folder (history and trends). A missing file must keep
+	// reporting os.ErrNotExist for the callers that branch on it.
+	if info, statErr := os.Stat(path); statErr != nil {
+		return doc, statErr
+	} else if info.Size() > maxRunReportBytes {
+		return doc, fmt.Errorf("run report is larger than %d bytes", maxRunReportBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return doc, err
@@ -700,6 +725,36 @@ func validRunName(name string) bool {
 	return err == nil
 }
 
+// resolveRunDir validates a bare run folder name against the report root and
+// returns its directory. The status is the HTTP status to answer with when
+// validation fails. Symlinks are rejected because a linked folder can point
+// outside the report root.
+func (s *server) resolveRunDir(name string) (string, int, error) {
+	root := s.reportRoot()
+	dir := filepath.Join(root, name)
+	if filepath.Dir(dir) != root {
+		return "", http.StatusBadRequest, errors.New("invalid run name")
+	}
+	if info, err := os.Lstat(dir); err != nil || !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+		return "", http.StatusNotFound, errors.New("run not found")
+	}
+	return dir, 0, nil
+}
+
+// loadRunReport reads one run folder's JSON report with the same error
+// contract as the run-open endpoint: 404 for a missing report, 500 for an
+// unreadable one, so filesystem paths never reach the browser.
+func (s *server) loadRunReport(dir string) (report.Document, int, error) {
+	doc, err := readRunDocument(filepath.Join(dir, defaultJSONReport))
+	if err == nil {
+		return doc, 0, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return doc, http.StatusNotFound, errors.New("run report not found")
+	}
+	return doc, http.StatusInternalServerError, errors.New("run report is unreadable")
+}
+
 // handleRunOpen switches the dashboard to a previous run folder.
 func (s *server) handleRunOpen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -721,14 +776,9 @@ func (s *server) handleRunOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	root := s.reportRoot()
-	dir := filepath.Join(root, name)
-	if filepath.Dir(dir) != root {
-		http.Error(w, "invalid run name", http.StatusBadRequest)
-		return
-	}
-	if info, err := os.Lstat(dir); err != nil || !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
-		http.Error(w, "run not found", http.StatusNotFound)
+	dir, status, err := s.resolveRunDir(name)
+	if err != nil {
+		http.Error(w, err.Error(), status)
 		return
 	}
 
@@ -740,20 +790,14 @@ func (s *server) handleRunOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonPath := filepath.Join(dir, defaultJSONReport)
-	doc, err := readRunDocument(jsonPath)
+	doc, status, err := s.loadRunReport(dir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			http.Error(w, "run report not found", http.StatusNotFound)
-			return
-		}
-		// The error may mention the filesystem path, which must not reach
-		// the browser.
-		http.Error(w, "run report is unreadable", http.StatusInternalServerError)
+		http.Error(w, err.Error(), status)
 		return
 	}
 
 	started, _ := time.ParseInLocation(app.RunTimestampLayout, name, time.Local)
+	jsonPath := filepath.Join(dir, defaultJSONReport)
 	finished := doc.GeneratedAt.Local()
 	if finished.IsZero() {
 		if info, statErr := os.Stat(jsonPath); statErr == nil {
@@ -818,6 +862,163 @@ func runArtifact(dir, preferred, ext string) string {
 		}
 	}
 	return ""
+}
+
+// trendPoint is one column of the dashboard trend strip: the summary
+// counters of a single previous run.
+type trendPoint struct {
+	Name         string `json:"name"`
+	GeneratedAt  string `json:"generated_at"`
+	Targets      int    `json:"targets"`
+	Open         int    `json:"open"`
+	RFB          int    `json:"rfb"`
+	TLS          int    `json:"tls"`
+	Passwordless int    `json:"passwordless"`
+	Weak         int    `json:"weak"`
+	Screenshots  int    `json:"screenshots"`
+	Errors       int    `json:"errors"`
+}
+
+// handleTrends serves the newest runs' summary counters for the dashboard
+// trend strip. The window is capped at maxTrendRuns (including runs whose
+// report cannot be read, which are skipped silently), and the underlying
+// listing reuses the history scan with its bounded report reads.
+func (s *server) handleTrends(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	runs := s.listRuns()
+	if len(runs) > maxTrendRuns {
+		runs = runs[:maxTrendRuns]
+	}
+	trends := make([]trendPoint, 0, len(runs))
+	for _, run := range runs {
+		if run.Summary == nil {
+			// No readable report: there is nothing to plot for this run,
+			// but it still consumed a slot of the capped window.
+			continue
+		}
+		summary := run.Summary
+		trends = append(trends, trendPoint{
+			Name:         run.Name,
+			GeneratedAt:  run.GeneratedAt,
+			Targets:      summary.Targets,
+			Open:         summary.Open,
+			RFB:          summary.RFB,
+			TLS:          summary.TLS,
+			Passwordless: summary.Passwordless,
+			Weak:         summary.WeakCredentials,
+			Screenshots:  summary.Screenshots,
+			Errors:       summary.Errors,
+		})
+	}
+	writeJSON(w, trends)
+}
+
+// diffEntry is the compact per-host view of one comparison entry: address,
+// advertised security types and the server banner.
+type diffEntry struct {
+	Addr          string   `json:"addr"`
+	SecurityTypes []string `json:"security_types,omitempty"`
+	ServerName    string   `json:"server_name,omitempty"`
+}
+
+// diffChangeEntry is one risk-state transition, carrying the change reason.
+type diffChangeEntry struct {
+	Addr          string   `json:"addr"`
+	Reason        string   `json:"reason"`
+	SecurityTypes []string `json:"security_types,omitempty"`
+	ServerName    string   `json:"server_name,omitempty"`
+}
+
+// diffResponse is the /api/diff payload. The three lists are always present
+// so the dashboard can iterate without nil checks.
+type diffResponse struct {
+	New      []diffEntry       `json:"new"`
+	Resolved []diffEntry       `json:"resolved"`
+	Changed  []diffChangeEntry `json:"changed"`
+}
+
+// compactDiffEntry reduces a report result to the fields the diff panel
+// renders.
+func compactDiffEntry(r report.Result) diffEntry {
+	return diffEntry{
+		Addr:          r.Addr(),
+		SecurityTypes: append([]string(nil), r.SecurityTypes...),
+		ServerName:    r.ServerName,
+	}
+}
+
+// handleDiff compares two previous runs with the same comparison logic the
+// reports use. The base names the older run; the target the newer one. Only
+// the run folders are read, so the dashboard state is untouched and the
+// endpoint stays usable while a scan is running.
+func (s *server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Base   string `json:"base"`
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	base := strings.TrimSpace(req.Base)
+	target := strings.TrimSpace(req.Target)
+	if !validRunName(base) || !validRunName(target) {
+		http.Error(w, "invalid run name", http.StatusBadRequest)
+		return
+	}
+	baseDir, status, err := s.resolveRunDir(base)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+	targetDir, status, err := s.resolveRunDir(target)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+	baseDoc, status, err := s.loadRunReport(baseDir)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+	targetDoc, status, err := s.loadRunReport(targetDir)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	comparison := app.Compare(base, baseDoc.Results, targetDoc.Results)
+	resp := diffResponse{
+		New:      []diffEntry{},
+		Resolved: []diffEntry{},
+		Changed:  []diffChangeEntry{},
+	}
+	for _, result := range comparison.New {
+		resp.New = append(resp.New, compactDiffEntry(result))
+	}
+	for _, result := range comparison.Resolved {
+		resp.Resolved = append(resp.Resolved, compactDiffEntry(result))
+	}
+	for _, change := range comparison.Changed {
+		entry := compactDiffEntry(change.After)
+		resp.Changed = append(resp.Changed, diffChangeEntry{
+			Addr:          entry.Addr,
+			Reason:        change.Reason,
+			SecurityTypes: entry.SecurityTypes,
+			ServerName:    entry.ServerName,
+		})
+	}
+	writeJSON(w, resp)
 }
 
 func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
