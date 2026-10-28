@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+
 	"vncshot/scanner"
 )
 
@@ -16,6 +18,9 @@ type Plan struct {
 	Ports int
 	// Credentials is the number of password candidates per RFB endpoint.
 	Credentials int
+	// Excluded is the number of host:port pairs the exclusion list dropped.
+	// They are never contacted; the dry run shows the boundary explicitly.
+	Excluded int
 	// First and Last are the first and last target in scan order, useful to
 	// spot an off-by-one in a range.
 	First string
@@ -29,6 +34,21 @@ func DescribeScope(cfg Config, ports []int) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	// Exclusions shrink the scope the same way they do for a real scan, so
+	// a dry run shows the boundary the operator is about to enforce.
+	var excluded int
+	if cfg.ExcludeFile != "" {
+		exclusions, err := LoadExclusions(cfg.ExcludeFile)
+		if err != nil {
+			return Plan{}, fmt.Errorf("exclusion list requested: %w", err)
+		}
+		kept, dropped := exclusions.Filter(targets)
+		targets = kept
+		excluded = len(dropped)
+		if len(targets) == 0 {
+			return Plan{}, fmt.Errorf("every target is excluded by %s; nothing to scan", cfg.ExcludeFile)
+		}
+	}
 	creds, err := Credentials(cfg)
 	if err != nil {
 		return Plan{}, err
@@ -38,6 +58,7 @@ func DescribeScope(cfg Config, ports []int) (Plan, error) {
 		Targets:     len(targets),
 		Ports:       len(ports),
 		Credentials: len(creds),
+		Excluded:    excluded,
 	}
 
 	hosts := make(map[string]struct{}, len(targets))

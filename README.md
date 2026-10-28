@@ -45,7 +45,12 @@ previous-run history, all on loopback.*
   - [Manifest](#manifest)
   - [Baseline comparison](#baseline-comparison)
   - [Webhook notifications](#webhook-notifications)
+  - [Acceptance and exclusion lists](#acceptance-and-exclusion-lists)
+  - [Certificate expiry tracking](#certificate-expiry-tracking)
+  - [Continuous monitoring](#continuous-monitoring)
   - [Maintenance and retention](#maintenance-and-retention)
+- [Running behind a proxy](#running-behind-a-proxy)
+- [Self-check](#self-check)
 - [Exit codes](#exit-codes)
 - [Performance tuning](#performance-tuning)
 - [Troubleshooting](#troubleshooting)
@@ -71,8 +76,8 @@ previous-run history, all on loopback.*
 - Concurrent worker pool with configurable rate limiting and per-host caps
 - RFB 3.3 / 3.7 / 3.8 handshake, passwordless (`None`) detection and
   weak-password detection
-- TLS and VeNCrypt probing (`TLSNone`, `TLSVnc`) with peer certificate
-  evidence for every established encrypted session
+- TLS and VeNCrypt probing (`TLSNone`, `TLSVnc`, `X509None`, `X509Vnc`) with
+  peer certificate evidence for every established encrypted session
 - Framebuffer capture to PNG for passwordless and weak-password endpoints
 - Read-only probing: one frame is requested and the session is closed
 - JSON + self-contained HTML report (base64 thumbnails, filter, modal)
@@ -85,7 +90,17 @@ previous-run history, all on loopback.*
   `security_types` and a `tls` flag
 - Baseline comparison against a previous run (new, resolved and changed findings)
 - SHA-256 manifest of every run artifact (`-manifest`) for evidence integrity
-- Optional webhook notification when a run has new findings or exposed hosts
+- Optional notifications on completion: webhook, Slack, SMTP e-mail and
+  syslog CEF events (`-webhook`, `-slack-url`, `-mail-server`, `-syslog`)
+- Acceptance list for known findings (`-accept`) and exclusion list for
+  segments that are never contacted (`-exclude`)
+- Certificate expiry tracking (`-cert-warn`) with expires-soon badges and
+  summary counters
+- Scheduled scanning (`-interval`) with automatic per-round baselines and a
+  Prometheus metrics endpoint (`-metrics-addr`)
+- SOCKS5 proxy support (`-proxy`) for reaching isolated segments through a
+  jumphost
+- Environment self-check (`-selfcheck`) for new deployments
 - Flag defaults from a config file (`-config`) and `VNCSHOT_*` environment variables
 - Deterministic, sorted results so repeated scans can be compared directly
 - One TCP connection per attempt and bounded per-host concurrency
@@ -166,6 +181,13 @@ installed binary and the installed directory always agree. There are no
 runtime external dependencies beyond the Go toolchain used for building.
 
 ### Uninstall
+
+```bash
+sudo ./install.sh --uninstall          # removes the binary, keeps reports
+sudo ./install.sh --uninstall --purge-reports   # also deletes $REPORT_DIR
+```
+
+Manual removal is still possible:
 
 ```bash
 sudo rm -f /usr/local/bin/vncshot
@@ -250,6 +272,19 @@ injects the release version at build time.
 | `-gui-host` | `127.0.0.1` | GUI listen address (loopback only) |
 | `-gui-port` | `0` | GUI listen port (`0` = pick a free port) |
 | `-gui-no-browser` | `false` | Do not open the GUI in a browser automatically |
+| `-proxy` | | SOCKS5 proxy for every probe, `socks5://` (local resolution) or `socks5h://` (proxy resolves); default port 1080 |
+| `-exclude` | | File with IPs, CIDR ranges or `ip:port` entries that are never contacted |
+| `-accept` | | File listing approved endpoints (`ip:port [reason]`, optional `until:YYYY-MM-DD`) whose findings stop alarming |
+| `-cert-warn` | `30` | Days ahead of certificate expiry to flag TLS certificates (`0` disables) |
+| `-slack-url` | | Slack incoming-webhook URL (https only) receiving a formatted message |
+| `-mail-server` | | SMTP relay `host:port` for e-mail notifications (STARTTLS mandatory unless `-mail-no-tls`) |
+| `-mail-from` / `-mail-to` | | Envelope sender / comma-separated recipients for e-mail |
+| `-mail-no-tls` | `false` | Allow plaintext SMTP without STARTTLS (credentials are still never sent without TLS) |
+| `-mail-user` | | SMTP AUTH PLAIN user; password comes from `VNCSHOT_MAIL_PASSWORD` |
+| `-syslog` | | Syslog receiver (`udp://host:port` or `tcp://host:port`) receiving CEF events |
+| `-metrics-addr` | | Serve Prometheus text metrics on this address (use loopback) |
+| `-interval` | `0s` | Rescan forever with this pause between rounds, diffing against the previous round |
+| `-selfcheck` | `false` | Verify the environment (root, report root, TLS roots, browser, clock, loopback, disk) and exit |
 
 The `-gui-*` flags only apply together with `-gui`.
 
@@ -967,10 +1002,118 @@ The password value is never included: webhook entries carry only
 base name, so the receiver never learns the local filesystem path, and error
 messages redact the endpoint's query string and userinfo because those can
 carry access tokens. `new_findings` is empty when no baseline was requested.
+Endpoints approved through `-accept` (below) carry `"accepted": true` and
+leave the alarm checks; results with an established TLS session also carry a
+`certificates` block (`ip`, `port`, `subject_sha256`, `self_signed`,
+`expired`, `expires_at`).
 
 A delivery failure is a warning, not a failed scan: the CLI prints
 `warning: webhook notification failed: ...` on stderr after the summary, the
 artifacts remain intact, and the exit status still reflects the scan itself.
+
+### Acceptance and exclusion lists
+
+Two lists answer two different questions.
+
+`-accept <file>` marks endpoints whose findings are known and approved. The
+scan still probes them and they stay in every report, but they stop
+triggering notifications and leave the baseline diff's *new findings*
+section, so an accepted host does not page the operator on every run:
+
+```
+# accept.txt — ip:port [reason]; a bare IP or ip:* covers all ports
+192.0.2.10:5900 reception TV, approved by operations
+192.0.2.11       lab subnet, ticket #123, until:2027-06-30
+[2001:db8::10]:5900 IPv6 endpoint
+```
+
+`until:YYYY-MM-DD` expires the approval: after that date the finding alarms
+again (no error, the entry simply stops applying). A malformed line is a hard
+error with the line number, because a silently ignored acceptance would keep
+alarming.
+
+`-exclude <file>` is a safety boundary instead: listed addresses are dropped
+from the scope before any connection is attempted and never contacted at
+all:
+
+```
+# exclude.txt — IP, CIDR range, or ip:port for a single endpoint
+192.0.2.0/24
+10.9.9.9:5900
+[2001:db8::1]:5900
+```
+
+Use `-exclude` for critical production segments that must not receive even a
+TCP probe, and `-accept` for findings that are real but already handled.
+Both lists load with the same fail-fast contract as `-baseline`: a broken
+file stops the scan before a run folder is created. A scope that is excluded
+entirely is refused. `-dry-run` shows how many pairs the exclusion list
+dropped.
+
+### Certificate expiry tracking
+
+`-cert-warn <days>` (default 30, `0` disables) flags peer certificates whose
+validity ends inside the window. Flagged results carry `expires_soon`, the
+summary counter `expiring_soon` counts them, HTML and PDF render an
+*expires soon* badge next to the existing self-signed/expired markers, the
+CSV export has the full certificate columns, and the Slack and webhook
+notifications include the count. The check runs against the clock at report
+time; a certificate that is already expired is reported as expired, not as
+expiring.
+
+### Continuous monitoring
+
+`-interval <duration>` turns a scan into a recurring job without cron: the
+scanner repeats the same scope forever, sleeps the given pause between
+rounds (measured from round starts, so a slow round cannot drift the
+cadence), and diffs every round against the previous one automatically. The
+first round uses `-baseline` if given, later rounds pick the newest run
+folder in the report root themselves.
+
+```bash
+sudo vncshot -file /root/scope.txt -interval 24h -keep 30 \
+  -slack-url https://hooks.slack.com/services/T000/B000/XXXX \
+  -cert-warn 30
+```
+
+Round 1 reports without a diff, round 2 prints the first baseline comparison,
+and so on — a change feed. `-interval` rejects `-resume` (the resumed scope
+is already partially complete) and `-baseline` (it would compare every round
+against the same stale run).
+
+For dashboards, `-metrics-addr 127.0.0.1:9100` serves the last round's
+counters in Prometheus text exposition: `vncshot_targets`, `vncshot_open`,
+`vncshot_rfb_services`, `vncshot_passwordless`, `vncshot_weak_credentials`,
+`vncshot_tls_services`, `vncshot_self_signed_certs`,
+`vncshot_expiring_certs`, `vncshot_accepted_findings`, `vncshot_screenshots`,
+`vncshot_errors`, plus the series gauges `vncshot_scans_total`,
+`vncshot_last_scan_timestamp_seconds` and
+`vncshot_last_scan_duration_seconds`. The metrics have no labels on purpose:
+run directories or hosts as label values would grow without bound. The
+endpoint has no authentication, so bind loopback and scrape through a local
+exporter; binding a non-loopback address prints a warning.
+
+Notifications go to more channels than the webhook:
+
+* `-slack-url <https-url>` posts a compact message (summary plus up to ten
+  findings) to a Slack incoming webhook. Only `https://` is accepted,
+  because the webhook URL carries a secret token.
+* `-mail-server host:port -mail-from you@example.com -mail-to a@x,b@x`
+  sends a plain-text mail. STARTTLS is mandatory unless `-mail-no-tls` is
+  passed, and credentials are never sent without TLS even then. Set
+  `-mail-user` and the `VNCSHOT_MAIL_PASSWORD` environment variable for
+  AUTH PLAIN; the password is read from the environment so it never appears
+  in the process list.
+* `-syslog udp://collector:514` (or `tcp://`) sends ArcSight CEF events: one
+  per passwordless (`VNC_PASSWORDLESS`, severity 7), weak password
+  (`VNC_WEAK_PASSWORD`, severity 9) or expiring certificate
+  (`VNC_CERT_EXPIRING`, severity 5) finding, plus one summary event
+  (`VNC_SCAN_SUMMARY`). Accepted findings are not sent. Lines are
+  RFC 3164 framed and truncated to 1024 bytes.
+
+Every channel is independent: one receiver being down never silences the
+others and never fails the scan. Failures are collected in the same
+`warning:` line as the webhook and retention problems.
 
 ### Maintenance and retention
 
@@ -1006,6 +1149,9 @@ Deletion is deliberately narrow and fails safe:
   folder (`YYYYMMDD-HHMMSS`) are candidates. Plain files, unrelated directories
   and symlinked entries in the report root are never treated as runs, and
   linked content is not measured or counted.
+* The `-resume` source directory is protected: a continued run references the
+  previous run's screenshots, so that folder survives retention even when it
+  is old enough to fall in the removed set.
 * A retention failure is reported as `warning: retention failed: ...` and does
   not turn a completed scan into a failed one; the artifacts and exit status
   still describe the scan.
@@ -1016,6 +1162,30 @@ scan, the CLI prints `retention: removed N old run(s)` when the policy deleted
 folders. In the GUI, the keep-runs count and the prune dry-run toggle apply to
 scans started from the dashboard, and the dashboard shows
 `Removed N old run(s)` after the pass.
+
+## Running behind a proxy
+
+`-proxy socks5://[user:pass@]host[:port]` routes every probe through a SOCKS5
+proxy — useful when the assessment host reaches isolated segments only through
+a jumphost. `socks5h://` additionally asks the proxy to resolve hostnames,
+which matters when internal names are not resolvable locally. Without a port
+the default 1080 applies. Credentials live in the URL userinfo only and never
+appear in error messages. The SOCKS5 handshake honours the same connect
+deadline as direct dials, and proxy failures are classified as connect
+errors, so `-retries` keeps working.
+
+```bash
+sudo vncshot -file scope.txt -proxy socks5h://127.0.0.1:1080
+```
+
+## Self-check
+
+`sudo vncshot -selfcheck` verifies the environment without scanning or
+changing anything and exits 0 only when every check passes (warnings do not
+fail): root privileges, report-root writability, the system TLS root pool,
+`xdg-open` (GUI auto-open), clock sanity, loopback sockets and free disk
+space (warn below 100 MiB). Use it when a scan behaves unexpectedly, or in
+new deployments before the first scan.
 
 ## Exit codes
 

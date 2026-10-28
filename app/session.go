@@ -172,6 +172,14 @@ type Session struct {
 	remaining []scanner.Target
 	reused    []report.Result
 	resumeDir string
+
+	// exclusions were loaded during Prepare and matched targets were
+	// dropped before the run directory was created, so the scope itself
+	// never includes them.
+	exclusions     Exclusions
+	excludedCount  int
+	acceptances    AcceptanceSet
+	acceptanceFile string
 }
 
 // Outcome is the result of a completed scan.
@@ -233,6 +241,36 @@ func Prepare(cfg Config) (*Session, error) {
 	if cfg.RatePerSec > scanner.MaxRate {
 		return nil, fmt.Errorf("rate must be at most %d connections per second", scanner.MaxRate)
 	}
+	if cfg.CertWarnDays < 0 {
+		return nil, fmt.Errorf("cert-warn must not be negative")
+	}
+
+	// Exclusion is a safety boundary: matching targets leave the scope
+	// before the run directory exists, and the fail-fast contract matches
+	// baseline/resume so a broken list never produces an empty run folder.
+	var exclusions Exclusions
+	var excludedCount int
+	if cfg.ExcludeFile != "" {
+		exclusions, err = LoadExclusions(cfg.ExcludeFile)
+		if err != nil {
+			return nil, fmt.Errorf("exclusion list requested: %w", err)
+		}
+		kept, dropped := exclusions.Filter(targets)
+		targets, excludedCount = kept, len(dropped)
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("every target is excluded by %s; nothing to scan", cfg.ExcludeFile)
+		}
+	}
+
+	// The acceptance list is also fail-fast: an unreadable file must stop
+	// the scan instead of silently alarming about approved findings.
+	var acceptances AcceptanceSet
+	if cfg.AcceptFile != "" {
+		acceptances, err = LoadAcceptances(cfg.AcceptFile)
+		if err != nil {
+			return nil, fmt.Errorf("acceptance list requested: %w", err)
+		}
+	}
 
 	creds, err := Credentials(cfg)
 	if err != nil {
@@ -275,22 +313,26 @@ func Prepare(cfg Config) (*Session, error) {
 	}
 
 	s := &Session{
-		Targets:     targets,
-		Credentials: creds,
-		RunDir:      runDir,
-		JSONPath:    resolveArtifactPath(cfg.Output, runDir, "vncshot_report.json"),
-		HTMLPath:    resolveArtifactPath(cfg.HTML, runDir, "vncshot_report.html"),
-		PDFPath:     resolveArtifactPath(cfg.PDF, runDir, "vncshot_report.pdf"),
-		CSVPath:     resolveArtifactPath(cfg.CSV, runDir, "vncshot_report.csv"),
-		ShotDir:     resolveArtifactPath(cfg.ScreenshotDir, runDir, "screenshots"),
-		config:      cfg,
-		fallbacked:  fallbacked,
-		fallbackErr: fallbackErr,
-		baseline:    baseline,
-		baselineDir: cfg.Baseline,
-		remaining:   remaining,
-		reused:      reused,
-		resumeDir:   cfg.ResumeDir,
+		Targets:        targets,
+		Credentials:    creds,
+		RunDir:         runDir,
+		JSONPath:       resolveArtifactPath(cfg.Output, runDir, "vncshot_report.json"),
+		HTMLPath:       resolveArtifactPath(cfg.HTML, runDir, "vncshot_report.html"),
+		PDFPath:        resolveArtifactPath(cfg.PDF, runDir, "vncshot_report.pdf"),
+		CSVPath:        resolveArtifactPath(cfg.CSV, runDir, "vncshot_report.csv"),
+		ShotDir:        resolveArtifactPath(cfg.ScreenshotDir, runDir, "screenshots"),
+		config:         cfg,
+		fallbacked:     fallbacked,
+		fallbackErr:    fallbackErr,
+		baseline:       baseline,
+		baselineDir:    cfg.Baseline,
+		remaining:      remaining,
+		reused:         reused,
+		resumeDir:      cfg.ResumeDir,
+		exclusions:     exclusions,
+		excludedCount:  excludedCount,
+		acceptances:    acceptances,
+		acceptanceFile: cfg.AcceptFile,
 	}
 	if addr := strings.TrimSpace(cfg.SourceAddr); addr != "" && !strings.EqualFold(addr, "auto") {
 		ip := net.ParseIP(addr)
@@ -332,6 +374,17 @@ func (s *Session) RemainingTargets() int {
 	return len(s.remaining)
 }
 
+// ExcludedTargets returns how many targets the exclusion list dropped from
+// the scope. Those endpoints were never contacted and produce no result.
+func (s *Session) ExcludedTargets() int {
+	return s.excludedCount
+}
+
+// AcceptanceFile returns the configured acceptance list path, or "".
+func (s *Session) AcceptanceFile() string {
+	return s.acceptanceFile
+}
+
 // Scan probes every target that still needs one and writes JSON, HTML, CSV
 // and (optionally) PDF reports, plus an optional checksum manifest. Results
 // reused from a resume source are merged into the same result set. A
@@ -350,6 +403,7 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 		Shared:          cfg.Shared,
 		Passwords:       s.Credentials,
 		LocalAddr:       s.sourceIP,
+		ProxyURL:        cfg.ProxyURL,
 		ShowProgress:    cfg.ShowProgress,
 	}
 	if progress != nil {
@@ -370,6 +424,20 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 	// Sort once before any artifact is written so every report contains the
 	// same deterministic order.
 	report.SortResults(results)
+
+	// Acceptances and the expiry window are posture decisions evaluated once
+	// here, before the summary is computed, so every artifact and every
+	// notification describe the same flags. The expiry check uses the
+	// report-time clock, matching how CountExpiringSoon documents its
+	// counting. Accepted results stay in the inventory; the summary counters
+	// for open/passwordless/etc. deliberately do not change with acceptance.
+	if s.acceptances.Count() > 0 {
+		s.acceptances.Apply(results, time.Now().UTC())
+	}
+	if cfg.CertWarnDays > 0 {
+		within := time.Duration(cfg.CertWarnDays) * 24 * time.Hour
+		report.MarkExpiringSoon(results, time.Now().UTC(), within)
+	}
 
 	out := Outcome{
 		Results: results,
@@ -435,9 +503,23 @@ func (s *Session) Scan(ctx context.Context, progress func(Progress)) (Outcome, e
 	// A receiver outage must never fail a completed scan or hide its
 	// results, so a notification failure is reported as a warning. Partial
 	// results from an interrupted scan are not announced.
-	if cfg.WebhookURL != "" && shouldNotifyWebhook(out) && ctx.Err() == nil {
-		if err := NotifyWebhook(ctx, cfg.WebhookURL, webhookPayload(out, Version)); err != nil {
-			out.Warning = fmt.Sprintf("webhook notification failed: %v", err)
+	if ctx.Err() == nil && shouldNotifyWebhook(out) {
+		if cfg.WebhookURL != "" {
+			if err := NotifyWebhook(ctx, cfg.WebhookURL, webhookPayload(out, Version)); err != nil {
+				out.Warning = fmt.Sprintf("webhook notification failed: %v", err)
+			}
+		}
+		// The extra channels dispatch independently of the webhook and of
+		// each other, so one outage cannot silence the others.
+		if cfg.Notify.anyChannel() {
+			if err := dispatchNotifications(ctx, cfg.Notify, out); err != nil {
+				message := fmt.Sprintf("notification failed: %v", err)
+				if out.Warning == "" {
+					out.Warning = message
+				} else {
+					out.Warning += "; " + message
+				}
+			}
 		}
 	}
 

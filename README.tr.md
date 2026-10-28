@@ -45,7 +45,12 @@ geçmişi; tümü loopback üzerinde.*
   - [Manifest dosyası](#manifest-dosyası)
   - [Temel karşılaştırma](#temel-karşılaştırma)
   - [Webhook bildirimleri](#webhook-bildirimleri)
+  - [Kabul ve hariç tutma listeleri](#kabul-ve-hariç-tutma-listeleri)
+  - [Sertifika süre takibi](#sertifika-süre-takibi)
+  - [Sürekli izleme](#sürekli-izleme)
   - [Bakım ve saklama](#bakım-ve-saklama)
+- [Proxy arkasında çalıştırma](#proxy-arkasında-çalıştırma)
+- [Kendi kendini kontrol](#kendi-kendini-kontrol)
 - [Çıkış kodları](#çıkış-kodları)
 - [Performans ayarı](#performans-ayarı)
 - [Sorun giderme](#sorun-giderme)
@@ -72,8 +77,8 @@ geçmişi; tümü loopback üzerinde.*
   eşzamanlı worker havuzu
 - RFB 3.3 / 3.7 / 3.8 el sıkışması, parolasız (`None`) tespiti ve
   zayıf parola tespiti
-- TLS ve VeNCrypt sondalaması (`TLSNone`, `TLSVnc`) ve kurulan her şifreli
-  oturum için eş sertifika kanıtı
+- TLS ve VeNCrypt sondalaması (`TLSNone`, `TLSVnc`, `X509None`, `X509Vnc`) ve
+  kurulan her şifreli oturum için eş sertifika kanıtı
 - Parolasız ve zayıf parolalı uç noktalar için PNG'ye ekran görüntüsü
 - Salt okunur sondalama: tek kare istenir ve oturum kapatılır
 - JSON + kendi kendine yeten HTML raporu (gömülü küçük görseller, filtre, modal)
@@ -86,7 +91,15 @@ geçmişi; tümü loopback üzerinde.*
   `tls` bayrağını kaydeder
 - Önceki taramayla temel karşılaştırma (yeni, çözülen ve değişen bulgular)
 - Delil bütünlüğü için her çıktının SHA-256 manifesti (`-manifest`)
-- Yeni bulgu veya açık uç nokta varsa isteğe bağlı webhook bildirimi
+- Tamamlanınca bildirim: webhook, Slack, SMTP e-posta ve syslog CEF olayları
+  (`-webhook`, `-slack-url`, `-mail-server`, `-syslog`)
+- Bilinen bulgular için kabul listesi (`-accept`) ve hiç temas edilmeyecek
+  segmentler için hariç tutma listesi (`-exclude`)
+- Sertifika süre takibi (`-cert-warn`): expires-soon rozetleri ve özet sayaçları
+- Zamanlanmış tarama (`-interval`) ve otomatik tur bazlı temel
+  karşılaştırmalar; Prometheus metrik uç noktası (`-metrics-addr`)
+- İzole segmentlere jumphost üzerinden ulaşmak için SOCKS5 proxy desteği (`-proxy`)
+- Yeni kurulumlar için ortam kendi kendini kontrolü (`-selfcheck`)
 - Yapılandırma dosyası (`-config`) ve `VNCSHOT_*` ortam değişkenlerinden
   bayrak varsayılanları
 - Tekrarlanan taramaların doğrudan karşılaştırılabilmesi için deterministik,
@@ -173,6 +186,18 @@ dışında çalışma zamanı harici bağımlılık yoktur.
 ### Kaldırma
 
 ```bash
+sudo ./install.sh --uninstall                  # ikiliyi kaldırır, raporları korur
+sudo ./install.sh --uninstall --purge-reports  # $REPORT_DIR'i de siler
+```
+
+`--purge-reports` verilmedikçe rapor dizini asla silinmez; verildiğinde
+açık bir onay istenir (veya mevcut onay bayrağı kullanılır) ve `/` veya ev
+dizini gibi tehlikeli hedefler reddedilir. Raporlar tarama kanıtı
+içerdiğinden silme asla varsayılan değildir.
+
+Elle kaldırma hâlâ mümkündür:
+
+```bash
 sudo rm -f /usr/local/bin/vncshot
 sudo rm -rf /usr/local/vncshot     # tüm raporları ve ekran görüntülerini siler
 ```
@@ -256,6 +281,19 @@ sırasında gömer.
 | `-gui-host` | `127.0.0.1` | GUI dinleme adresi (yalnızca loopback) |
 | `-gui-port` | `0` | GUI dinleme portu (`0` = boş port seç) |
 | `-gui-no-browser` | `false` | GUI'yi tarayıcıda otomatik açma |
+| `-proxy` | | Tüm sondalar için SOCKS5 proxy, `socks5://` (yerel çözümleme) veya `socks5h://` (proxy çözer); varsayılan port 1080 |
+| `-exclude` | | Hiç temas edilmeyecek IP'ler, CIDR aralıkları veya `ip:port` girdileri içeren dosya |
+| `-accept` | | Onaylı uç noktaları listeleyen dosya (`ip:port [gerekçe]`, opsiyonel `until:YYYY-MM-DD`); bu bulgular alarm üretmeyi bırakır |
+| `-cert-warn` | `30` | Sertifika süresinin kaç gün kala işaretleneceği (`0` kapatır) |
+| `-slack-url` | | Biçimlendirilmiş mesaj alan Slack incoming-webhook URL'si (yalnızca https) |
+| `-mail-server` | | E-posta bildirimi için SMTP aktarıcı `host:port` (`-mail-no-tls` yoksa STARTTLS zorunlu) |
+| `-mail-from` / `-mail-to` | | E-posta gönderen adresi / virgülle ayrılmış alıcılar |
+| `-mail-no-tls` | `false` | STARTTLS olmadan düz metin SMTP'ye izin ver (kimlik bilgisi yine asla TLS'siz gönderilmez) |
+| `-mail-user` | | SMTP AUTH PLAIN kullanıcısı; parola `VNCSHOT_MAIL_PASSWORD` ortam değişkeninden okunur |
+| `-syslog` | | CEF olayları alan syslog alıcısı (`udp://host:port` veya `tcp://host:port`) |
+| `-metrics-addr` | | Prometheus metin metriklerini bu adreste sun (loopback kullanın) |
+| `-interval` | `0s` | Turlar arasında bu kadar bekleyerek sürekli yeniden tara; her tur bir öncekiyle karşılaştırılır |
+| `-selfcheck` | `false` | Ortamı doğrula (root, rapor kökü, TLS kökleri, tarayıcı, saat, loopback, disk) ve çık |
 
 `-gui-*` bayrakları yalnızca `-gui` ile birlikte anlamlıdır.
 
@@ -977,10 +1015,114 @@ Parola değeri asla dahil edilmez: webhook kayıtları yalnızca
 klasörünün taban adıdır; böylece alıcı yerel dosya sistemi yolunu öğrenmez ve
 hata mesajları erişim token'ı taşıyabildikleri için uç noktanın sorgu dizesini
 ve kullanıcı bilgisini gizler. Temel istenmediyse `new_findings` boştur.
+`-accept` (aşağıda) ile onaylanmış uç noktalar `"accepted": true` taşır ve
+alarm kontrollerinin dışına çıkar; TLS oturumu kurulmuş sonuçlar ayrıca bir
+`certificates` bloğu taşır (`ip`, `port`, `subject_sha256`, `self_signed`,
+`expired`, `expires_at`).
 
 Teslimat hatası, başarısız tarama değil uyarıdır: CLI özetten sonra stderr'e
 `warning: webhook notification failed: ...` yazar, çıktılar bozulmadan kalır ve
 çıkış durumu yine taramanın kendisini yansıtır.
+
+### Kabul ve hariç tutma listeleri
+
+İki liste iki farklı soruya cevap verir.
+
+`-accept <dosya>`, bulguları bilinen ve onaylanmış uç noktaları işaretler.
+Tarama yine de onlara bağlanır ve her raporda kalırlar; ancak bildirimleri
+tetiklemeyi bırakırlar ve temel karşılaştırmasının *yeni bulgular* bölümünden
+çıkarlar — böylece onaylanmış bir host her turda operatörü uyarmaz:
+
+```
+# accept.txt — ip:port [gerekçe]; çıplak IP veya ip:* tüm portları kapsar
+192.0.2.10:5900 resepsiyon TV, operasyon onaylı
+192.0.2.11       lab subnet, talep #123, until:2027-06-30
+[2001:db8::10]:5900 IPv6 uç nokta
+```
+
+`until:YYYY-MM-DD` onayı sona erdirir: o tarihten sonra bulgu yeniden alarm
+üretir (hata verilmez, kayıt yalnızca uygulanmayı bırakır). Bozuk bir satır
+satır numarasıyla sert hata verir; çünkü sessizce yok sayılan bir onay
+operatörü uyarmaya devam ederdi.
+
+`-exclude <dosya>` ise bir güvenlik sınırıdır: listelenen adresler hiçbir
+bağlantı denenmeden önce kapsamdan çıkarılır ve hiç temas edilmez:
+
+```
+# exclude.txt — tek IP, CIDR aralığı veya tek uç nokta için ip:port
+192.0.2.0/24
+10.9.9.9:5900
+[2001:db8::1]:5900
+```
+
+Kritik üretim segmentleri için (hiç TCP probe bile dokunulmaması gerekenler)
+`-exclude` kullanın; gerçek ama zaten ele alınmış bulgular için `-accept`.
+Her iki liste de `-baseline` ile aynı hızlı-hata sözleşmesiyle yüklenir: bozuk
+dosya, tarama klasörü oluşmadan önce taramayı durdurur. Tamamen dışlanan bir
+kapsam reddedilir. `-dry-run`, hariç tutma listesinin kaç çifti düşürdüğünü
+gösterir.
+
+### Sertifika süre takibi
+
+`-cert-warn <gün>` (varsayılan 30, `0` kapatır), geçerliliği bu pencere
+içinde biten sertifikanızı işaretler. İşaretlenen sonuçlar `expires_soon`
+taşır, `expiring_soon` özet sayacı sayar, HTML ve PDF mevcut
+self-signed/expired rozetlerinin yanına bir *expires soon* rozeti basar, CSV
+tam sertifika sütunlarını taşır ve Slack ile webhook bildirimleri sayacı
+içerir. Kontrol, rapor anındaki saate göre çalışır; süresi çoktan dolmuş
+sertifika "expiring" değil "expired" olarak raporlanır.
+
+### Sürekli izleme
+
+`-interval <süre>`, taramayı cron olmadan yinelenen bir işe çevirir: tarayıcı
+aynı kapsamı sonsuza dek tekrarlar, turlar arasında verilen süre kadar bekler
+(bekleme turun *başlangıcından* ölçülür; yavaş bir tur takvimi kaydıramaz) ve
+her turu bir öncekine göre otomatik olarak karşılaştırır. İlk tur verilmişse
+`-baseline` kullanır, sonraki turlar rapor kökündeki en yeni tarama klasörünü
+kendi bulur.
+
+```bash
+sudo vncshot -file /root/scope.txt -interval 24h -keep 30 \
+  -slack-url https://hooks.slack.com/services/T000/B000/XXXX \
+  -cert-warn 30
+```
+
+1. tur fark karşılaştırması olmadan raporlar, 2. tur ilk temel
+karşılaştırmayı basar — bir değişiklik akışı. `-interval`, `-resume` (sürdürülen
+kapsam zaten kısmen tamamlanmış) ve `-baseline` (her tur aynı bayat
+karşılaştırmayı yapardı) ile birlikte reddedilir.
+
+Pano için `-metrics-addr 127.0.0.1:9100` son turun sayaçlarını Prometheus metin
+biçiminde sunar: `vncshot_targets`, `vncshot_open`, `vncshot_rfb_services`,
+`vncshot_passwordless`, `vncshot_weak_credentials`, `vncshot_tls_services`,
+`vncshot_self_signed_certs`, `vncshot_expiring_certs`,
+`vncshot_accepted_findings`, `vncshot_screenshots`, `vncshot_errors` ve seri
+ölçüleri `vncshot_scans_total`, `vncshot_last_scan_timestamp_seconds`,
+`vncshot_last_scan_duration_seconds`. Ölçüler bilinçli olarak etiketsizdir:
+tarama klasörü veya host etiketleri sınırsız büyürdü. Uç nokta kimlik
+doğrulamasızdır; loopback'e bağlayın ve lokal exporter üzerinden kazıyın.
+Loopback olmayan bir adrese bağlanma uyarı basar.
+
+Bildirimler webhook'un ötesinde daha fazla kanala gider:
+
+* `-slack-url <https-url>`, Slack incoming webhook'una kompakt bir mesaj
+  (özet + en fazla on bulgu) gönderir. Webhook adresi gizli token taşıdığı
+  için yalnızca `https://` kabul edilir.
+* `-mail-server host:port -mail-from sen@ornek.com -mail-to a@x,b@x` düz metin
+  e-posta gönderir. `-mail-no-tls` verilmedikçe STARTTLS zorunludur ve o
+  bayrakla bile kimlik bilgisi asla TLS'siz gönderilmez. AUTH PLAIN için
+  `-mail-user` ve `VNCSHOT_MAIL_PASSWORD` ortam değişkenini kullanın; parola
+  ortamdan okunur, süreç listesinde görünmez.
+* `-syslog udp://toplayici:514` (veya `tcp://`) ArcSight CEF olayları gönderir:
+  parolasız (`VNC_PASSWORDLESS`, önem 7), zayıf parola (`VNC_WEAK_PASSWORD`,
+  önem 9) veya süresi dolmak üzere olan sertifika (`VNC_CERT_EXPIRING`, önem 5)
+  bulgusu başına bir olay + bir özet olayı (`VNC_SCAN_SUMMARY`). Onaylanmış
+  bulgular gönderilmez. Satırlar RFC 3164 çerçevelidir ve 1024 bayta
+  kısaltılır.
+
+Her kanal bağımsızdır: bir alıcının arızası diğerlerini susturmaz ve taramayı
+başarısız yapmaz. Hatalar webhook ve saklama sorunlarıyla aynı `warning:`
+satırında toplanır.
 
 ### Bakım ve saklama
 
@@ -1016,6 +1158,9 @@ Silme bilinçli olarak dardır ve güvenli tarafta kalır:
   ayrıştırılan (`YYYYMMDD-HHMMSS`) dizinler adaydır. Rapor kökündeki düz
   dosyalar, ilgisiz dizinler ve sembolik bağlantılar hiçbir zaman tarama
   sayılmaz; bağlantılı içerik ölçülmez veya sayılmaz.
+* `-resume` kaynak klasörü korunur: sürdürülen tarama önceki taramanın ekran
+  görüntülerine referans verir; o klasör, saklama setine girecek kadar eski
+  olsa bile silinmez.
 * Bir saklama hatası `warning: retention failed: ...` olarak bildirilir ve
   tamamlanan taramayı başarısız taramaya dönüştürmez; çıktılar ve çıkış durumu
   yine taramayı tanımlar.
@@ -1026,6 +1171,31 @@ taramadan sonra CLI, politika klasör sildiyse `retention: removed N old run(s)`
 satırını yazdırır. GUI'de tutulacak tarama sayısı ve prune deneme çalıştırması
 anahtarı panodan başlatılan taramalara uygulanır ve pano geçişten sonra
 `Removed N old run(s)` gösterir.
+
+## Proxy arkasında çalıştırma
+
+`-proxy socks5://[kullanıcı:parola@]host[:port]` tüm sondaları bir SOCKS5
+proxy'sinden geçirir — değerlendirme makinesi izole segmentlere yalnızca bir
+jumphost üzerinden erişebiliyorsa işe yarar. `socks5h://` ayrıca hostname
+çözümlemesini proxy'ye havale eder; iç adamların lokalde çözümlenemediği
+ortamlarda gereklidir. Port verilmemişse varsayılan 1080'dir. Kimlik
+bilgileri yalnızca URL userinfo'sunda yaşar ve hata mesajlarında asla
+görünmez. SOCKS5 el sıkışması doğrudan bağlantıyla aynı bağlantı zaman
+aşımına saygı duyar ve proxy hataları bağlantı hatası sınıfına girer; böylece
+`-retries` çalışmaya devam eder.
+
+```bash
+sudo vncshot -file scope.txt -proxy socks5h://127.0.0.1:1080
+```
+
+## Kendi kendini kontrol
+
+`sudo vncshot -selfcheck`, hiçbir şey taramadan veya değiştirmeden ortamı
+doğrular ve yalnızca tüm kontroller geçtiğinde 0 ile çıkar (uyarılar
+başarısızlık sayılmaz): root yetkisi, rapor kökü yazılabilirliği, sistem TLS
+kök havuzu, `xdg-open` (GUI otomatik açma), saat makuluğu, loopback
+soketleri ve boş disk alanı (100 MiB altında uyarı). Bir tarama beklenmedik
+davrandığında veya yeni bir kurulumda ilk taramadan önce kullanın.
 
 ## Çıkış kodları
 

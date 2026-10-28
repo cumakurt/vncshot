@@ -117,6 +117,17 @@ func Summarize(results []Result) Summary {
 		if r.Certificate != nil && r.Certificate.SelfSigned {
 			s.SelfSignedCerts++
 		}
+		// Posture flags are set by the caller before Summarize runs, so the
+		// counters agree with every rendered artifact and notification.
+		// ExpiringSoon counts flagged certificates; AcceptedFindings counts
+		// accepted endpoints that actually represent a finding, matching
+		// how the alarm predicate treats them.
+		if r.ExpiresSoon {
+			s.ExpiringSoon++
+		}
+		if r.Accepted && (r.Passwordless || r.Password != "") {
+			s.AcceptedFindings++
+		}
 		if r.Screenshot != "" {
 			s.Screenshots++
 		}

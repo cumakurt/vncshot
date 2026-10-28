@@ -23,6 +23,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -157,11 +159,25 @@ func (c config) notifyConfig() app.NotifyConfig {
 		SlackURL:     c.slackURL,
 		SMTPAddr:     c.mailServer,
 		SMTPFrom:     c.mailFrom,
+		SMTPTo:       splitAddresses(c.mailTo),
 		SMTPNoTLS:    c.mailNoTLS,
 		SMTPUser:     c.mailUser,
 		SMTPPassword: os.Getenv("VNCSHOT_MAIL_PASSWORD"),
 		SyslogAddr:   c.syslogAddr,
 	}
+}
+
+// splitAddresses breaks the comma-separated -mail-to value into envelope
+// recipients and drops empty entries from sloppy input like "a@x, b@x,".
+func splitAddresses(value string) []string {
+	entries := strings.Split(value, ",")
+	recipients := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			recipients = append(recipients, trimmed)
+		}
+	}
+	return recipients
 }
 
 func main() {
@@ -183,6 +199,16 @@ func main() {
 	if cfg.showVersion {
 		// Build information is harmless and must not require root.
 		fmt.Println(versionText())
+		return
+	}
+
+	// -selfcheck is a diagnostic, not a scan: it must run without root so it
+	// can tell an unprivileged operator what is missing.
+	if cfg.selfcheck {
+		if err := runSelfCheck(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -317,7 +343,87 @@ func parseFlags() (config, error) {
 		}
 	})
 
+	if cfg.certWarnDays < 0 {
+		return cfg, fmt.Errorf("cert-warn must not be negative")
+	}
+	// -interval re-runs the same scope automatically, which contradicts a
+	// resume (the scope already completed) and a fixed baseline (every
+	// round would repeat the same stale comparison). The GUI drives its own
+	// loop, so the two surfaces must not fight over the scheduler.
+	if cfg.interval > 0 {
+		if cfg.resume != "" {
+			return cfg, fmt.Errorf("interval cannot be combined with -resume: a resumed run already completed part of its scope")
+		}
+		if cfg.baseline != "" {
+			return cfg, fmt.Errorf("interval cannot be combined with -baseline: each round diffs against the previous round automatically")
+		}
+		if cfg.gui {
+			return cfg, fmt.Errorf("interval cannot be combined with -gui: the GUI drives its own live loop")
+		}
+	}
+	if err := validateNotificationFlags(cfg); err != nil {
+		return cfg, err
+	}
+
 	return cfg, nil
+}
+
+// validateNotificationFlags rejects misconfigured notification endpoints at
+// parse time. Failing at the first completed scan would discover a typo after
+// a scan the operator may have waited an hour for. Proxy checks belong here
+// for the same reason: a bad scheme would otherwise fail every single probe.
+func validateNotificationFlags(cfg config) error {
+	if cfg.proxyURL != "" {
+		parsed, err := url.Parse(cfg.proxyURL)
+		if err != nil || (parsed.Scheme != "socks5" && parsed.Scheme != "socks5h") || parsed.Host == "" {
+			return fmt.Errorf("proxy must be socks5:// or socks5h://[user:pass@]host[:port]")
+		}
+	}
+	if cfg.slackURL != "" {
+		parsed, err := url.Parse(cfg.slackURL)
+		// Slack incoming webhooks carry a secret token in the URL, so
+		// plaintext http would leak it to the network.
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return fmt.Errorf("slack-url must be an https:// incoming-webhook URL")
+		}
+	}
+	if (cfg.mailFrom != "" || cfg.mailTo != "") && cfg.mailServer == "" {
+		return fmt.Errorf("mail-from/mail-to require -mail-server")
+	}
+	if cfg.mailServer != "" && cfg.mailTo == "" {
+		return fmt.Errorf("mail-server requires at least one -mail-to address")
+	}
+	if cfg.syslogAddr != "" {
+		parsed, err := url.Parse(cfg.syslogAddr)
+		if err != nil || (parsed.Scheme != "udp" && parsed.Scheme != "tcp") || parsed.Host == "" || parsed.Port() == "" {
+			return fmt.Errorf("syslog must be udp://host:port or tcp://host:port")
+		}
+	}
+	if cfg.metricsAddr != "" && !loopbackListenAddr(cfg.metricsAddr) {
+		// Not fatal: an operator may deliberately expose counters to a
+		// monitoring host. Say it loudly anyway, because the endpoint has
+		// no authentication.
+		fmt.Fprintln(os.Stderr, "warning: -metrics-addr is not loopback-bound; the endpoint has no authentication")
+	}
+	return nil
+}
+
+// loopbackListenAddr reports whether the address binds a loopback interface.
+// The host may be an IP or a name; anything that does not clearly resolve to
+// loopback is treated as exposed.
+func loopbackListenAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func versionText() string {
@@ -360,12 +466,85 @@ func runCLI(cfg config) error {
 		}
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// The metrics endpoint lives for the whole invocation and the counters
+	// describe the most recent round, so -interval deployments expose a
+	// live view of the inventory. Bind errors are fatal: the operator
+	// explicitly asked for the endpoint.
+	var metrics *app.Metrics
+	if cfg.metricsAddr != "" {
+		metrics = app.NewMetrics()
+		go func() {
+			// Shutdown and bind problems are already reported by the
+			// validation and the readiness line; a serve error after a
+			// successful bind must not abort a running scan.
+			_ = metrics.Serve(ctx, cfg.metricsAddr)
+		}()
+	}
+
+	round := 0
+	var reportRoot string
+	for {
+		if cfg.interval > 0 {
+			fmt.Fprintf(os.Stderr, "\n=== round %d ===\n", round+1)
+		}
+		roundStart := time.Now()
+		out, err := runRound(ctx, cfg, round, reportRoot)
+		if err != nil {
+			return err
+		}
+		if out.RunDir != "" {
+			// Later rounds diff against the previous round, so the baseline
+			// search must look in the root this invocation actually writes
+			// to, which may differ from -out-dir after a fallback.
+			reportRoot = filepath.Dir(out.RunDir)
+		}
+		if metrics != nil {
+			metrics.Publish(out)
+		}
+		if cfg.interval <= 0 {
+			return nil
+		}
+		round++
+
+		// The schedule is measured from round starts, so a slow round
+		// cannot drift the cadence. An overrunning round runs the next one
+		// immediately; there is no catch-up burst.
+		delay := app.ScheduleDelay(cfg.interval, roundStart, time.Now())
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+	}
+}
+
+// runRound prepares and scans once. From the second round of an -interval
+// invocation the previous round in the same report root is the diff baseline,
+// which is what turns a repeated scan into a change feed.
+func runRound(ctx context.Context, cfg config, round int, reportRoot string) (app.Outcome, error) {
 	scanCfg := cfg.appConfig()
 	scanCfg.ShowProgress = true
+	if round > 0 && cfg.interval > 0 {
+		if previous, ok, err := app.PreviousRun(reportRoot); err != nil {
+			return app.Outcome{}, fmt.Errorf("choose baseline for round %d: %w", round+1, err)
+		} else if ok {
+			scanCfg.Baseline = previous
+		}
+	}
 
 	session, err := app.Prepare(scanCfg)
 	if err != nil {
-		return err
+		return app.Outcome{}, err
 	}
 	if warning := session.FallbackWarning(); warning != "" {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
@@ -374,14 +553,17 @@ func runCLI(cfg config) error {
 	fmt.Fprintf(os.Stderr, "targets: %d host:port pairs | ports: %s | workers: %d | rate: %s\n",
 		len(session.Targets), cfg.ports, cfg.workers, rateText(cfg.rate))
 	fmt.Fprintf(os.Stderr, "password candidates: %d\n", len(session.Credentials))
+	if excluded := session.ExcludedTargets(); excluded > 0 {
+		fmt.Fprintf(os.Stderr, "excluded: %d target(s) never contacted (%s)\n", excluded, cfg.exclude)
+	}
+	if session.AcceptanceFile() != "" {
+		fmt.Fprintf(os.Stderr, "accepted endpoints: %s\n", session.AcceptanceFile())
+	}
 	fmt.Fprintf(os.Stderr, "report directory: %s\n", session.RunDir)
 	if cfg.resume != "" {
 		fmt.Fprintf(os.Stderr, "resuming: reused %d result(s) from %s, %d target(s) remaining\n",
 			session.ResumedTargets(), filepath.Base(cfg.resume), session.RemainingTargets())
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	out, scanErr := session.Scan(ctx, nil)
 
@@ -411,11 +593,17 @@ func runCLI(cfg config) error {
 	if len(out.RemovedRuns) > 0 {
 		fmt.Fprintf(os.Stderr, "retention:   removed %d old run(s)\n", len(out.RemovedRuns))
 	}
+	if out.Summary.ExpiringSoon > 0 {
+		fmt.Fprintf(os.Stderr, "expiring certs: %d\n", out.Summary.ExpiringSoon)
+	}
+	if out.Summary.AcceptedFindings > 0 {
+		fmt.Fprintf(os.Stderr, "accepted findings: %d (see -accept list)\n", out.Summary.AcceptedFindings)
+	}
 	if out.Warning != "" {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", out.Warning)
 	}
 
-	return scanErr
+	return out, scanErr
 }
 
 // writeDiffSummary reports baseline comparison counts when one was requested.
@@ -462,6 +650,26 @@ func confirmAuthorization() (bool, error) {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}
 	return strings.EqualFold(strings.TrimSpace(answer), "yes"), nil
+}
+
+// runSelfCheck prints the environment verdict of -selfcheck and fails the
+// invocation only on a "fail" check; warnings are informational.
+func runSelfCheck(cfg config) error {
+	checks := app.SelfCheck(app.SelfCheckOptions{ReportRoot: cfg.outDir})
+	failed := false
+	for _, check := range checks {
+		fmt.Printf("%-14s %s\n", check.Status+":", check.Name)
+		if check.Detail != "" {
+			fmt.Printf("               %s\n", check.Detail)
+		}
+		if check.Status == app.StatusFail {
+			failed = true
+		}
+	}
+	if failed {
+		return fmt.Errorf("self-check failed; resolve the failures above before scanning")
+	}
+	return nil
 }
 
 // runPrune deletes old run folders under the report root and prints what it
@@ -531,6 +739,9 @@ func runDryRun(cfg config) error {
 
 	fmt.Fprintf(os.Stderr, "dry run: nothing will be sent\n")
 	fmt.Fprintf(os.Stderr, "targets:            %d host:port pairs\n", plan.Targets)
+	if plan.Excluded > 0 {
+		fmt.Fprintf(os.Stderr, "excluded:           %d (never contacted)\n", plan.Excluded)
+	}
 	fmt.Fprintf(os.Stderr, "unique hosts:       %d\n", plan.Hosts)
 	fmt.Fprintf(os.Stderr, "ports:              %d (%s)\n", plan.Ports, cfg.ports)
 	fmt.Fprintf(os.Stderr, "password candidates:%d\n", plan.Credentials)

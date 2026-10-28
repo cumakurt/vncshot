@@ -156,7 +156,7 @@
   "summary": {
     "accepted_findings": 0,
     "errors": 1,
-    "expiring_soon": 0,
+    "expiring_soon": 1,
     "open": 7,
     "passwordless": 1,
     "rfb": 7,

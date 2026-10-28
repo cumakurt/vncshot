@@ -40,3 +40,29 @@ func CountExpiringSoon(results []Result, now time.Time, within time.Duration) in
 	}
 	return count
 }
+
+// MarkExpiringSoon flags every result whose peer certificate falls inside the
+// expiry warning window and returns how many were flagged. The flags use the
+// same closed-interval rule as CountExpiringSoon, so a report's expires-soon
+// markers and its expiring_soon counter always agree. It mutates the results
+// in place; call it once per scan, before the results are rendered or sent
+// anywhere. A non-positive within means no window was configured and marks
+// nothing.
+func MarkExpiringSoon(results []Result, now time.Time, within time.Duration) int {
+	if within <= 0 {
+		return 0
+	}
+	count := 0
+	for i := range results {
+		certificate := results[i].Certificate
+		if certificate == nil || certificate.NotAfter.IsZero() {
+			continue
+		}
+		remaining := certificate.NotAfter.Sub(now)
+		if remaining >= 0 && remaining <= within {
+			results[i].ExpiresSoon = true
+			count++
+		}
+	}
+	return count
+}

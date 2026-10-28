@@ -190,11 +190,18 @@ func webhookPayload(out Outcome, version string) map[string]any {
 	}
 }
 
+// anyChannel reports whether at least one extra notification channel is
+// configured. Empty fields keep the dispatch call out of the hot path.
+func (nc NotifyConfig) anyChannel() bool {
+	return nc.SlackURL != "" || nc.SMTPAddr != "" || nc.SyslogAddr != ""
+}
+
 // shouldNotifyWebhook reports whether a run carries something worth waking an
-// operator for.
+// operator for. Accepted findings deliberately do not count: the operator
+// approved them, so they must not keep triggering notifications.
 func shouldNotifyWebhook(out Outcome) bool {
 	if out.Diff != nil && len(out.Diff.New) > 0 {
 		return true
 	}
-	return out.Summary.Passwordless > 0 || out.Summary.WeakCredentials > 0
+	return HasUnacceptedAlarms(out.Results)
 }

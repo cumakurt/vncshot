@@ -299,8 +299,17 @@ func TestShouldNotifyWebhook(t *testing.T) {
 		want bool
 	}{
 		{name: "quiet run", out: Outcome{}, want: false},
-		{name: "passwordless host", out: Outcome{Summary: report.Summary{Passwordless: 1}}, want: true},
-		{name: "weak credential", out: Outcome{Summary: report.Summary{WeakCredentials: 1}}, want: true},
+		// The alarm predicate reads the results, not the summary counters,
+		// so accepted findings can be excluded from the alarm.
+		{name: "passwordless host", out: Outcome{Results: []report.Result{{IP: "10.0.0.1", Port: 5900, Passwordless: true}}}, want: true},
+		{name: "weak credential", out: Outcome{Results: []report.Result{{IP: "10.0.0.2", Port: 5900, Password: "hunter2"}}}, want: true},
+		// Accepted findings are known-approved and must never alarm again.
+		{name: "accepted passwordless only", out: Outcome{Results: []report.Result{{IP: "10.0.0.3", Port: 5900, Passwordless: true, Accepted: true}}}, want: false},
+		{name: "accepted weak password only", out: Outcome{Results: []report.Result{{IP: "10.0.0.4", Port: 5900, Password: "hunter2", Accepted: true}}}, want: false},
+		{name: "mixed accepted and unaccepted", out: Outcome{Results: []report.Result{
+			{IP: "10.0.0.5", Port: 5900, Passwordless: true, Accepted: true},
+			{IP: "10.0.0.6", Port: 5900, Passwordless: true},
+		}}, want: true},
 		{name: "new finding", out: Outcome{Diff: &Diff{New: []report.Result{{IP: "10.0.0.1", Port: 5900}}}}, want: true},
 		{name: "no new findings", out: Outcome{Diff: &Diff{}}, want: false},
 	}
