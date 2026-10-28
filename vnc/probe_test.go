@@ -187,6 +187,65 @@ func assertRedPixel(t *testing.T, frame image.Image) {
 	}
 }
 
+func TestProbeCapturesSlowFramebuffer(t *testing.T) {
+	// 200x200 at 32bpp is 160 KiB, so the client must refresh its read
+	// deadline between chunks. A single overall deadline of 150ms would
+	// expire while the server is still dripping pixels.
+	const width, height = 200, 200
+	addr := serveRFB(t, func(s *rfbServer) {
+		_ = s.conn.SetDeadline(time.Now().Add(5 * time.Second))
+		s.sendBanner("RFB 003.008\n")
+		s.mustWrite([]byte{1, 1})
+		_ = s.mustRead(1)
+		s.mustWriteU32(0)
+		_ = s.mustRead(1)
+		s.sendServerInit(width, height, "slow-desk")
+		s.readCaptureMessages()
+
+		s.mustWrite([]byte{0, 0}) // FramebufferUpdate + padding
+		s.mustWriteU16(1)
+		s.mustWriteU16(0)
+		s.mustWriteU16(0)
+		s.mustWriteU16(width)
+		s.mustWriteU16(height)
+		s.mustWriteU32(0)
+
+		pix := make([]byte, width*height*4)
+		for i := 0; i < width*height; i++ {
+			pix[i*4+2] = 255
+		}
+		const chunk = 64 * 1024
+		for off := 0; off < len(pix); off += chunk {
+			if off > 0 {
+				time.Sleep(80 * time.Millisecond)
+			}
+			end := off + chunk
+			if end > len(pix) {
+				end = len(pix)
+			}
+			s.mustWrite(pix[off:end])
+		}
+	})
+
+	result, err := vnc.Probe(t.Context(), addr, vnc.Options{
+		Timeout: 150 * time.Millisecond,
+		Shared:  true,
+	})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if result == nil || !result.Passwordless {
+		t.Fatalf("result = %+v, want passwordless", result)
+	}
+	if result.Frame == nil {
+		t.Fatal("Frame is nil, want a capture paced across refreshed deadlines")
+	}
+	r, g, b, a := result.Frame.At(0, 0).RGBA()
+	if r != 0xFFFF || g != 0 || b != 0 || a != 0xFFFF {
+		t.Fatalf("Frame.At(0,0) = (%#x,%#x,%#x,%#x), want opaque red", r, g, b, a)
+	}
+}
+
 func TestProbePasswordlessWithCapture(t *testing.T) {
 	addr := serveRFB(t, func(s *rfbServer) {
 		s.sendBanner("RFB 003.008\n")

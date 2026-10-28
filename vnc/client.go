@@ -6,10 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"net"
 	"strings"
 	"time"
 )
+
+// pixelReadChunk is how many framebuffer bytes are pulled under one socket
+// deadline. Large raw rectangles are paced in these windows so a slow but
+// working server is not failed by a single overall read budget.
+const pixelReadChunk = 64 * 1024
 
 // Options controls a single RFB probe.
 type Options struct {
@@ -282,7 +288,11 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 		return discovery, nil
 	}
 
-	for _, cred := range opts.Passwords {
+	// A blank VNC password is tried before any other candidate. Servers that
+	// advertise authentication but accept "" are passwordless in practice;
+	// further guesses against that host are wasted work and risk lockouts.
+	passwords := withEmptyPasswordFirst(opts.Passwords)
+	for _, cred := range passwords {
 		if err := ctx.Err(); err != nil {
 			return discovery, err
 		}
@@ -292,7 +302,7 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 			// result still describes the endpoint.
 			return discovery, nil
 		}
-		if res.Password != "" {
+		if sessionAuthenticated(res) {
 			return res, nil
 		}
 		if res.AuthLocked {
@@ -303,6 +313,39 @@ func Probe(ctx context.Context, addr string, opts Options) (*Result, error) {
 		}
 	}
 	return discovery, nil
+}
+
+// withEmptyPasswordFirst ensures a blank password is the first VNC-auth
+// candidate. SourceDefault marks it as an intentional attempt so discovery
+// (empty password and empty source) stays distinct.
+func withEmptyPasswordFirst(creds []Credential) []Credential {
+	rest := make([]Credential, 0, len(creds))
+	emptySource := ""
+	for _, c := range creds {
+		if c.Password == "" {
+			if c.Source != "" && emptySource == "" {
+				emptySource = c.Source
+			}
+			continue
+		}
+		rest = append(rest, c)
+	}
+	if emptySource == "" {
+		emptySource = SourceDefault
+	}
+	out := make([]Credential, 0, len(rest)+1)
+	out = append(out, Credential{Password: "", Source: emptySource})
+	return append(out, rest...)
+}
+
+// sessionAuthenticated reports that a password candidate opened a session,
+// including a blank password (Password is empty but PasswordSource is set,
+// and Passwordless may also be set).
+func sessionAuthenticated(res *Result) bool {
+	if res == nil {
+		return false
+	}
+	return res.PasswordSource != "" || res.Passwordless
 }
 
 // probeOnce runs one complete RFB session. An empty credential means the
@@ -698,6 +741,11 @@ func (c *client) vncAuthenticate() error {
 	}
 	c.result.Password = c.credential.Password
 	c.result.PasswordSource = c.credential.Source
+	// A server that accepts a blank password is the same finding class as
+	// security type None: no secret was required to open the desktop.
+	if c.credential.Password == "" {
+		c.result.Passwordless = true
+	}
 	return nil
 }
 
@@ -940,9 +988,20 @@ func (c *client) readRawRect(img *image.RGBA, x, y, w, h int) error {
 		return fmt.Errorf("rectangle %dx%d overflows size calculation", w, h)
 	}
 
-	buf, err := readN(c.r, size)
-	if err != nil {
-		return fmt.Errorf("read raw pixels %dx%d: %w", w, h, err)
+	// Refresh the deadline between chunks. A single SetDeadline for the
+	// whole rectangle fails on slow links even when the server is healthy:
+	// 800x480 at 32bpp is ~1.5 MiB, and a 15s budget is easy to miss.
+	buf := make([]byte, size)
+	for off := 0; off < size; {
+		c.setDeadline()
+		n := pixelReadChunk
+		if n > size-off {
+			n = size - off
+		}
+		if _, err := io.ReadFull(c.r, buf[off:off+n]); err != nil {
+			return fmt.Errorf("read raw pixels %dx%d: %w", w, h, err)
+		}
+		off += n
 	}
 
 	// Pixels follow the format we requested in SetPixelFormat: 32bpp

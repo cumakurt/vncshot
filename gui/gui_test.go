@@ -878,6 +878,16 @@ func TestNewScanProfileStartsEditable(t *testing.T) {
 	if setup == "" || !strings.Contains(setup, "applyProfileDefaults()") {
 		t.Fatal("a new scan does not restore the profile defaults")
 	}
+	if !strings.Contains(setup, "clearTargetFile()") {
+		t.Fatal("a new scan keeps the previous target file path")
+	}
+	fields := regexp.MustCompile(`(?s)var formFields = \[(.*?)\]`).FindStringSubmatch(body)
+	if fields == nil {
+		t.Fatal("index.html has no formFields list")
+	}
+	if strings.Contains(fields[1], `"file"`) {
+		t.Error("formFields persists the target file path across scans")
+	}
 	for _, id := range []string{"workers", "rate", "timeout_ms", "vnc_timeout_ms"} {
 		tag := regexp.MustCompile(`<input[^>]*id="` + id + `"[^>]*>`).FindString(body)
 		if tag == "" {
@@ -886,6 +896,33 @@ func TestNewScanProfileStartsEditable(t *testing.T) {
 		if strings.Contains(tag, "readonly") || strings.Contains(tag, "disabled") {
 			t.Errorf("%s is not editable: %s", id, tag)
 		}
+	}
+}
+
+// TestHostsViewShowsSuccessfulScreenshots keeps captured frames visible on
+// the Hosts page and in the host drawer, not only in the findings table.
+func TestHostsViewShowsSuccessfulScreenshots(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded page: %v", err)
+	}
+	body := string(page)
+	hosts := regexp.MustCompile(`(?s)function renderHosts\(.*?\n  \}`).FindString(body)
+	if hosts == "" {
+		t.Fatal("index.html has no renderHosts function")
+	}
+	if !strings.Contains(hosts, `className = "shot-link"`) {
+		t.Error("Hosts list does not show a screenshot thumbnail")
+	}
+	drawer := regexp.MustCompile(`(?s)function openHost\(.*?\n  \}`).FindString(body)
+	if drawer == "" {
+		t.Fatal("index.html has no openHost function")
+	}
+	if !strings.Contains(drawer, "f.screenshot") || !strings.Contains(drawer, "host-shot") {
+		t.Error("host drawer does not show a successful screenshot")
+	}
+	if !strings.Contains(body, `$("hostList").addEventListener("click"`) {
+		t.Error("Hosts thumbnails cannot open the lightbox")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"net"
 	"os"
 	"path/filepath"
@@ -631,6 +632,126 @@ func TestProbeRecordsAttemptsWhenRetryStaysClosed(t *testing.T) {
 	}
 	if res.Attempts != 2 {
 		t.Errorf("Attempts = %d, want 2 so the retry is visible", res.Attempts)
+	}
+}
+
+func TestProbeRetriesCaptureTimeoutAfterPasswordless(t *testing.T) {
+	timeoutErr := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	var calls atomic.Int32
+	fn := func(_ context.Context, _ string, opts vnc.Options) (*vnc.Result, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return &vnc.Result{
+				SawBanner:         true,
+				Passwordless:      true,
+				SecurityTypeNames: []string{"None"},
+				ServerName:        "slow-desk",
+				Width:             800,
+				Height:            480,
+			}, fmt.Errorf("read raw pixels 800x480: %w", timeoutErr)
+		}
+		if opts.Timeout < 2*time.Second {
+			t.Errorf("capture retry timeout = %v, want at least 2s", opts.Timeout)
+		}
+		img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+		return &vnc.Result{
+			SawBanner:         true,
+			Passwordless:      true,
+			SecurityTypeNames: []string{"None"},
+			ServerName:        "slow-desk",
+			Width:             2,
+			Height:            2,
+			Frame:             img,
+		}, nil
+	}
+
+	dir := t.TempDir()
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{
+		// MaxRetries 0 still recovers the screenshot after a capture miss.
+		MaxRetries:    0,
+		RetryBackoff:  time.Millisecond,
+		VNCTimeout:    time.Second,
+		ScreenshotDir: dir,
+	}, fn)
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("probe calls = %d, want 2", got)
+	}
+	if res.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2", res.Attempts)
+	}
+	if !res.Passwordless {
+		t.Error("Passwordless = false, want true")
+	}
+	if res.Error != "" {
+		t.Errorf("Error = %q, want empty after the retry succeeded", res.Error)
+	}
+	if res.Screenshot == "" {
+		t.Fatal("Screenshot is empty, want a capture after the retry")
+	}
+	if _, err := os.Stat(res.Screenshot); err != nil {
+		t.Fatalf("screenshot file: %v", err)
+	}
+}
+
+func TestProbeCaptureRetryUsesExtendedTimeout(t *testing.T) {
+	timeoutErr := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	var timeouts []time.Duration
+	fn := func(_ context.Context, _ string, opts vnc.Options) (*vnc.Result, error) {
+		timeouts = append(timeouts, opts.Timeout)
+		return &vnc.Result{
+			SawBanner:    true,
+			Passwordless: true,
+			Width:        800,
+			Height:       480,
+		}, fmt.Errorf("read raw pixels 800x480: %w", timeoutErr)
+	}
+
+	res := probeWith(context.Background(), Target{IP: "127.0.0.1", Port: 5900}, Options{
+		MaxRetries:   0,
+		RetryBackoff: time.Millisecond,
+		VNCTimeout:   5 * time.Second,
+	}, fn)
+
+	if len(timeouts) != 1+maxCaptureRetries {
+		t.Fatalf("probe calls = %d, want %d", len(timeouts), 1+maxCaptureRetries)
+	}
+	if timeouts[0] != 5*time.Second {
+		t.Errorf("first timeout = %v, want 5s", timeouts[0])
+	}
+	if timeouts[1] != 10*time.Second {
+		t.Errorf("second timeout = %v, want 10s", timeouts[1])
+	}
+	if timeouts[2] != 20*time.Second {
+		t.Errorf("third timeout = %v, want 20s", timeouts[2])
+	}
+	if res.Passwordless != true || res.Error == "" {
+		t.Errorf("result = passwordless=%v error=%q, want passwordless with error", res.Passwordless, res.Error)
+	}
+	if res.Screenshot != "" {
+		t.Errorf("Screenshot = %q, want empty when every capture retry fails", res.Screenshot)
+	}
+}
+
+func TestCaptureRetryTimeout(t *testing.T) {
+	if got := captureRetryTimeout(5*time.Second, 1); got != 10*time.Second {
+		t.Errorf("retry 1 = %v, want 10s", got)
+	}
+	if got := captureRetryTimeout(5*time.Second, 2); got != 20*time.Second {
+		t.Errorf("retry 2 = %v, want 20s", got)
+	}
+	if got := captureRetryTimeout(40*time.Second, 1); got != maxCaptureTimeout {
+		t.Errorf("capped retry = %v, want %v", got, maxCaptureTimeout)
+	}
+}
+
+func TestIsTransientHandshakeError(t *testing.T) {
+	timeout := fmt.Errorf("read raw pixels 800x480: %w", &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded})
+	if !isTransientHandshakeError(timeout) {
+		t.Error("capture i/o timeout must be retryable")
+	}
+	if isTransientHandshakeError(errors.New("unsupported rectangle encoding 7")) {
+		t.Error("protocol error must not be retryable")
 	}
 }
 

@@ -380,9 +380,17 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 	}
 
 	var vncRes *vnc.Result
+	// captureExtra counts reconnects used only because a session that
+	// should have produced a screenshot timed out while reading pixels.
+	// Those attempts get a longer RFB budget and run even when -retries is 0.
+	captureExtra := 0
 	for attempt := 1; ; attempt++ {
+		attemptOpts := vncOpts
+		if captureExtra > 0 {
+			attemptOpts.Timeout = captureRetryTimeout(vncOpts.Timeout, captureExtra)
+		}
 		var err error
-		vncRes, err = doProbe(ctx, addr, vncOpts)
+		vncRes, err = doProbe(ctx, addr, attemptOpts)
 		if err == nil {
 			res.Attempts = attempt
 			break
@@ -393,7 +401,18 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 			// dropped handshake is often a transient server hiccup, so one
 			// retry is allowed here too; a protocol error (malformed banner,
 			// unsupported encoding) is definitive and is not retried.
-			if ctx.Err() == nil && attempt <= maxRetries && isTransientHandshakeError(err) {
+			//
+			// When the server already authenticated (passwordless or a weak
+			// password) but the framebuffer read timed out, reconnect with a
+			// longer budget: the finding is known and the screenshot is the
+			// missing piece. Manual viewers succeed in that situation.
+			genericRetry := attempt <= maxRetries
+			captureMiss := isCaptureMiss(vncRes)
+			captureRetry := captureMiss && captureExtra < maxCaptureRetries
+			if ctx.Err() == nil && isTransientHandshakeError(err) && (genericRetry || captureRetry) {
+				if captureMiss {
+					captureExtra++
+				}
 				if waitErr := sleepCtx(ctx, retryDelay(backoff, attempt)); waitErr == nil {
 					continue
 				}
@@ -472,9 +491,12 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 	res.ScreenHeight = vncRes.Height
 
 	// A passwordless session always keeps this one frame. The same capture
-	// runs after a weak password. The client closes the session right after
-	// reading it. There is no option to skip the passwordless screenshot.
-	if (!vncRes.Passwordless && vncRes.Password == "") || vncRes.Frame == nil {
+	// runs after a weak password, including a blank VNC password (reported
+	// as passwordless with PasswordSource set). The client closes the
+	// session right after reading it. There is no option to skip the
+	// passwordless screenshot.
+	needShot := vncRes.Passwordless || vncRes.Password != "" || vncRes.PasswordSource != ""
+	if !needShot || vncRes.Frame == nil {
 		return res
 	}
 
@@ -548,6 +570,46 @@ func isTransientHandshakeError(err error) bool {
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+const (
+	// maxCaptureRetries is how many extra reconnects are spent specifically
+	// on recovering a screenshot after a passwordless or authenticated
+	// session timed out while reading pixels.
+	maxCaptureRetries = 2
+	// maxCaptureTimeout caps the stretched RFB budget used on those retries.
+	maxCaptureTimeout = 60 * time.Second
+)
+
+// isCaptureMiss reports that the probe reached a session that should have
+// produced a framebuffer, but the frame was never captured.
+func isCaptureMiss(res *vnc.Result) bool {
+	if res == nil || res.Frame != nil {
+		return false
+	}
+	return res.Passwordless || res.Password != ""
+}
+
+// captureRetryTimeout stretches the RFB read budget for screenshot recovery
+// attempts. retry is 1-based (the first capture retry uses 2× the base).
+func captureRetryTimeout(base time.Duration, retry int) time.Duration {
+	if base <= 0 {
+		base = 15 * time.Second
+	}
+	if retry < 1 {
+		return base
+	}
+	out := base
+	for i := 0; i < retry; i++ {
+		if out > maxCaptureTimeout/2 {
+			return maxCaptureTimeout
+		}
+		out *= 2
+	}
+	if out > maxCaptureTimeout {
+		return maxCaptureTimeout
+	}
+	return out
 }
 
 // retryDelay returns the jittered exponential backoff before the next

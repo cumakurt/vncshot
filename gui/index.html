@@ -584,6 +584,43 @@
     display: inline-block;
   }
   .shot-link img { display: block; width: 96px; height: 60px; object-fit: cover; }
+  #hostList { display: flex; flex-direction: column; gap: 8px; }
+  .host-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 8px;
+  }
+  .host-row.has-shot { grid-template-columns: auto minmax(0, 1fr); }
+  .host-row .shot-link img { width: 128px; height: 80px; }
+  .host-row-open {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+    color: inherit;
+  }
+  .host-row-open .host-addr { font-family: var(--mono); }
+  .host-row-open .host-meta { font-size: 12px; color: var(--muted); }
+  .host-shot {
+    margin: 12px 0 0;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 0;
+    cursor: pointer;
+    display: block;
+    width: 100%;
+  }
+  .host-shot img { display: block; width: 100%; height: auto; max-height: 240px; object-fit: contain; background: var(--paper-2); }
   .lightbox {
     position: fixed;
     inset: 0;
@@ -2291,11 +2328,13 @@
   }
 
   // Form values survive reloads, except the authorization checkbox which
-  // must be re-confirmed every time. Storage failures (private mode) are
-  // ignored so the dashboard keeps working.
+  // must be re-confirmed every time. The target file path is also omitted:
+  // a leftover import from the previous scan would merge with a typed
+  // target and silently expand the next job to millions of hosts.
+  // Storage failures (private mode) are ignored so the dashboard keeps working.
   var FORM_STORAGE_KEY = "vncshot.form.v1";
   var formFields = [
-    "target", "file", "ports", "workers", "rate", "timeout_ms", "vnc_timeout_ms",
+    "target", "ports", "workers", "rate", "timeout_ms", "vnc_timeout_ms",
     "out_dir", "output", "html", "pdf", "csv", "screenshot_dir", "no_pdf",
     "manifest", "keep_runs", "prune_dry_run", "shared", "word_list",
     "no_default_passwords", "no_password_check", "baseline", "webhook"
@@ -2548,16 +2587,55 @@
       return;
     }
     host.innerHTML = "";
-    var seen = {};
+    // Prefer the finding that carries a screenshot when the same address
+    // appears more than once in the live feed.
+    var byAddr = {};
+    var order = [];
     latestFindings.forEach(function (f) {
-      if (!f.addr || seen[f.addr]) return;
-      seen[f.addr] = true;
-      var btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "scan-item";
-      btn.textContent = f.addr + " · " + t(findingSeverity(f));
-      btn.addEventListener("click", function () { openHost(f); });
-      host.appendChild(btn);
+      if (!f.addr) return;
+      var prev = byAddr[f.addr];
+      if (!prev) {
+        byAddr[f.addr] = f;
+        order.push(f.addr);
+        return;
+      }
+      if (!prev.screenshot && f.screenshot) byAddr[f.addr] = f;
+    });
+    order.forEach(function (addr) {
+      var f = byAddr[addr];
+      var row = document.createElement("div");
+      row.className = "host-row" + (f.screenshot ? " has-shot" : "");
+      if (f.screenshot) {
+        var shot = document.createElement("button");
+        shot.type = "button";
+        shot.className = "shot-link";
+        shot.dataset.shot = f.screenshot;
+        shot.dataset.caption = shotCaption(f);
+        shot.setAttribute("aria-label", t("Enlarge") + " " + shotCaption(f));
+        var img = document.createElement("img");
+        img.src = f.screenshot;
+        img.alt = shotCaption(f);
+        shot.appendChild(img);
+        row.appendChild(shot);
+      }
+      var open = document.createElement("button");
+      open.type = "button";
+      open.className = "host-row-open";
+      var name = document.createElement("span");
+      name.className = "host-addr";
+      name.textContent = f.addr;
+      var meta = document.createElement("span");
+      meta.className = "host-meta";
+      var bits = [t(findingSeverity(f))];
+      if (f.server_name) bits.push(f.server_name);
+      if (f.dimensions) bits.push(f.dimensions);
+      if (f.screenshot) bits.push(t("Shot"));
+      meta.textContent = bits.join(" · ");
+      open.appendChild(name);
+      open.appendChild(meta);
+      open.addEventListener("click", function () { openHost(f); });
+      row.appendChild(open);
+      host.appendChild(row);
     });
   }
 
@@ -2582,6 +2660,19 @@
       p.textContent = pair[0] + ": " + pair[1];
       body.appendChild(p);
     });
+    if (f.screenshot) {
+      var shot = document.createElement("button");
+      shot.type = "button";
+      shot.className = "shot-link host-shot";
+      shot.dataset.shot = f.screenshot;
+      shot.dataset.caption = shotCaption(f);
+      shot.setAttribute("aria-label", t("Enlarge") + " " + shotCaption(f));
+      var img = document.createElement("img");
+      img.src = f.screenshot;
+      img.alt = shotCaption(f);
+      shot.appendChild(img);
+      body.appendChild(shot);
+    }
     $("hostDrawer").classList.remove("hidden");
   }
 
@@ -2791,9 +2882,17 @@
     el.disabled = true;
   }
 
+  function clearTargetFile() {
+    if ($("file")) $("file").value = "";
+    if ($("filePicker")) $("filePicker").value = "";
+  }
+
   function openScanSetup() {
     showView("scans", "wizard");
     applyProfileDefaults();
+    // Each new scan starts without the previous target file, so a typed
+    // host cannot merge with a leftover import path.
+    clearTargetFile();
     lockPasswordlessCapture();
     setWizardStep(1);
     $("form").classList.remove("hidden");
@@ -2956,6 +3055,9 @@
     }).then(function (doc) {
       if (!doc || !doc.path) throw new Error(t(missingKey));
       $(fieldId).value = doc.path;
+      // A browsed target list replaces a typed host so the two scopes cannot
+      // merge into one unexpectedly large scan.
+      if (fieldId === "file" && $("target")) $("target").value = "";
       saveForm();
       toast(t(readyKey));
     }).catch(function (err) {
@@ -2963,6 +3065,12 @@
       $("errorBox").textContent = err.message;
     });
   }
+  $("target").addEventListener("input", function () {
+    if ($("target").value.trim()) clearTargetFile();
+  });
+  $("file").addEventListener("input", function () {
+    if ($("file").value.trim() && $("target")) $("target").value = "";
+  });
   $("fileBrowse").addEventListener("click", function () {
     $("filePicker").click();
   });
@@ -3018,6 +3126,7 @@
         scans[snap.id] = snap;
         activeID = snap.id;
         $("authorized").checked = false;
+        clearTargetFile();
         closeScanSetup();
         showView("scans");
           render(snap);
@@ -3142,14 +3251,17 @@
 
   $("compareClose").addEventListener("click", hideCompare);
 
+  function openShotFromEvent(ev) {
+    var btn = ev.target.closest(".shot-link");
+    if (!btn || !btn.dataset.shot) return false;
+    openLightbox(btn.dataset.shot, btn.dataset.caption || "", btn);
+    return true;
+  }
+
   // One delegated listener covers every thumbnail, including rows rendered
   // by later scan updates.
   $("findingsHost").addEventListener("click", function (ev) {
-    var btn = ev.target.closest(".shot-link");
-    if (btn && btn.dataset.shot) {
-      openLightbox(btn.dataset.shot, btn.dataset.caption || "", btn);
-      return;
-    }
+    if (openShotFromEvent(ev)) return;
     var sev = ev.target.closest(".sev");
     if (sev) {
       var name = (sev.textContent || "").trim();
@@ -3165,6 +3277,8 @@
     latestFindings.forEach(function (f) { if (f.addr === row.dataset.addr) found = f; });
     if (found) openHost(found);
   });
+  $("hostList").addEventListener("click", function (ev) { openShotFromEvent(ev); });
+  $("hostDrawerBody").addEventListener("click", function (ev) { openShotFromEvent(ev); });
   $("lightboxClose").addEventListener("click", closeLightbox);
   $("lightbox").addEventListener("click", function (ev) {
     // A click on the backdrop, but not inside the figure, dismisses.

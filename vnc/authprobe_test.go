@@ -276,13 +276,52 @@ func TestProbeAuthenticatesWithWeakPasswordAndCaptures(t *testing.T) {
 		t.Errorf("frame bounds = %v, want 4x3", result.Frame.Bounds())
 	}
 
-	// Discovery + three attempts: the probe must stop after the first
-	// successful credential and never keep guessing.
-	if got := srv.conns.Load(); got != 4 {
-		t.Errorf("server saw %d connections, want 4 (1 discovery + 3 attempts)", got)
+	// Discovery + blank password + three listed candidates: the blank
+	// attempt is always first, then the probe stops on the first hit.
+	if got := srv.conns.Load(); got != 5 {
+		t.Errorf("server saw %d connections, want 5 (1 discovery + blank + 3 candidates)", got)
 	}
-	if got := srv.attempts.Load(); got != 3 {
-		t.Errorf("server saw %d password attempts, want 3", got)
+	if got := srv.attempts.Load(); got != 4 {
+		t.Errorf("server saw %d password attempts, want 4", got)
+	}
+}
+
+func TestProbeEmptyPasswordStopsFurtherGuesses(t *testing.T) {
+	srv := startAuthFake(t, "", 0)
+
+	result, err := vnc.Probe(t.Context(), srv.addr(), vnc.Options{
+		Timeout: probeTimeout,
+		Shared:  true,
+		Passwords: []vnc.Credential{
+			{Password: "password", Source: vnc.SourceWordList},
+			{Password: "admin", Source: vnc.SourceWordList},
+			{Password: "hunter2", Source: vnc.SourceWordList},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Probe error: %v", err)
+	}
+	if !result.Passwordless {
+		t.Error("Passwordless = false, want true for a blank VNC password")
+	}
+	if result.Password != "" {
+		t.Errorf("Password = %q, want empty", result.Password)
+	}
+	if result.PasswordSource != vnc.SourceDefault {
+		t.Errorf("PasswordSource = %q, want %q", result.PasswordSource, vnc.SourceDefault)
+	}
+	if result.Frame == nil {
+		t.Fatal("Frame is nil, want a capture after the blank password")
+	}
+	// Discovery + one blank attempt: no later candidates may be tried.
+	if got := srv.conns.Load(); got != 2 {
+		t.Errorf("server saw %d connections, want 2 (discovery + blank)", got)
+	}
+	if got := srv.attempts.Load(); got != 1 {
+		t.Errorf("server saw %d password attempts, want 1", got)
+	}
+	if got := srv.rejected.Load(); got != 0 {
+		t.Errorf("server saw %d rejections, want 0", got)
 	}
 }
 
