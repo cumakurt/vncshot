@@ -85,6 +85,56 @@ type Config struct {
 	// PruneDryRun reports the runs that retention would remove without
 	// deleting them.
 	PruneDryRun bool
+
+	// ExcludeFile lists hosts or networks that must not be contacted at
+	// all, for example a critical production segment. Targets matching an
+	// entry are dropped before any connection attempt.
+	ExcludeFile string
+	// AcceptFile lists endpoints whose findings are known and approved.
+	// Accepted results stay in the inventory but are not alarmed about.
+	AcceptFile string
+	// CertWarn is the certificate expiry window: peer certificates that
+	// expire within this duration raise an expiring-soon posture. Zero
+	// disables the check.
+	CertWarnDays int
+	// ProxyURL is an optional outbound proxy used for every probe, in
+	// socks5:// or socks5h:// form. Empty connects directly.
+	ProxyURL string
+	// Notify configures the additional notification channels a completed
+	// scan reports to. Zero fields keep the channel disabled.
+	Notify NotifyConfig
+	// MetricsAddr serves scan counters in Prometheus text exposition on
+	// this address. Empty disables the endpoint.
+	MetricsAddr string
+	// Interval repeats the scan forever, sleeping that long between rounds
+	// and using the previous round as the diff baseline. Zero runs once.
+	Interval time.Duration
+}
+
+// NotifyConfig describes the extra notification channels a completed scan
+// reports to, alongside the plain webhook. Zero fields keep a channel
+// disabled.
+type NotifyConfig struct {
+	// SlackURL is a Slack incoming-webhook endpoint receiving a formatted
+	// message. Only https endpoints are accepted.
+	SlackURL string
+	// SMTPAddr is the mail relay as host:port. Empty disables email.
+	SMTPAddr string
+	// SMTPFrom is the envelope sender address.
+	SMTPFrom string
+	// SMTPTo lists envelope recipient addresses.
+	SMTPTo []string
+	// SMTPNoTLS allows a plaintext SMTP session; by default a relay that
+	// does not offer STARTTLS is refused, because the message carries
+	// finding details.
+	SMTPNoTLS bool
+	// SMTPUser and SMTPPassword authenticate with AUTH PLAIN after
+	// STARTTLS. Both or neither must be set.
+	SMTPUser     string
+	SMTPPassword string
+	// SyslogAddr sends a CEF message over the network, in
+	// "udp://host:port" or "tcp://host:port" form. Empty disables it.
+	SyslogAddr string
 }
 
 // Progress reports scan advancement to a caller-supplied observer.

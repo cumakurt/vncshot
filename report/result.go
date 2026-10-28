@@ -29,6 +29,13 @@ type Result struct {
 	// example "client certificate required (VeNCrypt/X509Vnc)" or
 	// "Apple Remote Desktop authentication". It is evidence, not an error.
 	Note string `json:"note,omitempty"`
+	// Accepted marks a finding as known and explicitly approved through the
+	// acceptance list. Accepted results stay in the inventory but are not
+	// alarmed about in notifications.
+	Accepted bool `json:"accepted,omitempty"`
+	// ExpiresSoon marks a peer certificate falling inside the configured
+	// expiry warning window. Only filled when a warning window is set.
+	ExpiresSoon bool `json:"expires_soon,omitempty"`
 	// Attempts is how many TCP connection attempts were needed, which
 	// exposes flaky hosts that only answered after a retry.
 	Attempts     int       `json:"attempts,omitempty"`
@@ -78,6 +85,12 @@ type Summary struct {
 	// names itself as its issuer. This is the normal case for VNC appliances,
 	// so the counter describes the trust posture rather than a failure.
 	SelfSignedCerts int `json:"self_signed_certs"`
+	// ExpiringSoon counts peer certificates inside the configured expiry
+	// warning window (see -cert-warn). Zero when no window is configured.
+	ExpiringSoon int `json:"expiring_soon"`
+	// AcceptedFindings counts results explicitly approved through the
+	// acceptance list; they remain part of the Inventory.
+	AcceptedFindings int `json:"accepted_findings"`
 	Screenshots     int `json:"screenshots"`
 	Errors          int `json:"errors"`
 }

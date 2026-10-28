@@ -71,6 +71,20 @@ type config struct {
 	baseline      string
 	resume        string
 	manifest      bool
+	accept        string
+	exclude       string
+	certWarnDays  int
+	proxyURL      string
+	slackURL      string
+	mailServer    string
+	mailFrom      string
+	mailTo        string
+	mailNoTLS     bool
+	mailUser      string
+	syslogAddr    string
+	metricsAddr   string
+	interval      time.Duration
+	selfcheck     bool
 	webhook       string
 	noPDF         bool
 	screenshotDir string
@@ -125,6 +139,28 @@ func (c config) appConfig() app.Config {
 		ThumbnailOnly:      c.thumbOnly,
 		KeepRuns:           c.keepRuns,
 		PruneDryRun:        c.pruneDryRun,
+		ExcludeFile:        c.exclude,
+		AcceptFile:         c.accept,
+		CertWarnDays:       c.certWarnDays,
+		ProxyURL:           c.proxyURL,
+		MetricsAddr:        c.metricsAddr,
+		Interval:           c.interval,
+		Notify:             c.notifyConfig(),
+	}
+}
+
+// notifyConfig assembles the extra notification channels from the CLI flags.
+// The SMTP password is read from the environment instead of a flag so it does
+// not appear in the process list or shell history.
+func (c config) notifyConfig() app.NotifyConfig {
+	return app.NotifyConfig{
+		SlackURL:     c.slackURL,
+		SMTPAddr:     c.mailServer,
+		SMTPFrom:     c.mailFrom,
+		SMTPNoTLS:    c.mailNoTLS,
+		SMTPUser:     c.mailUser,
+		SMTPPassword: os.Getenv("VNCSHOT_MAIL_PASSWORD"),
+		SyslogAddr:   c.syslogAddr,
 	}
 }
 
@@ -220,6 +256,20 @@ func parseFlags() (config, error) {
 	flag.BoolVar(&cfg.pruneDryRun, "prune-dry-run", false, "with -prune or -keep, list what would be deleted")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "expand targets and report the scope without scanning")
 	flag.StringVar(&cfg.webhook, "webhook", "", "POST a JSON summary to this URL when the scan finishes with new findings or weak credentials")
+	flag.StringVar(&cfg.slackURL, "slack-url", "", "send a formatted Slack message when the scan finishes (https incoming-webhook URL)")
+	flag.StringVar(&cfg.mailServer, "mail-server", "", "SMTP relay as host:port for email notifications")
+	flag.StringVar(&cfg.mailFrom, "mail-from", "", "envelope sender address for email notifications")
+	flag.StringVar(&cfg.mailTo, "mail-to", "", "comma-separated recipient addresses for email notifications")
+	flag.BoolVar(&cfg.mailNoTLS, "mail-no-tls", false, "allow plaintext SMTP without STARTTLS (discouraged)")
+	flag.StringVar(&cfg.mailUser, "mail-user", "", "SMTP AUTH PLAIN user (password comes from the VNCSHOT_MAIL_PASSWORD environment variable)")
+	flag.StringVar(&cfg.syslogAddr, "syslog", "", "send a CEF message to this syslog receiver (udp://host:port or tcp://host:port)")
+	flag.StringVar(&cfg.accept, "accept", "", "file listing approved endpoints (ip:port [reason]) whose findings are not alarmed about")
+	flag.StringVar(&cfg.exclude, "exclude", "", "file with IPs, CIDR ranges or ip:port entries that are never contacted")
+	flag.IntVar(&cfg.certWarnDays, "cert-warn", 30, "days ahead of expiry to flag TLS certificates (0 disables)")
+	flag.StringVar(&cfg.proxyURL, "proxy", "", "outbound proxy for all probes, socks5://[user:pass@]host[:port] (socks5h resolves through the proxy)")
+	flag.StringVar(&cfg.metricsAddr, "metrics-addr", "", "serve scan counters in Prometheus text exposition on this address (use 127.0.0.1:PORT)")
+	flag.DurationVar(&cfg.interval, "interval", 0, "rescan forever with this pause between rounds, diffing against the previous round (e.g. 24h)")
+	flag.BoolVar(&cfg.selfcheck, "selfcheck", false, "verify the environment (root, report root, TLS roots, browser) and exit")
 	flag.StringVar(&cfg.configPath, "config", "", "config file with flag defaults (JSON or simple YAML)")
 	flag.BoolVar(&cfg.noPDF, "no-pdf", false, "skip PDF generation")
 	flag.StringVar(&cfg.screenshotDir, "screenshot-dir", "", "directory for PNG captures (default <run-dir>/screenshots)")
