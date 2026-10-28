@@ -112,6 +112,7 @@ type config struct {
 	showVersion      bool
 	redact           bool
 	thumbOnly        bool
+	noColor          bool
 	keepRuns         int
 	prune            int
 	pruneSet         bool
@@ -322,6 +323,7 @@ func parseFlags() (config, error) {
 	flag.StringVar(&cfg.pubKey, "pub-key", "", "public key for -verify-manifest (default <sign-key>.pub)")
 	flag.BoolVar(&cfg.redact, "redact", false, "replace captured passwords with a placeholder (safe to share)")
 	flag.BoolVar(&cfg.thumbOnly, "thumb-only", false, "embed only preview images in the HTML report (smaller file)")
+	flag.BoolVar(&cfg.noColor, "no-color", false, "disable ANSI colour in terminal output (NO_COLOR is also honoured)")
 	flag.IntVar(&cfg.keepRuns, "keep", 0, "keep only the newest N run folders after a scan (0 = keep all)")
 	flag.IntVar(&cfg.prune, "prune", 0, "delete all but the newest N run folders and exit (0 = disabled)")
 	flag.BoolVar(&cfg.pruneDryRun, "prune-dry-run", false, "with -prune or -keep, list what would be deleted")
@@ -638,8 +640,12 @@ func runCLI(cfg config, signKey ed25519.PrivateKey) error {
 // which is what turns a repeated scan into a change feed. The signKey may be
 // nil when -sign-key was not configured.
 func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round int, reportRoot string) (app.Outcome, error) {
+	// Colour and the carriage-return progress bar are terminal affordances:
+	// a pipe, a log file or a CI collector gets plain single-shot lines so
+	// the captured output stays readable and byte-stable.
+	console := app.NewConsole(os.Stderr, !cfg.noColor)
 	scanCfg := cfg.appConfig()
-	scanCfg.ShowProgress = true
+	scanCfg.ShowProgress = console.Color
 	scanCfg.SignKey = signKey
 	if round > 0 && cfg.interval > 0 {
 		if previous, ok, err := app.PreviousRun(reportRoot); err != nil {
@@ -654,7 +660,7 @@ func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round
 		return app.Outcome{}, err
 	}
 	if warning := session.FallbackWarning(); warning != "" {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+		fmt.Fprintf(os.Stderr, "%s\n", console.Yellow("warning: "+warning))
 	}
 
 	fmt.Fprintf(os.Stderr, "targets: %d host:port pairs | ports: %s | workers: %d | rate: %s\n",
@@ -673,18 +679,24 @@ func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round
 	}
 
 	out, scanErr := session.Scan(ctx, nil)
+	// Without a terminal there is no live bar, so one completion line keeps
+	// a piped log meaningful; with a terminal the bar already said this.
+	if !console.Color {
+		fmt.Fprintf(os.Stderr, "scanning complete (%d/%d probes)\n",
+			out.Summary.Targets, out.Summary.Targets)
+	}
 
-	fmt.Fprintf(os.Stderr, "\n=== summary ===\n")
+	fmt.Fprintf(os.Stderr, "\n%s\n", console.Bold("=== summary ==="))
 	fmt.Fprintf(os.Stderr, "targets:      %d\n", out.Summary.Targets)
 	if out.Resumed > 0 {
 		fmt.Fprintf(os.Stderr, "resumed:      %d\n", out.Resumed)
 	}
 	fmt.Fprintf(os.Stderr, "open:         %d\n", out.Summary.Open)
 	fmt.Fprintf(os.Stderr, "rfb services: %d\n", out.Summary.RFB)
-	fmt.Fprintf(os.Stderr, "passwordless: %d\n", out.Summary.Passwordless)
-	fmt.Fprintf(os.Stderr, "weak creds:   %d\n", out.Summary.WeakCredentials)
+	fmt.Fprintf(os.Stderr, "passwordless: %s\n", console.Count(out.Summary.Passwordless, true))
+	fmt.Fprintf(os.Stderr, "weak creds:   %s\n", console.Count(out.Summary.WeakCredentials, true))
 	fmt.Fprintf(os.Stderr, "screenshots:  %d\n", out.Summary.Screenshots)
-	fmt.Fprintf(os.Stderr, "errors:       %d\n", out.Summary.Errors)
+	fmt.Fprintf(os.Stderr, "errors:       %s\n", console.Count(out.Summary.Errors, true))
 	writeDiffSummary(os.Stderr, out.Diff)
 	fmt.Fprintf(os.Stderr, "json:  %s\n", out.JSON)
 	fmt.Fprintf(os.Stderr, "html:  %s\n", out.HTML)
@@ -713,7 +725,7 @@ func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round
 		fmt.Fprintf(os.Stderr, "accepted findings: %d (see -accept list)\n", out.Summary.AcceptedFindings)
 	}
 	if out.Warning != "" {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", out.Warning)
+		fmt.Fprintf(os.Stderr, "%s\n", console.Yellow("warning: "+out.Warning))
 	}
 
 	return out, scanErr

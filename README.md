@@ -290,6 +290,12 @@ sudo vncshot -gui
 vncshot -version
 ```
 
+Terminal output uses ANSI colour and a live progress bar only when standard
+error is attached to a terminal; a pipe, log file or CI collector gets plain
+single-shot lines (one `scanning complete` line instead of carriage-return
+redraws). Set `NO_COLOR` to any non-empty value or pass `-no-color` to keep the
+palette off on a terminal as well.
+
 Running the tool without arguments prints the usage text and exits without
 scanning. `-version` prints the tool name, build version, GOOS/GOARCH and Go
 runtime version, for example `vncshot dev (linux/amd64, go1.27.2)`; `install.sh`
@@ -324,6 +330,7 @@ generated report files.*
 | `-fail-on` | | Exit with code 3 when any of these finding categories match: `new`, `resolved`, `changed`, `passwordless`, `weak`, `self-signed`, `cert-expiring` (comma-separated) |
 | `-redact` | `false` | Replace captured passwords with `REDACTED` in JSON/HTML/PDF |
 | `-thumb-only` | `false` | Embed only the preview image, not the full-resolution capture, in HTML |
+| `-no-color` | `false` | Disable ANSI colour in terminal output (`NO_COLOR` is honoured too) |
 | `-keep` | `0` | Keep only the newest n run folders after a scan (`0` = keep all) |
 | `-prune` | `0` | Delete all but the newest n run folders and exit (`0` = disabled) |
 | `-prune-dry-run` | `false` | With `-prune` (or with `-keep` alone) list what would be removed and delete nothing |

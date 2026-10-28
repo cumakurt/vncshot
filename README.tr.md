@@ -298,6 +298,13 @@ sudo vncshot -gui
 vncshot -version
 ```
 
+Terminal çıktısı ANSI rengini ve canlı ilerleme çubuğunu yalnızca standart
+hata bir terminale bağlıyken kullanır; boru hattı, günlük dosyası veya CI
+toplayıcısı düz tek satırlık çıktı alır (satır başı yeniden çizimleri yerine
+tek bir `scanning complete` satırı). Terminalde de paleti kapatmak için
+`NO_COLOR` değişkenine boş olmayan bir değer verin veya `-no-color` bayrağını
+kullanın.
+
 Araç parametresiz çalıştırıldığında kullanım metnini yazdırır ve tarama
 başlatmadan çıkar. `-version` araç adını, derleme sürümünü, GOOS/GOARCH ve Go
 çalışma zamanı sürümünü yazdırır; örneğin
@@ -333,6 +340,7 @@ sırasında gömer.
 | `-fail-on` | | İstenen bulgu kategorilerinden biri eşleşirse `3` koduyla çık: `new`, `resolved`, `changed`, `passwordless`, `weak`, `self-signed`, `cert-expiring` (virgülle ayrılmış) |
 | `-redact` | `false` | Yakalanan parolaları JSON/HTML/PDF içinde `REDACTED` ile değiştir |
 | `-thumb-only` | `false` | HTML içinde yalnızca önizleme görselini göm, tam çözünürlüklü yakalamayı gömme |
+| `-no-color` | `false` | Terminal çıktısındaki ANSI rengini kapat (`NO_COLOR` da dikkate alınır) |
 | `-keep` | `0` | Taramadan sonra yalnızca en yeni n tarama klasörünü tut (`0` = hepsini tut) |
 | `-prune` | `0` | En yeni n tarama klasörü dışındakileri sil ve çık (`0` = kapalı) |
 | `-prune-dry-run` | `false` | `-prune` ile (veya tek başına `-keep` ile) silinecekleri listele, hiçbir şey silme |
