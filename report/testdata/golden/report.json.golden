@@ -127,7 +127,9 @@
     }
   ],
   "summary": {
+    "accepted_findings": 0,
     "errors": 1,
+    "expiring_soon": 0,
     "open": 6,
     "passwordless": 1,
     "rfb": 6,

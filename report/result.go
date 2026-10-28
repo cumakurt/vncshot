@@ -91,8 +91,8 @@ type Summary struct {
 	// AcceptedFindings counts results explicitly approved through the
 	// acceptance list; they remain part of the Inventory.
 	AcceptedFindings int `json:"accepted_findings"`
-	Screenshots     int `json:"screenshots"`
-	Errors          int `json:"errors"`
+	Screenshots      int `json:"screenshots"`
+	Errors           int `json:"errors"`
 }
 
 // Summarize counts the outcomes in results.
