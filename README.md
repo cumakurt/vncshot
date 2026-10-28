@@ -14,8 +14,9 @@ Use only on networks you own or have explicit written permission to test.
 
 ![vncshot GUI dashboard](docs/screenshots/gui-dashboard.png)
 
-*The local GUI: live counters, transport column, captured frames and the
-previous-run history, all on loopback.*
+*The local GUI: the counter strip, the run-trend sparkline, captured frames
+and the previous-run history, all on loopback. The dashboard follows the
+operating system's light or dark colour scheme.*
 
 ## Table of contents
 
@@ -303,8 +304,8 @@ injects the release version at build time.
 
 ![vncshot console output](docs/screenshots/console.png)
 
-*Console output of a scan against lab fixtures: progress, summary and the
-generated report files.*
+*Console output of a scan against lab fixtures: live progress bar, summary
+with insecure counters highlighted and the generated report files.*
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -786,7 +787,8 @@ automatic `xdg-open` call.
 ![Findings table and run history](docs/screenshots/gui-findings.png)
 
 *Findings carry the transport, the credential source and a thumbnail of the
-captured frame; the left rail keeps the previous runs one click away.*
+captured frame; clicking a thumbnail opens the in-page lightbox. The left rail
+keeps the previous runs and their compare actions one click away.*
 
 ### GUI HTTP API
 

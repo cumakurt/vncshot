@@ -14,8 +14,9 @@ Yalnızca sahibi olduğunuz veya açık yazılı izniniz bulunan ağlarda kullan
 
 ![vncshot GUI panosu](docs/screenshots/gui-dashboard.png)
 
-*Yerel GUI: canlı sayaçlar, taşıma sütunu, yakalanan kareler ve önceki tarama
-geçmişi; tümü loopback üzerinde.*
+*Yerel GUI: sayaç şeridi, tarama eğilimi sparkline'ı, yakalanan kareler ve
+önceki tarama geçmişi; tümü loopback üzerinde. Pano, işletim sisteminin açık
+veya koyu renk şemasını izler.*
 
 ## İçindekiler
 
@@ -313,8 +314,8 @@ sırasında gömer.
 
 ![vncshot konsol çıktısı](docs/screenshots/console.png)
 
-*Laboratuvar sunucularına karşı bir taramanın konsol çıktısı: ilerleme,
-özet ve üretilen rapor dosyaları.*
+*Laboratuvar sunucularına karşı bir taramanın konsol çıktısı: canlı ilerleme
+çubuğu, güvensiz sayaçları vurgulanmış özet ve üretilen rapor dosyaları.*
 
 | Bayrak | Varsayılan | Açıklama |
 |--------|-----------|----------|
@@ -796,7 +797,8 @@ Portu sabitlemek için `-gui-port`, otomatik `xdg-open` çağrısını kapatmak 
 ![Bulgu tablosu ve tarama geçmişi](docs/screenshots/gui-findings.png)
 
 *Bulgular taşıma tipini, parola kaynağını ve yakalanan karenin küçük görselini
-taşır; sol ray önceki taramaları tek tıkla erişilebilir tutar.*
+taşır; küçük görsele tıklamak sayfa içi lightbox'ı açar. Sol ray önceki
+taramaları ve karşılaştırma eylemlerini tek tıkla erişilebilir tutar.*
 
 ### GUI HTTP API
 
