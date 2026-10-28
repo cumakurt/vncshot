@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -70,5 +71,13 @@ func TestResolveFailOn(t *testing.T) {
 				t.Errorf("resolveFailOn(%q, %q, %v) = %v, want %v", tt.failOn, tt.baseline, tt.interval, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestUsageStatesPasswordlessCaptureCannotBeDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	printUsage(&buf)
+	if !strings.Contains(buf.String(), "cannot be turned off") {
+		t.Fatal("usage does not state that passwordless detection and its screenshot cannot be turned off")
 	}
 }

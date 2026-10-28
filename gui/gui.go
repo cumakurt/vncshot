@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -246,6 +247,11 @@ const (
 	// maxRunHistory bounds the history payload so a long-lived report tree
 	// cannot make the dashboard request arbitrarily expensive.
 	maxRunHistory = 100
+	// maxTargetFileBytes caps a file chosen from the operator's computer.
+	// The browser cannot hand the scanner a real path, so the GUI stores a
+	// private copy and the scan reads that copy.
+	maxTargetFileBytes = 256 << 20
+	importDirName      = "imports"
 	// maxTrendRuns bounds the trend strip window. The cap counts every
 	// candidate folder, including ones whose report cannot be read, so the
 	// payload size stays predictable even in a tree with damaged runs.
@@ -368,6 +374,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("/api/diff", s.guard(s.handleDiff))
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
 	mux.HandleFunc("/api/feed", s.guard(s.handleFeed))
+	mux.HandleFunc("/api/target-file", s.guard(s.handleTargetFile))
 	mux.HandleFunc("/api/scans", s.guard(s.handleScans))
 	mux.HandleFunc("/api/scans/", s.guard(s.handleScanRoute))
 	mux.HandleFunc("/files/", s.guard(s.handleFiles))
@@ -605,6 +612,104 @@ func listRunFiles(runDir string) []string {
 		return nil
 	})
 	return files
+}
+
+// handleTargetFile stores a target list picked in the browser. The scan
+// reads a filesystem path, and a browser file dialog does not provide one,
+// so the bytes are copied under the report root and that path is returned.
+func (s *server) handleTargetFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTargetFileBytes+1<<20)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "target file is larger than 256 MiB", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "target file is not a valid upload", http.StatusBadRequest)
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+
+	src, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "target file is required", http.StatusBadRequest)
+		return
+	}
+	defer src.Close()
+
+	root := s.reportRoot()
+	dir := filepath.Join(root, importDirName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
+		return
+	}
+	name := storedTargetName(header.Filename)
+	dest := filepath.Join(dir, name)
+	rel, err := filepath.Rel(root, dest)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
+		return
+	}
+
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
+		return
+	}
+	written, copyErr := io.Copy(out, io.LimitReader(src, maxTargetFileBytes+1))
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil || written == 0 || written > maxTargetFileBytes {
+		_ = os.Remove(dest)
+		if written > maxTargetFileBytes {
+			http.Error(w, "target file is larger than 256 MiB", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if written == 0 && copyErr == nil {
+			http.Error(w, "target file is empty", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "target file could not be stored", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{
+		"path": dest,
+		"name": safeImportBase(header.Filename),
+	})
+}
+
+// storedTargetName builds a unique file name that stays inside the import
+// directory. The operator's original name is only a suffix, never a path.
+func storedTargetName(original string) string {
+	var nonce [4]byte
+	_, _ = rand.Read(nonce[:])
+	stamp := time.Now().UTC().Format("20060102-150405")
+	return stamp + "-" + hex.EncodeToString(nonce[:]) + "-" + safeImportBase(original)
+}
+
+func safeImportBase(name string) string {
+	base := filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	cleaned := strings.Trim(b.String(), "._")
+	if cleaned == "" {
+		return "targets.txt"
+	}
+	if len(cleaned) > 80 {
+		cleaned = cleaned[:80]
+	}
+	return cleaned
 }
 
 // reportRoot is the directory that holds timestamped run folders.
@@ -1556,6 +1661,9 @@ func (s *server) scanConfig(req scanRequest) (app.Config, error) {
 	cfg.Shared = req.Shared
 	cfg.WordList = strings.TrimSpace(req.WordList)
 	cfg.NoDefaultPasswords = req.NoDefaultPw
+	// NoPasswordCheck only skips password candidates. Passwordless detection
+	// and the one-frame screenshot stay on for every scan; the request has
+	// no field that can turn them off.
 	cfg.NoPasswordCheck = req.NoPasswordChk
 
 	if strings.TrimSpace(req.OutDir) != "" {

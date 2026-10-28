@@ -42,14 +42,24 @@ type jobList struct {
 	Jobs []jobCard `json:"jobs"`
 }
 
+// scanProfile is the editable pace of a new scan. Zero config values fall
+// back to the same defaults as the CLI flags.
+type scanProfile struct {
+	Workers      int `json:"workers"`
+	Rate         int `json:"rate"`
+	TimeoutMs    int `json:"timeout_ms"`
+	VNCTimeoutMs int `json:"vnc_timeout_ms"`
+}
+
 // feedFrame is one server-sent event for the scan menu. The first event
 // carries every snapshot; later events carry the menu plus one scan.
 type feedFrame struct {
-	Version   string     `json:"version"`
-	Warning   string     `json:"warning,omitempty"`
-	Jobs      []jobCard  `json:"jobs"`
-	Update    *snapshot  `json:"update,omitempty"`
-	Snapshots []snapshot `json:"snapshots,omitempty"`
+	Version   string       `json:"version"`
+	Warning   string       `json:"warning,omitempty"`
+	Jobs      []jobCard    `json:"jobs"`
+	Update    *snapshot    `json:"update,omitempty"`
+	Snapshots []snapshot   `json:"snapshots,omitempty"`
+	Profile   *scanProfile `json:"profile,omitempty"`
 }
 
 func (s *server) handleScans(w http.ResponseWriter, r *http.Request) {
@@ -498,12 +508,42 @@ func (s *server) feedInitial() feedFrame {
 		snaps = append(snaps, s.snapshotOf(job))
 		job.mu.Unlock()
 	}
+	profile := s.scanProfile()
 	return feedFrame{
 		Version:   s.version,
 		Warning:   warning,
 		Jobs:      cards,
 		Snapshots: snaps,
+		Profile:   &profile,
 	}
+}
+
+// scanProfile reports the pace a new scan starts from. An unconfigured
+// server uses the CLI defaults. An explicit -rate 0 stays unlimited.
+func (s *server) scanProfile() scanProfile {
+	cfg := s.cfg.Scan
+	profile := scanProfile{
+		Workers:      cfg.Workers,
+		Rate:         cfg.RatePerSec,
+		TimeoutMs:    int(cfg.ConnectTimeout / time.Millisecond),
+		VNCTimeoutMs: int(cfg.VNCTimeout / time.Millisecond),
+	}
+	if profile.Workers <= 0 {
+		profile.Workers = 150
+	}
+	if profile.TimeoutMs <= 0 {
+		profile.TimeoutMs = 1000
+	}
+	if profile.VNCTimeoutMs <= 0 {
+		profile.VNCTimeoutMs = 15000
+	}
+	if profile.Rate == 0 && cfg.Workers == 0 && cfg.ConnectTimeout == 0 && cfg.VNCTimeout == 0 {
+		profile.Rate = 200
+	}
+	if profile.Rate < 0 {
+		profile.Rate = 200
+	}
+	return profile
 }
 
 func writeFeed(w http.ResponseWriter, frame feedFrame) {

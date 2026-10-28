@@ -343,7 +343,7 @@ func parseFlags() (config, error) {
 	flag.BoolVar(&cfg.shared, "shared", true, "request shared RFB session (does not kick active viewers)")
 	flag.StringVar(&cfg.wordList, "word-list", "", "file with extra password candidates, one per line")
 	flag.BoolVar(&cfg.noDefaultPw, "no-default-passwords", false, "do not try the built-in weak-password list")
-	flag.BoolVar(&cfg.noPasswordChk, "no-password-check", false, "do not attempt any password, report passwordless hosts only")
+	flag.BoolVar(&cfg.noPasswordChk, "no-password-check", false, "do not attempt any password; passwordless hosts are still detected and screenshotted")
 	flag.BoolVar(&cfg.assumeYes, "yes", false, "skip the interactive authorization confirmation")
 
 	flag.BoolVar(&cfg.gui, "gui", false, "start the local web GUI (all features incl. live progress)")
@@ -529,7 +529,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "  %s -gui [flags]\n\n", appName)
 	fmt.Fprintf(w, "Probes VNC/RFB endpoints, flags passwordless servers and captures\n")
 	fmt.Fprintf(w, "their framebuffers. Each scan writes JSON, HTML and PDF reports plus\n")
-	fmt.Fprintf(w, "PNG screenshots into a timestamped folder under -out-dir.\n\n")
+	fmt.Fprintf(w, "PNG screenshots into a timestamped folder under -out-dir.\n")
+	fmt.Fprintf(w, "Passwordless detection and its one-frame screenshot always run and\n")
+	fmt.Fprintf(w, "cannot be turned off.\n\n")
 	fmt.Fprintf(w, "-gui starts a local web interface with the same options and live\n")
 	fmt.Fprintf(w, "progress. It listens on loopback only and does not require root.\n\n")
 	fmt.Fprintf(w, "Flags:\n")
@@ -662,6 +664,7 @@ func runRound(ctx context.Context, cfg config, signKey ed25519.PrivateKey, round
 		console.Bold("workers:"), console.Tone(cfg.workers, "cyan"),
 		console.Bold("rate:"), console.Cyan(rateText(cfg.rate)))
 	fmt.Fprintf(os.Stderr, "%s %s\n", console.Bold("password candidates:"), console.Tone(len(session.Credentials), "cyan"))
+	fmt.Fprintf(os.Stderr, "%s %s\n", console.Bold("passwordless detection:"), console.Green("always on, screenshot captured"))
 	if excluded := session.ExcludedTargets(); excluded > 0 {
 		fmt.Fprintf(os.Stderr, "excluded: %d target(s) never contacted (%s)\n", excluded, cfg.exclude)
 	}

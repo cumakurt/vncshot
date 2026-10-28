@@ -14,9 +14,9 @@ Yalnızca sahibi olduğunuz veya açık yazılı izniniz bulunan ağlarda kullan
 
 ![vncshot GUI panosu](docs/screenshots/gui-dashboard.png)
 
-*Yerel GUI: sayaç şeridi, tarama eğilimi sparkline'ı, yakalanan kareler ve
-önceki tarama geçmişi; tümü loopback üzerinde. Pano, işletim sisteminin açık
-açık temadadır; sol menüdeki anahtar koyu temayı açar.*
+*Yerel GUI, loopback üzerinde, açık tema. Menü çalışan görünümleri listeler.
+Bitmiş bir tarama ilerlemeyi, önem derecesini, sayaç şeridini ve taramayı
+panoda gösterir. Açık, Koyu ve Sistem menünün altındadır.*
 
 ## İçindekiler
 
@@ -318,8 +318,9 @@ sırasında gömer.
 
 ![vncshot konsol çıktısı](docs/screenshots/console.png)
 
-*Laboratuvar sunucularına karşı bir taramanın konsol çıktısı: canlı ilerleme
-çubuğu, güvensiz sayaçları vurgulanmış özet ve üretilen rapor dosyaları.*
+*Laboratuvar taramasının konsol çıktısı. Çubuk soldan dolar, canlı bulgu
+sayıları onun altında durur ve parolasız tespit açık kalır. Özet güvensiz
+sayaçları vurgular, ardından rapor yollarını listeler.*
 
 | Bayrak | Varsayılan | Açıklama |
 |--------|-----------|----------|
@@ -357,7 +358,7 @@ sırasında gömer.
 | `-shared` | `true` | Paylaşımlı RFB oturumu iste (aktif izleyicileri düşürmez) |
 | `-word-list` | | Ek parola adayları, satır başına bir tane (`#` yorumları ve boş satırlar yok sayılır, en fazla 500 kayıt) |
 | `-no-default-passwords` | `false` | Yerleşik zayıf parola listesini deneme |
-| `-no-password-check` | `false` | Hiç parola deneme; yalnızca parolasız sunucuları raporla |
+| `-no-password-check` | `false` | Hiç parola deneme. Parolasız hostlar yine tespit edilir ve ekran görüntüsü alınır |
 | `-yes` | `false` | Etkileşimli yetki onayını atla |
 | `-gui` | `false` | CLI taraması yerine yerel web GUI'sini başlat |
 | `-gui-host` | `127.0.0.1` | GUI dinleme adresi (yalnızca loopback) |
@@ -451,9 +452,11 @@ asla gizlemez ve bu bayrak komut satırından verilmelidir.
 
 ## Parola testi
 
-Parola testi varsayılan olarak açıktır. Her RFB uç noktasına önce, hiçbir
-kimlik bilgisi göndermeden duyurulan güvenlik tiplerini okuyan bir keşif
-bağlantısı yapılır:
+Parolasız hedef tespiti her taramada çalışır ve kapatılamaz. Parolasız oturum
+kabul eden host raporlanır ve tek karelik ekran görüntüsü kaydedilir. Parola
+denemesi varsayılan olarak açıktır ve daraltılabilir. Her RFB uç noktasına
+önce, hiçbir kimlik bilgisi göndermeden duyurulan güvenlik tiplerini okuyan
+bir keşif bağlantısı yapılır:
 
 * Sunucu `None` güvenlik tipini veya `TLS` tipini (18, yani TLS üzerinden
   `None`) sunuyorsa host parolasız olarak raporlanır ve ekran görüntüsü alınır.
@@ -467,7 +470,8 @@ bağlantısı yapılır:
 Adaylar yerleşik zayıf parola listesinden (boş parola dahil yaklaşık 30 yaygın
 VNC parolası) ve isteğe bağlı olarak `-word-list` dosyasından gelir.
 `-no-default-passwords` yerleşik listeyi kaldırır, `-no-password-check` ise
-deneme aşamasını tamamen atlar; böylece yalnızca parolasız hostlar raporlanır.
+deneme aşamasını atlar. İkisi de parolasız tespiti veya ekran görüntüsünü
+kapatmaz.
 Keşif aşaması hiç parola göndermediği için kapsam dışı bir host, yalnızca
 tarandığı için saldırıya uğramaz.
 
@@ -709,7 +713,8 @@ Bu, loopback üzerinde yerel bir web arayüzü başlatır ve oturum URL'sini
 terminale yazdırır. New scan o taramaya ait seçenekleri açar: hedef veya hedef
 dosyası, portlar, worker sayısı, hız, bağlantı ve RFB zaman aşımları,
 JSON/HTML/PDF/CSV yol geçersiz kılmaları, ekran görüntüsü dizini, PDF atlama,
-paylaşımlı oturum, manifest ve parola listesi. Rapor kökü, tutulacak tarama
+paylaşımlı oturum, manifest ve parola listesi. Parolasız hedefleri tespit
+etme ve ekran görüntüsü alma seçeneği işaretli gelir ve kapatılamaz. Rapor kökü, tutulacak tarama
 sayısı, prune deneme çalıştırması ve webhook Settings altındadır ve
 değiştirilene kadar her taramaya uygulanır. Parola redaksiyonu Settings
 anahtarı değildir; GUI'yi `-redact` ile başlatın. `-config` bu ekranlarda yer
@@ -821,9 +826,8 @@ Portu sabitlemek için `-gui-port`, otomatik `xdg-open` çağrısını kapatmak 
 
 ![Bulgu tablosu ve tarama geçmişi](docs/screenshots/gui-findings.png)
 
-*Bulgular taşıma tipini, parola kaynağını ve yakalanan karenin küçük görselini
-taşır; küçük görsele tıklamak sayfa içi lightbox'ı açar. Sol menü çalışan ve
-incelenmeyi bekleyen taramaları listeler.*
+*Seçilen taramanın bulguları: önem, taşıma, sunucu adı, ekran boyutu ve küçük
+görsel. Süzgeçler tabloyu daraltır; küçük görsel sayfa içinde açılır.*
 
 ### GUI HTTP API
 

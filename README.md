@@ -14,9 +14,9 @@ Use only on networks you own or have explicit written permission to test.
 
 ![vncshot GUI dashboard](docs/screenshots/gui-dashboard.png)
 
-*The local GUI: the counter strip, the run-trend sparkline, captured frames
-and the previous-run history, all on loopback. The dashboard follows the
-light theme, with a dark theme on the rail toggle.*
+*The local GUI on loopback, in the light theme. The rail lists the working
+views. A finished scan shows progress, severity, the counter strip and that
+scan on the board. Light, Dark and System sit at the bottom of the rail.*
 
 ## Table of contents
 
@@ -308,8 +308,9 @@ injects the release version at build time.
 
 ![vncshot console output](docs/screenshots/console.png)
 
-*Console output of a scan against lab fixtures: live progress bar, summary
-with insecure counters highlighted and the generated report files.*
+*Console output of a lab scan. The bar fills from the left, live finding
+counts sit under it, and passwordless detection stays on. The summary
+highlights insecure counts and then lists the report files.*
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -347,7 +348,7 @@ with insecure counters highlighted and the generated report files.*
 | `-shared` | `true` | Request shared RFB session (does not kick active viewers) |
 | `-word-list` | | Extra password candidates, one per line (`#` comments and blank lines ignored, max 500 entries) |
 | `-no-default-passwords` | `false` | Do not try the built-in weak-password list |
-| `-no-password-check` | `false` | Do not attempt any password; report passwordless hosts only |
+| `-no-password-check` | `false` | Do not attempt any password. Passwordless hosts are still detected and screenshotted |
 | `-yes` | `false` | Skip the interactive authorization confirmation |
 | `-gui` | `false` | Start the local web GUI instead of a CLI scan |
 | `-gui-host` | `127.0.0.1` | GUI listen address (loopback only) |
@@ -440,9 +441,11 @@ the flag itself must come from the command line.
 
 ## Password testing
 
-Password testing is enabled by default. Every RFB endpoint first gets a
-discovery connection that reads the advertised security types without
-sending a credential:
+Passwordless detection always runs and cannot be turned off. A host that
+accepts a session with no password is reported and its one-frame screenshot
+is saved. Password guessing is enabled by default and can be narrowed.
+Every RFB endpoint first gets a discovery connection that reads the
+advertised security types without sending a credential:
 
 * If the server offers the `None` security type, or the `TLS` type (18, which
   is `None` over TLS), the host is reported as passwordless and its framebuffer
@@ -458,7 +461,8 @@ sending a credential:
 Candidates come from the built-in weak-password list (about 30 common VNC
 passwords, including the empty password) plus, optionally, `-word-list`.
 `-no-default-passwords` removes the built-in list, and `-no-password-check`
-skips the attempt phase entirely so only passwordless hosts are reported.
+skips the attempt phase. Neither flag disables passwordless detection or
+its screenshot.
 Discovery itself never sends a password, so an out-of-scope host is not
 attacked just because it was scanned.
 
@@ -702,7 +706,8 @@ This starts a local web interface on loopback and prints its session URL to
 the terminal. New scan opens the options for that run: target or target file,
 ports, workers, rate, connect and RFB timeouts, JSON/HTML/PDF/CSV path
 overrides, screenshot directory, skip PDF, shared session, manifest and the
-password list. Report root, keep-runs, the prune dry-run toggle and the webhook
+password list. Detecting passwordless hosts and capturing their screenshot
+is shown checked and cannot be cleared. Report root, keep-runs, the prune dry-run toggle and the webhook
 live under Settings and apply to every scan until changed. Password redaction
 is not a Settings switch; start the GUI with `-redact`.
 `-config` is not part of either screen; values passed on the launch command
@@ -812,9 +817,9 @@ automatic `xdg-open` call.
 
 ![Findings table and run history](docs/screenshots/gui-findings.png)
 
-*Findings carry the transport, the credential source and a thumbnail of the
-captured frame; clicking a thumbnail opens the in-page lightbox. The left rail
-lists the scans that are running or waiting to be reviewed.*
+*Findings for the selected scan: severity, transport, server name, screen
+size and a thumbnail. The filters narrow the table, and a thumbnail opens
+in the page.*
 
 ### GUI HTTP API
 

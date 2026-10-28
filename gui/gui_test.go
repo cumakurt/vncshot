@@ -1,9 +1,11 @@
 package gui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -804,6 +806,162 @@ func TestRunEndpointsRequireGuard(t *testing.T) {
 	}
 }
 
+func TestScanProfileUsesCLIDefaults(t *testing.T) {
+	srv, _ := newTestServer(t, Config{})
+	got := srv.scanProfile()
+	if got.Workers != 150 || got.Rate != 200 || got.TimeoutMs != 1000 || got.VNCTimeoutMs != 15000 {
+		t.Fatalf("unset profile = %+v, want CLI defaults", got)
+	}
+
+	srv.cfg.Scan.Workers = 40
+	srv.cfg.Scan.RatePerSec = 0
+	srv.cfg.Scan.ConnectTimeout = 2 * time.Second
+	srv.cfg.Scan.VNCTimeout = 5 * time.Second
+	got = srv.scanProfile()
+	if got.Workers != 40 || got.Rate != 0 || got.TimeoutMs != 2000 || got.VNCTimeoutMs != 5000 {
+		t.Fatalf("explicit profile = %+v", got)
+	}
+}
+
+func TestNewScanProfileStartsEditable(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded page: %v", err)
+	}
+	body := string(page)
+	for _, needle := range []string{
+		`id="workers" min="1" max="5000" value="150"`,
+		`id="rate" min="0" max="10000" value="200"`,
+		`id="timeout_ms" min="1" value="1000"`,
+		`id="vnc_timeout_ms" min="1" value="15000"`,
+		"function applyProfileDefaults",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("index.html is missing %s", needle)
+		}
+	}
+	setup := regexp.MustCompile(`(?s)function openScanSetup\(.*?\n  \}`).FindString(body)
+	if setup == "" || !strings.Contains(setup, "applyProfileDefaults()") {
+		t.Fatal("a new scan does not restore the profile defaults")
+	}
+	for _, id := range []string{"workers", "rate", "timeout_ms", "vnc_timeout_ms"} {
+		tag := regexp.MustCompile(`<input[^>]*id="` + id + `"[^>]*>`).FindString(body)
+		if tag == "" {
+			t.Fatalf("missing %s input", id)
+		}
+		if strings.Contains(tag, "readonly") || strings.Contains(tag, "disabled") {
+			t.Errorf("%s is not editable: %s", id, tag)
+		}
+	}
+}
+
+func TestTargetFileBrowseStoresAPrivateCopy(t *testing.T) {
+	root := t.TempDir()
+	_, ts := newTestServer(t, Config{Scan: app.Config{OutDir: root}})
+	client := newClient(t)
+
+	resp, _ := postTargetFile(t, client, ts.URL, "targets.txt", "192.0.2.10\n", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("upload without cookie = %d, want 401", resp.StatusCode)
+	}
+
+	login(t, client, ts.URL)
+	resp, _ = postTargetFile(t, client, ts.URL, "targets.txt", "192.0.2.10\n", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("upload without token header = %d, want 403", resp.StatusCode)
+	}
+
+	auth := map[string]string{"X-Vncshot-Token": testToken}
+	resp, body := postTargetFile(t, client, ts.URL, "../../etc/passwd", "192.0.2.10\n# comment\n", auth)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload = %d, body %s", resp.StatusCode, body)
+	}
+	var stored struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &stored); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	if stored.Name != "passwd" {
+		t.Fatalf("stored name = %q, want the base name only", stored.Name)
+	}
+	rel, err := filepath.Rel(root, stored.Path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		t.Fatalf("stored path %q escaped the report root", stored.Path)
+	}
+	if !strings.HasPrefix(rel, "imports"+string(os.PathSeparator)) {
+		t.Fatalf("stored path %q is not under imports", stored.Path)
+	}
+	data, err := os.ReadFile(stored.Path)
+	if err != nil {
+		t.Fatalf("read stored file: %v", err)
+	}
+	if string(data) != "192.0.2.10\n# comment\n" {
+		t.Fatalf("stored content = %q", data)
+	}
+	info, err := os.Stat(stored.Path)
+	if err != nil {
+		t.Fatalf("stat stored file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("stored mode = %o, want 0600", info.Mode().Perm())
+	}
+
+	resp, _ = postTargetFile(t, client, ts.URL, "empty.txt", "", auth)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty upload = %d, want 400", resp.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/target-file", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Vncshot-Token", testToken)
+	got, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET target file: %v", err)
+	}
+	got.Body.Close()
+	if got.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET target file = %d, want 405", got.StatusCode)
+	}
+}
+
+func postTargetFile(t *testing.T, client *http.Client, base, name, content string, headers map[string]string) (*http.Response, []byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("file", name)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := io.WriteString(part, content); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, base+"/api/target-file", &buf)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST target file: %v", err)
+	}
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read upload response: %v", err)
+	}
+	return resp, data
+}
+
 func TestTrendsEndpointReturnsNewestCounters(t *testing.T) {
 	root := t.TempDir()
 	writeRun(t, root, "20260101-010101", []report.Result{
@@ -1580,6 +1738,39 @@ func TestFormPersistsRunOptionsButNotAuthorization(t *testing.T) {
 	}
 }
 
+// TestPasswordlessCaptureIsLocked guards the new-scan contract: passwordless
+// detection and its screenshot are shown as on, cannot be edited, and are
+// not a persisted preference an operator can turn off.
+func TestPasswordlessCaptureIsLocked(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded html: %v", err)
+	}
+	html := string(page)
+	if !strings.Contains(html, `id="passwordlessCapture"`) {
+		t.Fatal("new scan form has no passwordless capture control")
+	}
+	if !strings.Contains(html, `id="passwordlessCapture" checked disabled`) {
+		t.Error("passwordless capture control is not checked and disabled")
+	}
+	if !strings.Contains(html, "function lockPasswordlessCapture") {
+		t.Error("passwordless capture is not forced on in script")
+	}
+	if !strings.Contains(html, "lockPasswordlessCapture();") {
+		t.Error("opening a new scan does not lock passwordless capture")
+	}
+	if !strings.Contains(html, "Number(step) === 4") {
+		t.Error("the review step does not fill when its button passes a string step")
+	}
+	match := regexp.MustCompile(`(?s)var formFields = \[(.*?)\]`).FindStringSubmatch(html)
+	if match == nil {
+		t.Fatal("index.html has no formFields list")
+	}
+	if strings.Contains(match[1], `"passwordlessCapture"`) {
+		t.Error("formFields persists passwordless capture; it must stay forced on")
+	}
+}
+
 // TestDashboardWiresTrendsAndCompare guards the new panels: the trend strip
 // and the compare action must call the guarded JSON API, the compare panel
 // must start hidden, and the comparison renderer must write server strings
@@ -1646,6 +1837,73 @@ func TestDashboardWiresTrendsAndCompare(t *testing.T) {
 	}
 	if !strings.Contains(match, "textContent") {
 		t.Error("compareGroup does not write textContent")
+	}
+}
+
+// TestSearchPaletteWaitsForAQuery keeps an empty search from listing every
+// page in the middle of the screen, and gives that layer a backdrop so a
+// click outside dismisses it.
+func TestSearchPaletteWaitsForAQuery(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded page: %v", err)
+	}
+	body := string(page)
+	if !strings.Contains(body, `id="paletteBackdrop"`) {
+		t.Fatal("search has no backdrop to dismiss a click outside the field")
+	}
+	fn := regexp.MustCompile(`(?s)function paintPalette\(.*?\n  \}`).FindString(body)
+	if fn == "" {
+		t.Fatal("index.html has no paintPalette function")
+	}
+	if !strings.Contains(fn, "if (!query)") {
+		t.Fatal("an empty search still lists commands")
+	}
+	if strings.Contains(fn, "!query ||") {
+		t.Fatal("an empty search still matches every command")
+	}
+}
+
+// TestTurkishMenuStringsAreTranslated keeps every marked menu string in the
+// Turkish dictionary, so selecting Türkçe cannot leave that control in English.
+func TestTurkishMenuStringsAreTranslated(t *testing.T) {
+	page, err := assets.ReadFile("index.html")
+	if err != nil {
+		t.Fatalf("read embedded page: %v", err)
+	}
+	body := string(page)
+	start := strings.Index(body, "var TR = {")
+	end := strings.Index(body[start:], "};")
+	if start < 0 || end < 0 {
+		t.Fatal("index.html has no TR dictionary")
+	}
+	block := body[start : start+end]
+	keys := map[string]bool{}
+	for _, match := range regexp.MustCompile(`"((?:\\.|[^"\\])*)"\s*:`).FindAllStringSubmatch(block, -1) {
+		keys[match[1]] = true
+	}
+	checks := []struct {
+		name string
+		re   *regexp.Regexp
+	}{
+		{"data-i18n", regexp.MustCompile(`data-i18n="([^"]*)"`)},
+		{"placeholder", regexp.MustCompile(`data-i18n-placeholder="([^"]*)"`)},
+		{"aria", regexp.MustCompile(`data-i18n-aria="([^"]*)"`)},
+		{"nav label", regexp.MustCompile(`class="nav-label">([^<]+)<`)},
+		{"t() call", regexp.MustCompile(`\bt\("((?:\\.|[^"\\])*)"\)`)},
+	}
+	for _, check := range checks {
+		seen := map[string]bool{}
+		for _, match := range check.re.FindAllStringSubmatch(body, -1) {
+			key := match[1]
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if !keys[key] {
+				t.Errorf("%s %q has no Turkish translation", check.name, key)
+			}
+		}
 	}
 }
 

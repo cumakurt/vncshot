@@ -637,6 +637,19 @@
   .check { display: flex; gap: 8px; align-items: flex-start; }
   .check input { margin-top: 3px; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .file-pick { display: flex; gap: 8px; align-items: center; }
+  .file-pick input[type="text"] { flex: 1; min-width: 0; }
+  .file-pick .btn { flex: none; }
+  .file-picker {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    border: 0;
+  }
   .rail-section { border-top: 1px solid var(--rule); padding-top: 12px; margin-top: 14px; }
   .rail-title {
     font-family: var(--serif);
@@ -824,14 +837,22 @@
     border: 1px solid var(--line);
     box-shadow: var(--shadow), var(--edge);
   }
+  .palette-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-palette);
+    background: var(--overlay);
+  }
   .palette {
     top: 12vh;
     left: 50%;
     transform: translateX(-50%);
     width: min(560px, calc(100% - 32px));
+    z-index: calc(var(--z-palette) + 1);
   }
   .palette input { width: 100%; border: 0; border-bottom: 1px solid var(--line); padding: 12px; background: transparent; }
   .palette ul { list-style: none; margin: 0; padding: 6px; max-height: 320px; overflow: auto; }
+  .palette-hint { padding: 10px 8px; color: var(--muted); }
   .palette li button { width: 100%; text-align: left; border: 0; background: transparent; padding: 8px; cursor: pointer; }
   .palette li button.active, .palette li button:hover { background: var(--accent-soft); }
   .drawer { top: 0; right: 0; height: 100%; width: min(420px, 100%); z-index: var(--z-drawer); padding: 16px; overflow: auto; }
@@ -849,7 +870,7 @@
 </style>
 </head>
 <body>
-<a class="skip-link" href="#main">Skip to content</a>
+<a class="skip-link" href="#main" data-i18n="Skip to content">Skip to content</a>
 <div class="shell">
   <aside>
     <div class="brand-row">
@@ -863,7 +884,7 @@
         <p class="tagline">Aperture</p>
       </div>
     </div>
-    <nav class="nav" aria-label="Sections">
+    <nav class="nav" aria-label="Sections" data-i18n-aria="Sections">
       <button type="button" id="nav-scans" class="active"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Dashboard</span><span class="badge-count" id="badgeRuns"></span></button>
       <button type="button" id="nav-activity"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h3l2-4 2 8 2-4h3" fill="none" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Live activity</span></button>
       <button type="button" id="nav-hosts"><svg class="marklet" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="7" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 13h4" stroke="currentColor" stroke-width="1.5"/></svg><span class="nav-label">Hosts</span></button>
@@ -875,10 +896,10 @@
     <p class="menu-label" data-i18n="Jobs">Jobs</p>
     <button type="button" class="scan-item new-scan" id="newScanRail" data-i18n="New scan">New scan</button>
     <div class="scan-list" id="scanMenu">
-      <div class="empty">No scans yet.</div>
+      <div class="empty" data-i18n="No scans yet.">No scans yet.</div>
     </div>
     <div class="rail-foot">
-      <div class="theme-switch" id="themeToggle" role="radiogroup" aria-label="Theme">
+      <div class="theme-switch" id="themeToggle" role="radiogroup" aria-label="Theme" data-i18n-aria="Theme">
         <button type="button" data-theme-choice="light" data-i18n="Light" aria-pressed="true">Light</button>
         <button type="button" data-theme-choice="dark" data-i18n="Dark" aria-pressed="false">Dark</button>
         <button type="button" data-theme-choice="system" data-i18n="System" aria-pressed="false">System</button>
@@ -891,7 +912,7 @@
     <div class="topbar">
       <button type="button" class="btn btn-ghost" id="railToggle" data-i18n="Rail" aria-pressed="false">Rail</button>
       <div class="crumbs" id="crumbs">Overview / <strong>Dashboard</strong></div>
-      <div class="workspace-tabs" id="workspaceTabs" role="tablist" aria-label="Open views"></div>
+      <div class="workspace-tabs" id="workspaceTabs" role="tablist" aria-label="Open views" data-i18n-aria="Open views"></div>
       <button type="button" class="btn btn-ghost" id="openPalette" data-i18n="Search">Search</button>
     </div>
     <div id="warningBox" class="notice hidden"></div>
@@ -903,153 +924,159 @@
       </div>
       <div class="masthead-actions">
         <div class="meta">
-          <div id="startedAt">no scan started</div>
+          <div id="startedAt" data-i18n="no scan started">no scan started</div>
           <div id="runDir" class="mono"></div>
         </div>
-        <button type="button" class="btn btn-primary" id="newScan">New scan</button>
+        <button type="button" class="btn btn-primary" id="newScan" data-i18n="New scan">New scan</button>
       </div>
     </div>
 
     <form id="form" class="scan-setup hidden" data-step="1" autocomplete="off">
       <div class="scan-setup-bar">
-        <h2>New scan</h2>
-        <button type="button" class="btn-mini" id="scanSetupClose">Close</button>
+        <h2 data-i18n="New scan">New scan</h2>
+        <button type="button" class="btn-mini" id="scanSetupClose" data-i18n="Close">Close</button>
       </div>
-      <p class="hint">Scope, pace, comparison and credentials for this scan. A running scan keeps the options it started with.</p>
+      <p class="hint" data-i18n="Scope, pace, comparison and credentials for this scan. A running scan keeps the options it started with.">Scope, pace, comparison and credentials for this scan. A running scan keeps the options it started with.</p>
       <div class="wizard-steps" id="wizardSteps">
-        <button type="button" data-step="1" aria-current="step">1 Target</button>
-        <button type="button" data-step="2">2 Profile</button>
-        <button type="button" data-step="3">3 Credentials</button>
-        <button type="button" data-step="4">4 Review</button>
-        <button type="button" data-step="5">5 Authorize</button>
+        <button type="button" data-step="1" aria-current="step" data-i18n="1 Target">1 Target</button>
+        <button type="button" data-step="2" data-i18n="2 Profile">2 Profile</button>
+        <button type="button" data-step="3" data-i18n="3 Credentials">3 Credentials</button>
+        <button type="button" data-step="4" data-i18n="4 Review">4 Review</button>
+        <button type="button" data-step="5" data-i18n="5 Authorize">5 Authorize</button>
       </div>
 
       <div class="rail-section" data-wizard="1">
-        <p class="rail-title">Scope</p>
+        <p class="rail-title" data-i18n="Scope">Scope</p>
         <label>
-          <span class="lbl">Target</span>
+          <span class="lbl" data-i18n="Target">Target</span>
           <input type="text" id="target" placeholder="192.168.1.0/24 or 10.0.0.1-50">
         </label>
         <label>
-          <span class="lbl">Target file</span>
-          <input type="text" id="file" placeholder="/home/operator/targets.txt">
+          <span class="lbl" data-i18n="Target file">Target file</span>
+          <span class="file-pick">
+            <input type="text" id="file" placeholder="/home/operator/targets.txt">
+            <button type="button" class="btn btn-ghost" id="fileBrowse" data-i18n="Browse">Browse</button>
+          </span>
         </label>
+        <input type="file" id="filePicker" class="file-picker" tabindex="-1" aria-label="Target file" data-i18n-aria="Target file">
         <label>
-          <span class="lbl">Ports</span>
+          <span class="lbl" data-i18n="Ports">Ports</span>
           <input type="text" id="ports" placeholder="5900,5901-5910">
         </label>
       </div>
 
       <div class="rail-section" data-wizard="2">
-        <p class="rail-title">Profile</p>
+        <p class="rail-title" data-i18n="Profile">Profile</p>
         <div class="pair">
           <label>
-            <span class="lbl">Workers</span>
-            <input type="number" id="workers" min="1" max="5000">
+            <span class="lbl" data-i18n="Workers">Workers</span>
+            <input type="number" id="workers" min="1" max="5000" value="150">
           </label>
           <label>
-            <span class="lbl">Rate / s</span>
-            <input type="number" id="rate" min="0" max="10000">
+            <span class="lbl" data-i18n="Rate / s">Rate / s</span>
+            <input type="number" id="rate" min="0" max="10000" value="200">
           </label>
         </div>
         <div class="pair">
           <label>
-            <span class="lbl">Connect ms</span>
-            <input type="number" id="timeout_ms" min="1">
+            <span class="lbl" data-i18n="Connect ms">Connect ms</span>
+            <input type="number" id="timeout_ms" min="1" value="1000">
           </label>
           <label>
-            <span class="lbl">RFB ms</span>
-            <input type="number" id="vnc_timeout_ms" min="1">
+            <span class="lbl" data-i18n="RFB ms">RFB ms</span>
+            <input type="number" id="vnc_timeout_ms" min="1" value="15000">
           </label>
         </div>
       </div>
 
       <div class="rail-section" data-wizard="2">
-        <p class="rail-title">Comparison</p>
+        <p class="rail-title" data-i18n="Comparison">Comparison</p>
         <label>
-          <span class="lbl">Previous run</span>
+          <span class="lbl" data-i18n="Previous run">Previous run</span>
           <select id="baseline">
-            <option value="">No comparison</option>
+            <option value="" data-i18n="No comparison">No comparison</option>
           </select>
         </label>
       </div>
 
       <div class="rail-section" data-wizard="2">
-        <p class="rail-title">Output</p>
+        <p class="rail-title" data-i18n="Output">Output</p>
         <label>
-          <span class="lbl">JSON override</span>
-          <input type="text" id="output" placeholder="default: &lt;run-dir&gt;/vncshot_report.json">
+          <span class="lbl" data-i18n="JSON override">JSON override</span>
+          <input type="text" id="output" placeholder="default: &lt;run-dir&gt;/vncshot_report.json" data-i18n-placeholder="default JSON path">
         </label>
         <label>
-          <span class="lbl">HTML override</span>
-          <input type="text" id="html" placeholder="default: &lt;run-dir&gt;/vncshot_report.html">
+          <span class="lbl" data-i18n="HTML override">HTML override</span>
+          <input type="text" id="html" placeholder="default: &lt;run-dir&gt;/vncshot_report.html" data-i18n-placeholder="default HTML path">
         </label>
         <label>
-          <span class="lbl">PDF override</span>
-          <input type="text" id="pdf" placeholder="default: &lt;run-dir&gt;/vncshot_report.pdf">
+          <span class="lbl" data-i18n="PDF override">PDF override</span>
+          <input type="text" id="pdf" placeholder="default: &lt;run-dir&gt;/vncshot_report.pdf" data-i18n-placeholder="default PDF path">
         </label>
         <label>
-          <span class="lbl">CSV override</span>
-          <input type="text" id="csv" placeholder="default: &lt;run-dir&gt;/vncshot_report.csv">
+          <span class="lbl" data-i18n="CSV override">CSV override</span>
+          <input type="text" id="csv" placeholder="default: &lt;run-dir&gt;/vncshot_report.csv" data-i18n-placeholder="default CSV path">
         </label>
         <label>
-          <span class="lbl">Screenshot dir</span>
-          <input type="text" id="screenshot_dir" placeholder="default: &lt;run-dir&gt;/screenshots (must stay inside the run folder)">
+          <span class="lbl" data-i18n="Screenshot dir">Screenshot dir</span>
+          <input type="text" id="screenshot_dir" placeholder="default: &lt;run-dir&gt;/screenshots (must stay inside the run folder)" data-i18n-placeholder="default screenshot path">
         </label>
         <label class="check">
           <input type="checkbox" id="no_pdf">
-          <span>Skip the PDF report (faster on very large scans)</span>
+          <span data-i18n="Skip the PDF report (faster on very large scans)">Skip the PDF report (faster on very large scans)</span>
         </label>
         <label class="check">
           <input type="checkbox" id="manifest">
-          <span>Write a SHA-256 checksum manifest for the run artifacts</span>
+          <span data-i18n="Write a SHA-256 checksum manifest for the run artifacts">Write a SHA-256 checksum manifest for the run artifacts</span>
         </label>
         <label class="check">
           <input type="checkbox" id="shared" checked>
-          <span>Request a shared RFB session (do not kick active viewers)</span>
+          <span data-i18n="Request a shared RFB session (do not kick active viewers)">Request a shared RFB session (do not kick active viewers)</span>
         </label>
       </div>
 
       <div class="rail-section" data-wizard="3">
-        <p class="rail-title">Passwords</p>
+        <p class="rail-title" data-i18n="Passwords">Passwords</p>
+        <label class="check">
+          <input type="checkbox" id="passwordlessCapture" checked disabled aria-disabled="true" data-i18n-aria="This check always runs and cannot be turned off." aria-label="This check always runs and cannot be turned off.">
+          <span data-i18n="Detect passwordless hosts and capture a screenshot">Detect passwordless hosts and capture a screenshot</span>
+        </label>
+        <p class="hint" data-i18n="This check always runs and cannot be turned off.">This check always runs and cannot be turned off.</p>
         <label>
-          <span class="lbl">Word list</span>
-          <input type="text" id="word_list" placeholder="/home/operator/wordlist.txt (one per line)">
+          <span class="lbl" data-i18n="Word list">Word list</span>
+          <input type="text" id="word_list" placeholder="/home/operator/wordlist.txt (one per line)" data-i18n-placeholder="word list path">
         </label>
         <label class="check">
           <input type="checkbox" id="no_default_passwords">
-          <span>Skip the built-in weak-password list</span>
+          <span data-i18n="Skip the built-in weak-password list">Skip the built-in weak-password list</span>
         </label>
         <label class="check">
           <input type="checkbox" id="no_password_check">
-          <span>Skip password testing entirely (passwordless check only)</span>
+          <span data-i18n="Skip password testing entirely (passwordless check only)">Skip password testing entirely (passwordless check only)</span>
         </label>
-        <p class="hint" style="font-size:11px;color:var(--muted);margin:0">
-          The scanner only reads one frame and disconnects. No input or
-          clipboard is ever sent.
-        </p>
+        <p class="hint" style="font-size:11px;color:var(--muted);margin:0" data-i18n="The scanner only reads one frame and disconnects. No input or clipboard is ever sent.">The scanner only reads one frame and disconnects. No input or clipboard is ever sent.</p>
       </div>
 
       <div class="rail-section" data-wizard="4" id="wizardReview"></div>
       <div class="rail-section" data-wizard="5">
-        <p class="rail-title">Authorization</p>
+        <p class="rail-title" data-i18n="Authorization">Authorization</p>
         <label class="check">
           <input type="checkbox" id="authorized">
-          <span>I confirm I own, or hold explicit written permission to test, every target in scope.</span>
+          <span data-i18n="I confirm I own, or hold explicit written permission to test, every target in scope.">I confirm I own, or hold explicit written permission to test, every target in scope.</span>
         </label>
-        <button class="btn btn-primary" type="submit" id="start">Start scan</button>
+        <button class="btn btn-primary" type="submit" id="start" data-i18n="Start scan">Start scan</button>
       </div>
     </form>
 
     <div class="status-line">
       <span class="pill" id="statusPill" role="status" aria-live="polite">
-        <span class="dot" aria-hidden="true"></span><span id="statusText">idle</span>
+        <span class="dot" aria-hidden="true"></span><span id="statusText" data-i18n="idle">idle</span>
       </span>
       <span id="elapsed">—</span>
       <span id="rateLine"></span>
       <span id="credLine"></span>
       <span class="scan-actions">
-        <button class="btn btn-ghost" type="button" id="cancel" disabled>Stop</button>
+        <button class="btn btn-ghost" type="button" id="cancel" disabled data-i18n="Stop">Stop</button>
         <button class="btn btn-ghost" type="button" id="deleteScan" disabled data-i18n="Delete">Delete</button>
         <span id="deleteScanAsk" class="hidden">
           <span data-i18n="Delete this scan and its report folder?">Delete this scan and its report folder?</span>
@@ -1070,23 +1097,23 @@
       </div>
     </div>
 
-    <div class="sev-bars" id="sevBars" aria-label="Severity from the selected scan">
-      <div class="sev-bar sev-critical"><span>Critical</span><span class="track"><span class="fill" id="barCritical"></span></span><span id="nCritical">0</span></div>
-      <div class="sev-bar sev-high"><span>High</span><span class="track"><span class="fill" id="barHigh"></span></span><span id="nHigh">0</span></div>
-      <div class="sev-bar sev-medium"><span>Medium</span><span class="track"><span class="fill" id="barMedium"></span></span><span id="nMedium">0</span></div>
-      <div class="sev-bar sev-low"><span>Low</span><span class="track"><span class="fill" id="barLow"></span></span><span id="nLow">0</span></div>
-      <div class="sev-bar sev-info"><span>Info</span><span class="track"><span class="fill" id="barInfo"></span></span><span id="nInfo">0</span></div>
+    <div class="sev-bars" id="sevBars" aria-label="Severity from the selected scan" data-i18n-aria="Severity from the selected scan">
+      <div class="sev-bar sev-critical"><span data-i18n="Critical">Critical</span><span class="track"><span class="fill" id="barCritical"></span></span><span id="nCritical">0</span></div>
+      <div class="sev-bar sev-high"><span data-i18n="High">High</span><span class="track"><span class="fill" id="barHigh"></span></span><span id="nHigh">0</span></div>
+      <div class="sev-bar sev-medium"><span data-i18n="Medium">Medium</span><span class="track"><span class="fill" id="barMedium"></span></span><span id="nMedium">0</span></div>
+      <div class="sev-bar sev-low"><span data-i18n="Low">Low</span><span class="track"><span class="fill" id="barLow"></span></span><span id="nLow">0</span></div>
+      <div class="sev-bar sev-info"><span data-i18n="Info">Info</span><span class="track"><span class="fill" id="barInfo"></span></span><span id="nInfo">0</span></div>
     </div>
     <div class="counters">
-      <div class="counter"><div class="k">Targets</div><div class="v" id="cTargets">0</div></div>
-      <div class="counter"><div class="k">Open ports</div><div class="v" id="cOpen">0</div></div>
-      <div class="counter"><div class="k">RFB services</div><div class="v" id="cRfb">0</div></div>
-      <div class="counter good"><div class="k">TLS services</div><div class="v" id="cTls">0</div></div>
-      <div class="counter hot"><div class="k">Self-signed certs</div><div class="v" id="cSelfSigned">0</div></div>
-      <div class="counter hot"><div class="k">Passwordless</div><div class="v" id="cNoAuth">0</div></div>
-      <div class="counter hot"><div class="k">Weak creds</div><div class="v" id="cWeak">0</div></div>
-      <div class="counter good"><div class="k">Screenshots</div><div class="v" id="cShots">0</div></div>
-      <div class="counter"><div class="k">Errors</div><div class="v" id="cErrors">0</div></div>
+      <div class="counter"><div class="k" data-i18n="Targets">Targets</div><div class="v" id="cTargets">0</div></div>
+      <div class="counter"><div class="k" data-i18n="Open ports">Open ports</div><div class="v" id="cOpen">0</div></div>
+      <div class="counter"><div class="k" data-i18n="RFB services">RFB services</div><div class="v" id="cRfb">0</div></div>
+      <div class="counter good"><div class="k" data-i18n="TLS services">TLS services</div><div class="v" id="cTls">0</div></div>
+      <div class="counter hot"><div class="k" data-i18n="Self-signed certs">Self-signed certs</div><div class="v" id="cSelfSigned">0</div></div>
+      <div class="counter hot"><div class="k" data-i18n="Passwordless">Passwordless</div><div class="v" id="cNoAuth">0</div></div>
+      <div class="counter hot"><div class="k" data-i18n="Weak creds">Weak creds</div><div class="v" id="cWeak">0</div></div>
+      <div class="counter good"><div class="k" data-i18n="Screenshots">Screenshots</div><div class="v" id="cShots">0</div></div>
+      <div class="counter"><div class="k" data-i18n="Errors">Errors</div><div class="v" id="cErrors">0</div></div>
     </div>
 
     <div class="block" id="scanBoard">
@@ -1101,10 +1128,10 @@
 
     <div class="block">
       <div class="block-head">
-        <h2>Activity</h2>
-        <span class="hint">live events from the scanner</span>
+        <h2 data-i18n="Activity">Activity</h2>
+        <span class="hint" data-i18n="live events from the scanner">live events from the scanner</span>
       </div>
-      <ul class="log" id="log" aria-live="polite"><li><time>—</time><span>waiting for a scan</span></li></ul>
+      <ul class="log" id="log" aria-live="polite"><li><time>—</time><span data-i18n="waiting for a scan">waiting for a scan</span></li></ul>
     </div>
 
 
@@ -1112,51 +1139,51 @@
     <div id="view-history" class="view">
     <div class="masthead">
       <div>
-        <h1>History</h1>
+        <h1 data-i18n="History">History</h1>
       </div>
     </div>
-    <p class="hint">Earlier runs, the trend of notable findings, and report files for the selected scan.</p>
+    <p class="hint" data-i18n="Earlier runs, the trend of notable findings, and report files for the selected scan.">Earlier runs, the trend of notable findings, and report files for the selected scan.</p>
     <div class="block" id="trendsBlock">
       <div class="block-head">
-        <h2>Run trend</h2>
-        <span class="hint">passwordless + weak credentials per run · click a column to open it</span>
+        <h2 data-i18n="Run trend">Run trend</h2>
+        <span class="hint" data-i18n="passwordless + weak credentials per run · click a column to open it">passwordless + weak credentials per run · click a column to open it</span>
       </div>
       <div class="trend-strip" id="trendStrip" role="list" aria-label="Findings per run">
-        <div class="empty">No run history yet.</div>
+        <div class="empty" data-i18n="No run history yet.">No run history yet.</div>
       </div>
     </div>
 
     <div class="block" id="reportsBlock">
       <div class="block-head">
-        <h2>Reports</h2>
-        <span class="hint">written into the timestamped run folder</span>
+        <h2 data-i18n="Reports">Reports</h2>
+        <span class="hint" data-i18n="written into the timestamped run folder">written into the timestamped run folder</span>
       </div>
       <div class="reports" id="reportLinks">
-        <div class="empty">Reports appear here when the scan finishes.</div>
+        <div class="empty" data-i18n="Reports appear here when the scan finishes.">Reports appear here when the scan finishes.</div>
       </div>
     </div>
 
     <div class="block hidden" id="compareBlock">
       <div class="block-head">
-        <h2 id="compareTitle">Baseline comparison</h2>
-        <button type="button" class="btn-mini" id="compareClose">Close</button>
+        <h2 id="compareTitle" data-i18n="Baseline comparison">Baseline comparison</h2>
+        <button type="button" class="btn-mini" id="compareClose" data-i18n="Close">Close</button>
       </div>
       <div class="compare-groups" id="compareBody"></div>
     </div>
 
     <div class="rail-section">
-      <p class="rail-title">Previous runs</p>
+      <p class="rail-title" data-i18n="Previous runs">Previous runs</p>
       <div id="historyList">
-        <div class="empty">No earlier runs.</div>
+        <div class="empty" data-i18n="No earlier runs.">No earlier runs.</div>
       </div>
     </div>
     </div>
     <div id="view-findings" class="view">
     <div class="masthead">
       <div>
-        <h1>Findings</h1>
+        <h1 data-i18n="Findings">Findings</h1>
       </div>
-      <div class="meta" id="findingHint">open ports, RFB services and passwordless hosts</div>
+      <div class="meta" id="findingHint" data-i18n="open ports, RFB services and passwordless hosts">open ports, RFB services and passwordless hosts</div>
     </div>
     <div class="finding-filters" id="findingFilters">
       <button type="button" class="btn-mini active" data-filter="all" data-i18n="All">All</button>
@@ -1166,7 +1193,7 @@
     </div>
     <div class="block">
       <div id="findingsHost">
-        <div class="empty">No findings yet.</div>
+        <div class="empty" data-i18n="No findings yet.">No findings yet.</div>
       </div>
     </div>
 
@@ -1174,99 +1201,95 @@
     <div id="view-settings" class="view">
     <div class="masthead">
       <div>
-        <h1>Settings</h1>
+        <h1 data-i18n="Settings">Settings</h1>
       </div>
     </div>
-    <p class="hint">Report location, retention and delivery. These stay in place until you change them and apply to every scan you start.</p>
+    <p class="hint" data-i18n="Report location, retention and delivery. These stay in place until you change them and apply to every scan you start.">Report location, retention and delivery. These stay in place until you change them and apply to every scan you start.</p>
     <div id="globalSettings">
       <div class="rail-section">
-        <p class="rail-title">Appearance</p>
+        <p class="rail-title" data-i18n="Appearance">Appearance</p>
         <label>
-          <span class="lbl">Language</span>
+          <span class="lbl" data-i18n="Language">Language</span>
           <select id="langSelect">
             <option value="en">English</option>
             <option value="tr">Türkçe</option>
           </select>
         </label>
         <label>
-          <span class="lbl">Density</span>
+          <span class="lbl" data-i18n="Density">Density</span>
           <select id="densitySelect">
-            <option value="comfort">Comfortable</option>
-            <option value="compact">Compact</option>
+            <option value="comfort" data-i18n="Comfortable">Comfortable</option>
+            <option value="compact" data-i18n="Compact">Compact</option>
           </select>
         </label>
         <label class="check">
           <input type="checkbox" id="motionReduce">
-          <span>Reduce motion</span>
+          <span data-i18n="Reduce motion">Reduce motion</span>
         </label>
-        <p class="hint">Theme is the Light / Dark / System control at the bottom of the rail. With no saved choice the bench stays light.</p>
+        <p class="hint" data-i18n="Theme is the Light / Dark / System control at the bottom of the rail. With no saved choice the bench stays light.">Theme is the Light / Dark / System control at the bottom of the rail. With no saved choice the bench stays light.</p>
       </div>
       <div class="rail-section">
-        <p class="rail-title">Reports</p>
+        <p class="rail-title" data-i18n="Reports">Reports</p>
         <label>
-          <span class="lbl">Report root</span>
+          <span class="lbl" data-i18n="Report root">Report root</span>
           <input type="text" id="out_dir" placeholder="/usr/local/vncshot">
         </label>
         <label>
-          <span class="lbl">Keep runs</span>
-          <input type="number" id="keep_runs" min="0" placeholder="0 = keep all">
+          <span class="lbl" data-i18n="Keep runs">Keep runs</span>
+          <input type="number" id="keep_runs" min="0" placeholder="0 = keep all" data-i18n-placeholder="0 = keep all">
         </label>
         <label class="check">
           <input type="checkbox" id="prune_dry_run">
-          <span>Report expired runs without deleting them</span>
+          <span data-i18n="Report expired runs without deleting them">Report expired runs without deleting them</span>
         </label>
       </div>
       <div class="rail-section">
-        <p class="rail-title">Delivery</p>
+        <p class="rail-title" data-i18n="Delivery">Delivery</p>
         <label>
-          <span class="lbl">Webhook URL</span>
+          <span class="lbl" data-i18n="Webhook URL">Webhook URL</span>
           <input type="text" id="webhook" placeholder="https://hooks.example/vncshot">
         </label>
-        <p class="hint">Password redaction is fixed when the GUI starts. Use <span class="mono">vncshot -gui -redact</span>.</p>
+        <p class="hint" data-i18n="Password redaction is fixed when the GUI starts. Use vncshot -gui -redact.">Password redaction is fixed when the GUI starts. Use vncshot -gui -redact.</p>
       </div>
     </div>
     </div>
 
     <div id="view-activity" class="view">
-      <div class="masthead"><div><h1>Live activity</h1></div></div>
-      <p class="hint">Events from the selected scan. Pause holds the list; new events stay buffered.</p>
+      <div class="masthead"><div><h1 data-i18n="Live activity">Live activity</h1></div></div>
+      <p class="hint" data-i18n="Events from the selected scan. Pause holds the list; new events stay buffered.">Events from the selected scan. Pause holds the list; new events stay buffered.</p>
       <div class="log-tools">
-        <input type="search" id="logSearch" placeholder="Filter events" aria-label="Filter events">
-        <button type="button" class="btn btn-ghost" id="logPause">Pause</button>
+        <input type="search" id="logSearch" placeholder="Filter events" aria-label="Filter events" data-i18n-placeholder="Filter events" data-i18n-aria="Filter events">
+        <button type="button" class="btn btn-ghost" id="logPause" data-i18n="Pause">Pause</button>
       </div>
       <ul class="log" id="logFull" aria-live="polite"></ul>
     </div>
     <div id="view-hosts" class="view">
-      <div class="masthead"><div><h1>Hosts</h1></div></div>
-      <p class="hint">Endpoints in the selected scan. Choosing one opens its detail.</p>
-      <div id="hostList"><div class="empty">No hosts yet.</div></div>
+      <div class="masthead"><div><h1 data-i18n="Hosts">Hosts</h1></div></div>
+      <p class="hint" data-i18n="Endpoints in the selected scan. Choosing one opens its detail.">Endpoints in the selected scan. Choosing one opens its detail.</p>
+      <div id="hostList"><div class="empty" data-i18n="No hosts yet.">No hosts yet.</div></div>
     </div>
     <div id="view-about" class="view">
-      <div class="masthead"><div><h1>About</h1></div></div>
-      <p>vncshot <span id="aboutVersion">dev</span> is a local RFB survey bench. It listens on loopback and does not require root.</p>
-      <p class="hint">Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.</p>
+      <div class="masthead"><div><h1 data-i18n="About">About</h1></div></div>
+      <p>vncshot <span id="aboutVersion">dev</span> <span data-i18n="is a local RFB survey bench. It listens on loopback and does not require root.">is a local RFB survey bench. It listens on loopback and does not require root.</span></p>
+      <p class="hint" data-i18n="Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.">Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.</p>
     </div>
     <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true"
-         aria-label="Captured framebuffer" aria-describedby="lightboxCaption">
+         aria-label="Captured framebuffer" data-i18n-aria="Captured framebuffer" aria-describedby="lightboxCaption">
       <figure class="lightbox-figure">
         <div class="lightbox-bar">
           <span class="lightbox-caption" id="lightboxCaption"></span>
           <span class="lightbox-actions">
-            <a id="lightboxOpen" href="#" target="_blank" rel="noopener">open full size</a>
-            <button type="button" id="lightboxClose">Close</button>
+            <a id="lightboxOpen" href="#" target="_blank" rel="noopener" data-i18n="open full size">open full size</a>
+            <button type="button" id="lightboxClose" data-i18n="Close">Close</button>
           </span>
         </div>
         <img id="lightboxImage" alt="">
       </figure>
     </div>
 
-    <div class="disclaimer">
-      Authorized use only. Scan only networks you own or have explicit written permission to test.
-      Captured desktops are sensitive evidence; report findings only to the network owner.
-      The developer accepts no liability for use or misuse of this tool. See LICENSE for the full terms.
-    </div>
+    <div class="disclaimer" data-i18n="Authorized use only. Scan only networks you own or have explicit written permission to test. Captured desktops are sensitive evidence; report findings only to the network owner. The developer accepts no liability for use or misuse of this tool. See LICENSE for the full terms.">Authorized use only. Scan only networks you own or have explicit written permission to test. Captured desktops are sensitive evidence; report findings only to the network owner. The developer accepts no liability for use or misuse of this tool. See LICENSE for the full terms.</div>
     <footer class="app-foot">
-      <span>Developer <strong>Cuma KURT</strong></span>
+      <span><span data-i18n="Developer">Developer</span> <strong>Cuma KURT</strong></span>
       <a href="mailto:cumakurt@gmail.com">cumakurt@gmail.com</a>
       <a href="https://www.linkedin.com/in/cuma-kurt-34414917/" target="_blank" rel="noopener">LinkedIn</a>
       <a href="https://github.com/cumakurt/vncshot" target="_blank" rel="noopener">github.com/cumakurt/vncshot</a>
@@ -1274,20 +1297,21 @@
     </footer>
   </main>
 </div>
-<div class="palette hidden" id="palette" role="dialog" aria-modal="true" aria-label="Command palette">
-  <input type="text" id="paletteInput" placeholder="Jump or run a command" aria-label="Command">
+<div class="palette-backdrop hidden" id="paletteBackdrop"></div>
+<div class="palette hidden" id="palette" role="dialog" aria-modal="true" aria-label="Command palette" data-i18n-aria="Command palette">
+  <input type="text" id="paletteInput" placeholder="Jump or run a command" aria-label="Command" data-i18n-placeholder="Jump or run a command" data-i18n-aria="Command">
   <ul id="paletteList"></ul>
 </div>
-<aside class="drawer hidden" id="hostDrawer" aria-label="Host detail">
-  <button type="button" class="btn btn-ghost" id="hostDrawerClose">Close</button>
+<aside class="drawer hidden" id="hostDrawer" aria-label="Host detail" data-i18n-aria="Host detail">
+  <button type="button" class="btn btn-ghost" id="hostDrawerClose" data-i18n="Close">Close</button>
   <h2 id="hostDrawerTitle">Host</h2>
   <div id="hostDrawerBody"></div>
 </aside>
-<div class="shortcut-help hidden" id="shortcutHelp" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-  <h2>Shortcuts</h2>
-  <p>Ctrl/Cmd+K search · ? this list · Esc close</p>
-  <p>G then D dashboard · F findings · H reports · S settings · N new scan</p>
-  <button type="button" class="btn btn-ghost" id="shortcutClose">Close</button>
+<div class="shortcut-help hidden" id="shortcutHelp" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" data-i18n-aria="Keyboard shortcuts">
+  <h2 data-i18n="Shortcuts">Shortcuts</h2>
+  <p data-i18n="Ctrl/Cmd+K search · ? this list · Esc close">Ctrl/Cmd+K search · ? this list · Esc close</p>
+  <p data-i18n="G then D dashboard · F findings · H history · S settings · N new scan">G then D dashboard · F findings · H history · S settings · N new scan</p>
+  <button type="button" class="btn btn-ghost" id="shortcutClose" data-i18n="Close">Close</button>
 </div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
@@ -1341,7 +1365,7 @@
   function setStatus(status) {
     var pill = $("statusPill");
     pill.className = "pill " + (status || "idle");
-    $("statusText").textContent = status || "idle";
+    $("statusText").textContent = t(status || "idle");
     $("cancel").disabled = !(status === "running" && activeID);
     $("deleteScan").disabled = !activeID;
     if (!activeID && $("deleteScanAsk")) $("deleteScanAsk").classList.add("hidden");
@@ -1396,11 +1420,11 @@
     var pct = s.total > 0 ? Math.min(100, Math.round((s.done / s.total) * 100)) : 0;
     $("bar").style.width = pct + "%";
     $("progressWrap").classList.toggle("live", s.status === "running");
-    $("progressText").textContent = s.done + " / " + s.total + " probes";
+    $("progressText").textContent = s.done + " / " + s.total + " " + t("probes");
     $("progressPct").textContent = pct + "%";
-    $("elapsed").textContent = s.elapsed_ms ? "elapsed " + fmtDuration(s.elapsed_ms) : "—";
-    $("rateLine").textContent = s.progress_rate ? s.progress_rate.toFixed(0) + " probes/s" : "";
-    $("credLine").textContent = s.credentials ? s.credentials + " password candidates" : "";
+    $("elapsed").textContent = s.elapsed_ms ? t("elapsed") + " " + fmtDuration(s.elapsed_ms) : "—";
+    $("rateLine").textContent = s.progress_rate ? s.progress_rate.toFixed(0) + " " + t("probes/s") : "";
+    $("credLine").textContent = s.credentials ? s.credentials + " " + t("password candidates") : "";
   }
 
   // renderDiff shows the baseline comparison counts. A scan launched with
@@ -1414,8 +1438,8 @@
       return;
     }
     box.classList.remove("hidden");
-    box.textContent = "Baseline " + d.baseline + ": " +
-      d.new + " new, " + d.resolved + " resolved, " + d.changed + " changed";
+    box.textContent = t("Baseline") + " " + d.baseline + ": " +
+      d.new + " " + t("new") + ", " + d.resolved + " " + t("resolved") + ", " + d.changed + " " + t("changed");
   }
 
   // renderRetention surfaces the retention pass: the dashboard must show when
@@ -1429,7 +1453,7 @@
       return;
     }
     box.classList.remove("hidden");
-    box.textContent = "Removed " + removed + " old run" + (removed === 1 ? "" : "s");
+    box.textContent = t("Removed") + " " + removed + " " + t(removed === 1 ? "old run" : "old runs");
   }
 
   function renderReports(s) {
@@ -1437,7 +1461,7 @@
     var links = s.report_links || {};
     var order = [["html", "HTML report"], ["pdf", "PDF report"], ["json", "JSON data"]];
     var found = false;
-    host.innerHTML = "";
+    host.textContent = "";
     order.forEach(function (pair) {
       var key = pair[0];
       var href = links[key];
@@ -1448,11 +1472,18 @@
       a.href = href;
       a.target = "_blank";
       a.rel = "noopener";
-      a.innerHTML = pair[1] + ' <span class="ext">' + key + "</span>";
+      a.appendChild(document.createTextNode(t(pair[1]) + " "));
+      var ext = document.createElement("span");
+      ext.className = "ext";
+      ext.textContent = key;
+      a.appendChild(ext);
       host.appendChild(a);
     });
     if (!found) {
-      host.innerHTML = '<div class="empty">Reports appear here when the scan finishes.</div>';
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = t("Reports appear here when the scan finishes.");
+      host.appendChild(empty);
     }
   }
 
@@ -1466,12 +1497,14 @@
     "Dashboard": "Pano",
     "Live activity": "Canlı aktivite",
     "Hosts": "Hostlar",
+    "Host": "Host",
     "Credentials": "Kimlik bilgileri",
     "Scope": "Kapsam",
     "New scan": "Yeni tarama",
     "Queue": "Kuyruk",
     "Schedules": "Zamanlamalar",
     "Profiles": "Profiller",
+    "Profile": "Profil",
     "All findings": "Tüm bulgular",
     "Authentication": "Kimlik doğrulama",
     "Encryption": "Şifreleme",
@@ -1484,6 +1517,7 @@
     "Overview": "Genel bakış",
     "Targets": "Hedefler",
     "Scan": "Tarama",
+    "Scan control": "Tarama kontrolü",
     "Findings": "Bulgular",
     "System": "Sistem",
     "Jobs": "İşler",
@@ -1500,12 +1534,197 @@
     "Delete this run and its files?": "Bu tarama ve dosyaları silinsin mi?",
     "Delete this scan and its report folder?": "Bu tarama ve rapor klasörü silinsin mi?",
     "Delete": "Sil",
+    "Deleted": "Silindi",
     "Cancel": "Vazgeç",
     "History": "Geçmiş",
-    "Findings": "Bulgular",
     "All": "Tümü",
     "delete": "sil",
-    "compare": "karşılaştır"
+    "compare": "karşılaştır",
+    "Skip to content": "İçeriğe geç",
+    "Sections": "Bölümler",
+    "Theme": "Tema",
+    "Open views": "Açık görünümler",
+    "idle": "beklemede",
+    "running": "çalışıyor",
+    "completed": "tamamlandı",
+    "cancelled": "iptal edildi",
+    "notable": "önemli",
+    "no scan started": "tarama başlamadı",
+    "started": "başladı",
+    "Stop": "Durdur",
+    "Close": "Kapat",
+    "Activity": "Aktivite",
+    "live events from the scanner": "tarayıcıdan gelen canlı olaylar",
+    "waiting for a scan": "tarama bekleniyor",
+    "Critical": "Kritik",
+    "High": "Yüksek",
+    "Medium": "Orta",
+    "Low": "Düşük",
+    "Info": "Bilgi",
+    "critical": "kritik",
+    "high": "yüksek",
+    "medium": "orta",
+    "low": "düşük",
+    "info": "bilgi",
+    "Open ports": "Açık portlar",
+    "RFB services": "RFB servisleri",
+    "TLS services": "TLS servisleri",
+    "Self-signed certs": "Kendinden imzalı sertifikalar",
+    "Passwordless": "Parolasız",
+    "passwordless": "parolasız",
+    "Weak creds": "Zayıf kimlik",
+    "weak": "zayıf",
+    "Screenshots": "Ekran görüntüleri",
+    "Errors": "Hatalar",
+    "errors": "hata",
+    "probes": "deneme",
+    "elapsed": "geçen",
+    "probes/s": "deneme/sn",
+    "password candidates": "parola adayı",
+    "Baseline": "Temel",
+    "new": "yeni",
+    "resolved": "giderilen",
+    "changed": "değişen",
+    "Removed": "Kaldırıldı",
+    "old run": "eski tarama",
+    "old runs": "eski tarama",
+    "HTML report": "HTML raporu",
+    "PDF report": "PDF raporu",
+    "JSON data": "JSON verisi",
+    "Reports appear here when the scan finishes.": "Raporlar tarama bitince burada görünür.",
+    "Earlier runs, the trend of notable findings, and report files for the selected scan.": "Seçilen taramanın önceki çalışmaları, dikkat çeken bulgu eğilimi ve rapor dosyaları.",
+    "Run trend": "Tarama eğilimi",
+    "passwordless + weak credentials per run · click a column to open it": "tarama başına parolasız ve zayıf kimlik · sütuna tıklayınca açılır",
+    "No run history yet.": "Henüz tarama geçmişi yok.",
+    "written into the timestamped run folder": "zaman damgalı tarama klasörüne yazılır",
+    "Baseline comparison": "Temel karşılaştırma",
+    "Previous runs": "Önceki taramalar",
+    "open ports, RFB services and passwordless hosts": "açık portlar, RFB servisleri ve parolasız hostlar",
+    "No findings yet.": "Henüz bulgu yok.",
+    "No findings in this view.": "Bu görünümde bulgu yok.",
+    "Address": "Adres",
+    "State": "Durum",
+    "Transport": "Taşıma",
+    "Server": "Sunucu",
+    "Screen": "Ekran",
+    "Shot": "Görüntü",
+    "Latency": "Gecikme",
+    "Note": "Not",
+    "no auth": "kimlik yok",
+    "locked out": "kilitli",
+    "open": "açık",
+    "rfb": "rfb",
+    "Severity from the selected scan": "Seçilen taramanın önem düzeyleri",
+    "Report location, retention and delivery. These stay in place until you change them and apply to every scan you start.": "Rapor konumu, saklama ve iletim. Siz değiştirene kadar durur ve başlattığınız her taramaya uygulanır.",
+    "Appearance": "Görünüm",
+    "Language": "Dil",
+    "Density": "Yoğunluk",
+    "Comfortable": "Rahat",
+    "Compact": "Sıkı",
+    "Reduce motion": "Hareketi azalt",
+    "Theme is the Light / Dark / System control at the bottom of the rail. With no saved choice the bench stays light.": "Tema, menünün altındaki Açık / Koyu / Sistem denetimidir. Kayıtlı seçim yoksa arayüz açık kalır.",
+    "Report root": "Rapor kökü",
+    "Keep runs": "Saklanan taramalar",
+    "0 = keep all": "0 = tümünü sakla",
+    "Report expired runs without deleting them": "Süresi dolan taramaları silmeden raporla",
+    "Delivery": "İletim",
+    "Webhook URL": "Webhook adresi",
+    "Password redaction is fixed when the GUI starts. Use vncshot -gui -redact.": "Parola gizleme, arayüz açılırken sabittir. Bunun için vncshot -gui -redact kullanın.",
+    "Events from the selected scan. Pause holds the list; new events stay buffered.": "Seçilen taramadaki olaylar. Duraklat listeyi tutar; yeni olaylar birikir.",
+    "Filter events": "Olayları süz",
+    "Pause": "Duraklat",
+    "Resume": "Sürdür",
+    "Live log paused": "Canlı kayıt duraklatıldı",
+    "Endpoints in the selected scan. Choosing one opens its detail.": "Seçilen taramadaki uç noktalar. Birini seçince ayrıntısı açılır.",
+    "No hosts yet.": "Henüz host yok.",
+    "is a local RFB survey bench. It listens on loopback and does not require root.": "yerel bir RFB inceleme aracıdır. Yalnızca bu makinede dinler ve root gerekmez.",
+    "Keyboard: Ctrl+K or Cmd+K opens search. ? lists shortcuts. G then D, F, H, S or N jumps.": "Klavye: Ctrl+K veya Cmd+K aramayı açar. ? kısayolları listeler. G ardından D, F, H, S veya N geçiş yapar.",
+    "open full size": "tam boyutta aç",
+    "Captured framebuffer": "Yakalanan ekran",
+    "Authorized use only. Scan only networks you own or have explicit written permission to test. Captured desktops are sensitive evidence; report findings only to the network owner. The developer accepts no liability for use or misuse of this tool. See LICENSE for the full terms.": "Yalnızca yetkili kullanım. Yalnızca size ait veya test etmek için açık yazılı izniniz olan ağları tarayın. Yakalanan masaüstleri hassas kanıttır; bulguları yalnızca ağ sahibine bildirin. Geliştirici, bu aracın kullanımından veya kötüye kullanımından sorumlu değildir. Tam metin LICENSE dosyasındadır.",
+    "Developer": "Geliştirici",
+    "Command palette": "Komut paleti",
+    "Jump or run a command": "Atla veya komut çalıştır",
+    "Type to search": "Aramak için yazın",
+    "No matches": "Sonuç yok",
+    "Command": "Komut",
+    "Host detail": "Host ayrıntısı",
+    "Shortcuts": "Kısayollar",
+    "Keyboard shortcuts": "Klavye kısayolları",
+    "Ctrl/Cmd+K search · ? this list · Esc close": "Ctrl/Cmd+K ara · ? bu liste · Esc kapat",
+    "G then D dashboard · F findings · H history · S settings · N new scan": "G ardından D pano · F bulgular · H geçmiş · S ayarlar · N yeni tarama",
+    "Theme light": "Tema açık",
+    "Theme dark": "Tema koyu",
+    "Theme system": "Tema sistem",
+    "Scope, pace, comparison and credentials for this scan. A running scan keeps the options it started with.": "Bu taramanın kapsamı, hızı, karşılaştırması ve kimlik bilgileri. Çalışan tarama başladığı ayarlarla sürer.",
+    "1 Target": "1 Hedef",
+    "2 Profile": "2 Profil",
+    "3 Credentials": "3 Kimlik bilgileri",
+    "4 Review": "4 Özet",
+    "5 Authorize": "5 Yetki",
+    "Target": "Hedef",
+    "Target file": "Hedef dosyası",
+    "Browse": "Gözat",
+    "Target file ready": "Hedef dosyası hazır",
+    "target file was not stored": "Hedef dosyası kaydedilemedi",
+    "Ports": "Portlar",
+    "Workers": "İşçi",
+    "Rate / s": "Hız / sn",
+    "Connect ms": "Bağlantı ms",
+    "RFB ms": "RFB ms",
+    "Comparison": "Karşılaştırma",
+    "Previous run": "Önceki tarama",
+    "No comparison": "Karşılaştırma yok",
+    "Output": "Çıktı",
+    "JSON override": "JSON yolu",
+    "HTML override": "HTML yolu",
+    "PDF override": "PDF yolu",
+    "CSV override": "CSV yolu",
+    "Screenshot dir": "Ekran görüntüsü klasörü",
+    "Skip the PDF report (faster on very large scans)": "PDF raporunu atla (çok büyük taramalarda daha hızlı)",
+    "Write a SHA-256 checksum manifest for the run artifacts": "Tarama dosyaları için SHA-256 sağlama özeti yaz",
+    "Request a shared RFB session (do not kick active viewers)": "Paylaşılan RFB oturumu iste (açık izleyicileri düşürme)",
+    "Passwords": "Parolalar",
+    "Word list": "Sözcük listesi",
+    "Skip the built-in weak-password list": "Yerleşik zayıf parola listesini atla",
+    "Skip password testing entirely (passwordless check only)": "Parola denemesini tamamen atla (yalnızca parolasız kontrol)",
+    "Detect passwordless hosts and capture a screenshot": "Parolasız hedefleri tespit et ve ekran görüntüsü al",
+    "This check always runs and cannot be turned off.": "Bu kontrol her taramada çalışır ve kapatılamaz.",
+    "always on": "her zaman açık",
+    "The scanner only reads one frame and disconnects. No input or clipboard is ever sent.": "Tarayıcı tek kare okur ve bağlantıyı keser. Girdi veya pano hiç gönderilmez.",
+    "Authorization": "Yetkilendirme",
+    "I confirm I own, or hold explicit written permission to test, every target in scope.": "Kapsamdaki her hedefe sahip olduğumu veya test için açık yazılı iznim olduğunu onaylıyorum.",
+    "Start scan": "Taramayı başlat",
+    "File": "Dosya",
+    "built-in list": "yerleşik liste",
+    "Next step asks you to confirm this scope is authorized.": "Sonraki adım bu kapsamın yetkili olduğunu onaylamanızı ister.",
+    "Confirm your authorization before starting a scan.": "Taramayı başlatmadan önce yetkinizi onaylayın.",
+    "default JSON path": "öntanımlı: <run-dir>/vncshot_report.json",
+    "default HTML path": "öntanımlı: <run-dir>/vncshot_report.html",
+    "default PDF path": "öntanımlı: <run-dir>/vncshot_report.pdf",
+    "default CSV path": "öntanımlı: <run-dir>/vncshot_report.csv",
+    "default screenshot path": "öntanımlı: <run-dir>/screenshots (tarama klasörünün içinde kalmalı)",
+    "word list path": "/home/operator/wordlist.txt (satır başına bir tane)",
+    "current run": "geçerli tarama",
+    "open this run": "bu taramayı aç",
+    "compare with": "karşılaştır",
+    "delete this run and its report files": "bu taramayı ve rapor dosyalarını sil",
+    "History unavailable.": "Geçmiş alınamadı.",
+    "insecure": "güvensiz",
+    "targets": "hedef",
+    "Open or finish a run before comparing.": "Karşılaştırmadan önce bir taramayı açın veya bitirin.",
+    "New": "Yeni",
+    "Resolved": "Giderilen",
+    "Changed": "Değişen",
+    "no entries": "kayıt yok",
+    "yes": "evet",
+    "no": "hayır",
+    "Security": "Güvenlik",
+    "Desktop": "Masaüstü",
+    "Severity": "Önem",
+    "TLS": "TLS",
+    "RFB": "RFB",
+    "Enlarge": "Büyüt"
   };
 
   function t(en) {
@@ -1544,7 +1763,7 @@
       rows.push({
         when: job.started || snap.started || "",
         title: job.name || job.id,
-        detail: (job.status || "idle") + (folder ? " · " + folder : ""),
+        detail: t(job.status || "idle") + (folder ? " · " + folder : ""),
         active: job.id === activeID && !viewingHistory,
         open: function () { selectScan(job.id); showView("scans"); }
       });
@@ -1552,7 +1771,7 @@
     (historyRuns || []).forEach(function (run) {
       if (seen[run.name]) return;
       var detail = run.summary
-        ? (run.summary.passwordless || 0) + " pwless · " + (run.summary.weak_credentials || 0) + " weak"
+        ? (run.summary.passwordless || 0) + " " + t("passwordless") + " · " + (run.summary.weak_credentials || 0) + " " + t("weak")
         : t("no report data");
       rows.push({
         when: run.started || "",
@@ -1622,7 +1841,7 @@
       name.type = "button";
       name.className = "run-name" + (isCurrent ? " current" : "");
       name.textContent = run.name;
-      name.title = isCurrent ? "current run" : "open this run";
+      name.title = isCurrent ? t("current run") : t("open this run");
       if (isCurrent) {
         name.disabled = true;
       } else {
@@ -1633,8 +1852,8 @@
       var meta = document.createElement("div");
       meta.className = "run-meta";
       if (run.summary) {
-        meta.textContent = run.summary.passwordless + " pwless · " +
-          run.summary.weak_credentials + " weak";
+        meta.textContent = run.summary.passwordless + " " + t("passwordless") + " · " +
+          run.summary.weak_credentials + " " + t("weak");
       } else {
         meta.textContent = t("no report data");
       }
@@ -1650,7 +1869,7 @@
         compare.type = "button";
         compare.className = "btn-mini";
         compare.textContent = t("compare");
-        compare.title = "compare with " + current;
+        compare.title = t("compare with") + " " + current;
         compare.addEventListener("click", function () { compareWithCurrent(run.name); });
         meta.appendChild(compare);
       }
@@ -1695,7 +1914,7 @@
         remove.className = "btn-mini";
         remove.textContent = t("delete");
         remove.setAttribute("aria-label", "Delete run " + run.name);
-        remove.title = "delete this run and its report files";
+        remove.title = t("delete this run and its report files");
         remove.addEventListener("click", function () { deleteRun(run.name); });
         meta.appendChild(remove);
       }
@@ -1726,11 +1945,15 @@
   function fillBaselineOptions(runs) {
     var select = $("baseline");
     var wanted = select.value || savedBaseline();
-    select.innerHTML = '<option value="">No comparison</option>';
+    select.textContent = "";
+    var none = document.createElement("option");
+    none.value = "";
+    none.textContent = t("No comparison");
+    select.appendChild(none);
     (runs || []).forEach(function (run) {
       var option = document.createElement("option");
       option.value = run.name;
-      option.textContent = run.name + (run.summary ? " · " + run.summary.passwordless + " pwless" : "");
+      option.textContent = run.name + (run.summary ? " · " + run.summary.passwordless + " " + t("passwordless") : "");
       select.appendChild(option);
     });
     select.value = "";
@@ -1748,7 +1971,7 @@
     historyLoading = true;
     api("/api/runs")
       .then(function (res) {
-        if (!res.ok) throw new Error("history unavailable");
+        if (!res.ok) throw new Error(t("History unavailable."));
         return res.json();
       })
       .then(function (runs) {
@@ -1758,7 +1981,11 @@
         renderScanBoard();
       })
       .catch(function () {
-        $("historyList").innerHTML = '<div class="empty">History unavailable.</div>';
+        $("historyList").textContent = "";
+        var missing = document.createElement("div");
+        missing.className = "empty";
+        missing.textContent = t("History unavailable.");
+        $("historyList").appendChild(missing);
       })
       .then(function () { historyLoading = false; });
   }
@@ -1799,7 +2026,7 @@
         }
         loadHistory();
         loadTrends();
-        toast("Deleted " + name);
+        toast(t("Deleted") + " " + name);
       })
       .catch(function (err) {
         $("errorBox").classList.remove("hidden");
@@ -1808,6 +2035,7 @@
   }
 
   var trendRuns = null;
+  var lastCompare = null;
 
   // loadTrends fetches the per-run counters for the trend strip. The strip
   // is a convenience view, so a failed request keeps the last render and
@@ -1838,7 +2066,11 @@
   function renderTrends() {
     var strip = $("trendStrip");
     if (!trendRuns || !trendRuns.length) {
-      strip.innerHTML = '<div class="empty">No run history yet.</div>';
+      strip.textContent = "";
+      var emptyTrend = document.createElement("div");
+      emptyTrend.className = "empty";
+      emptyTrend.textContent = t("No run history yet.");
+      strip.appendChild(emptyTrend);
       return;
     }
     strip.innerHTML = "";
@@ -1856,9 +2088,9 @@
       col.type = "button";
       col.className = "trend-col";
       col.setAttribute("role", "listitem");
-      col.title = run.name + ": " + total + " insecure (" + pwless +
-        " passwordless, " + weak + " weak), " + (run.targets || 0) +
-        " targets, " + (run.errors || 0) + " errors";
+      col.title = run.name + ": " + total + " " + t("insecure") + " (" + pwless +
+        " " + t("passwordless") + ", " + weak + " " + t("weak") + "), " + (run.targets || 0) +
+        " " + t("targets") + ", " + (run.errors || 0) + " " + t("errors");
 
       var count = document.createElement("span");
       count.className = "trend-count" + (total ? " hot" : "");
@@ -1898,7 +2130,7 @@
     var target = runNameFromPath(state && state.run_dir);
     if (!target) {
       $("errorBox").classList.remove("hidden");
-      $("errorBox").textContent = "Open or finish a run before comparing.";
+      $("errorBox").textContent = t("Open or finish a run before comparing.");
       return;
     }
     api("/api/diff", { method: "POST", body: JSON.stringify({ base: base, target: target }) })
@@ -1925,7 +2157,7 @@
     if (!entries.length) {
       var none = document.createElement("div");
       none.className = "none";
-      none.textContent = "no entries";
+      none.textContent = t("no entries");
       group.appendChild(none);
       return group;
     }
@@ -1953,18 +2185,20 @@
   }
 
   function renderCompare(base, target, diff) {
-    $("compareTitle").textContent = "Baseline " + base + " → " + target;
+    lastCompare = { base: base, target: target, diff: diff };
+    $("compareTitle").textContent = t("Baseline") + " " + base + " → " + target;
     var body = $("compareBody");
     body.innerHTML = "";
-    body.appendChild(compareGroup("New", diff.new || []));
-    body.appendChild(compareGroup("Resolved", diff.resolved || []));
-    body.appendChild(compareGroup("Changed", diff.changed || [], true));
+    body.appendChild(compareGroup(t("New"), diff.new || []));
+    body.appendChild(compareGroup(t("Resolved"), diff.resolved || []));
+    body.appendChild(compareGroup(t("Changed"), diff.changed || [], true));
     var block = $("compareBlock");
     block.classList.remove("hidden");
     block.scrollIntoView({ block: "nearest" });
   }
 
   function hideCompare() {
+    lastCompare = null;
     $("compareBlock").classList.add("hidden");
     $("compareBody").innerHTML = "";
   }
@@ -2010,6 +2244,44 @@
     } catch (e) { /* storage unavailable or malformed payload */ }
     var authorized = $("authorized");
     if (authorized) authorized.checked = false;
+    lockPasswordlessCapture();
+    profileKeys.forEach(function (id) {
+      var el = $(id);
+      if (el && String(el.value).trim() === "") el.value = profileDefaults[id];
+    });
+  }
+
+  // Profile fields start from the CLI defaults and stay editable. A new scan
+  // puts those defaults back; a launch flag such as -workers replaces them
+  // when the feed arrives.
+  var profileKeys = ["workers", "rate", "timeout_ms", "vnc_timeout_ms"];
+  var profileDefaults = { workers: "150", rate: "200", timeout_ms: "1000", vnc_timeout_ms: "15000" };
+
+  function applyProfileDefaults() {
+    profileKeys.forEach(function (id) {
+      var el = $(id);
+      if (el) el.value = profileDefaults[id];
+    });
+  }
+
+  function rememberProfile(profile) {
+    if (!profile) return;
+    var previous = {
+      workers: profileDefaults.workers,
+      rate: profileDefaults.rate,
+      timeout_ms: profileDefaults.timeout_ms,
+      vnc_timeout_ms: profileDefaults.vnc_timeout_ms
+    };
+    if (profile.workers > 0) profileDefaults.workers = String(profile.workers);
+    if (typeof profile.rate === "number" && profile.rate >= 0) profileDefaults.rate = String(profile.rate);
+    if (profile.timeout_ms > 0) profileDefaults.timeout_ms = String(profile.timeout_ms);
+    if (profile.vnc_timeout_ms > 0) profileDefaults.vnc_timeout_ms = String(profile.vnc_timeout_ms);
+    profileKeys.forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      var current = String(el.value);
+      if (current === "" || current === previous[id]) el.value = profileDefaults[id];
+    });
   }
 
   // certMarker renders the compact certificate line under the transport cell.
@@ -2083,14 +2355,18 @@
     if (key === lastFindingKey) return;
     lastFindingKey = key;
     if (!rows.length) {
-      host.innerHTML = '<div class="empty">No findings yet.</div>';
+      host.textContent = "";
+      var emptyFindings = document.createElement("div");
+      emptyFindings.className = "empty";
+      emptyFindings.textContent = t("No findings yet.");
+      host.appendChild(emptyFindings);
       renderHosts(rows);
       return;
     }
     var table = document.createElement("table");
     table.innerHTML = "<thead><tr>" +
-      "<th>Address</th><th>State</th><th>Transport</th><th>Server</th><th>Screen</th>" +
-      "<th>Shot</th><th>Latency</th><th>Note</th>" +
+      "<th>" + esc(t("Address")) + "</th><th>" + esc(t("State")) + "</th><th>" + esc(t("Transport")) + "</th><th>" + esc(t("Server")) + "</th><th>" + esc(t("Screen")) + "</th>" +
+      "<th>" + esc(t("Shot")) + "</th><th>" + esc(t("Latency")) + "</th><th>" + esc(t("Note")) + "</th>" +
       "</tr></thead>";
     var tbody = document.createElement("tbody");
 
@@ -2099,7 +2375,11 @@
     // than the JSON/HTML/PDF of the same run.
     var shown = rows.filter(passesFilter);
     if (!shown.length) {
-      host.innerHTML = '<div class="empty">No findings in this view.</div>';
+      host.textContent = "";
+      var noneShown = document.createElement("div");
+      noneShown.className = "empty";
+      noneShown.textContent = t("No findings in this view.");
+      host.appendChild(noneShown);
       renderHosts(rows);
       return;
     }
@@ -2109,14 +2389,14 @@
       tr.tabIndex = 0;
       tr.dataset.addr = f.addr || "";
       var sevName = findingSeverity(f);
-      var stateCell = '<span class="sev sev-' + sevName + '"><i></i>' + sevName + '</span> ' +
+      var stateCell = '<span class="sev sev-' + sevName + '"><i></i>' + esc(t(sevName)) + '</span> ' +
         (f.passwordless
-        ? '<span class="tag hot">no auth</span>'
+        ? '<span class="tag hot">' + esc(t("no auth")) + '</span>'
         : (f.password
-            ? '<span class="tag hot">weak: ' + esc(f.password) + '</span>'
+            ? '<span class="tag hot">' + esc(t("weak")) + ": " + esc(f.password) + '</span>'
             : (f.auth_locked
-                ? '<span class="tag">locked out</span>'
-                : (f.rfb ? '<span class="tag ok">rfb</span>' : '<span class="tag">open</span>'))));
+                ? '<span class="tag">' + esc(t("locked out")) + '</span>'
+                : (f.rfb ? '<span class="tag ok">' + esc(t("rfb")) + '</span>' : '<span class="tag">' + esc(t("open")) + '</span>'))));
       var transport = (f.security_types || []).join(" · ");
       var transportCell = transport ? esc(transport) : '<span class="mono">—</span>';
       if (f.tls) {
@@ -2134,7 +2414,7 @@
       var shot = f.screenshot
         ? '<button type="button" class="shot-link" data-shot="' + esc(f.screenshot) +
           '" data-caption="' + esc(shotCaption(f)) +
-          '" aria-label="Enlarge ' + esc(shotCaption(f)) + '">' +
+          '" aria-label="' + esc(t("Enlarge") + " " + shotCaption(f)) + '">' +
           '<img src="' + esc(f.screenshot) + '" alt="' + esc(shotCaption(f)) + '"></button>'
         : '<span class="mono">—</span>';
       tr.innerHTML = "<td class=\"mono\">" + esc(f.addr) + "</td>" +
@@ -2173,7 +2453,11 @@
     if (!host) return;
     latestFindings = rows || [];
     if (!latestFindings.length) {
-      host.innerHTML = '<div class="empty">No hosts yet.</div>';
+      host.textContent = "";
+      var emptyHosts = document.createElement("div");
+      emptyHosts.className = "empty";
+      emptyHosts.textContent = t("No hosts yet.");
+      host.appendChild(emptyHosts);
       return;
     }
     host.innerHTML = "";
@@ -2184,24 +2468,27 @@
       var btn = document.createElement("button");
       btn.type = "button";
       btn.className = "scan-item";
-      btn.textContent = f.addr + " · " + findingSeverity(f);
+      btn.textContent = f.addr + " · " + t(findingSeverity(f));
       btn.addEventListener("click", function () { openHost(f); });
       host.appendChild(btn);
     });
   }
 
+  var openHostFinding = null;
+
   function openHost(f) {
-    $("hostDrawerTitle").textContent = f.addr || "Host";
+    openHostFinding = f || null;
+    $("hostDrawerTitle").textContent = f.addr || t("Host");
     var body = $("hostDrawerBody");
     body.innerHTML = "";
     var lines = [
-      ["Server", f.server_name || "—"],
-      ["RFB", f.rfb ? "yes" : "no"],
-      ["Security", (f.security_types || []).join(", ") || "—"],
-      ["TLS", f.tls ? "yes" : "no"],
-      ["Desktop", f.dimensions || "—"],
-      ["Severity", findingSeverity(f)],
-      ["Note", f.error || ""]
+      [t("Server"), f.server_name || "—"],
+      [t("RFB"), f.rfb ? t("yes") : t("no")],
+      [t("Security"), (f.security_types || []).join(", ") || "—"],
+      [t("TLS"), f.tls ? t("yes") : t("no")],
+      [t("Desktop"), f.dimensions || "—"],
+      [t("Severity"), t(findingSeverity(f))],
+      [t("Note"), f.error || ""]
     ];
     lines.forEach(function (pair) {
       var p = document.createElement("p");
@@ -2220,7 +2507,15 @@
     if (key === lastLogKey) return;
     lastLogKey = key;
     if (!events.length) {
-      list.innerHTML = '<li><time>—</time><span>waiting for a scan</span></li>';
+      list.textContent = "";
+      var waiting = document.createElement("li");
+      var waitingTime = document.createElement("time");
+      waitingTime.textContent = "—";
+      var waitingText = document.createElement("span");
+      waitingText.textContent = t("waiting for a scan");
+      waiting.appendChild(waitingTime);
+      waiting.appendChild(waitingText);
+      list.appendChild(waiting);
       return;
     }
     list.innerHTML = "";
@@ -2230,15 +2525,15 @@
       var text = "[" + e.kind + "] " + e.message;
       if (query && text.toLowerCase().indexOf(query) < 0) return;
       var li = document.createElement("li");
-      var t = document.createElement("time");
-      t.textContent = new Date(e.at).toLocaleTimeString();
+      var stamp = document.createElement("time");
+      stamp.textContent = new Date(e.at).toLocaleTimeString();
       var span = document.createElement("span");
       span.textContent = "[" + e.kind + "] " + e.message;
       // Severity is derived from the event kind the server already sends:
       // warnings and failures are the only kinds a reader must not miss.
       var level = eventLevel(e.kind);
       if (level) li.className = "lvl-" + level;
-      li.appendChild(t);
+      li.appendChild(stamp);
       li.appendChild(span);
       if (!logPaused) list.appendChild(li);
       if (full && !logPaused) full.appendChild(li.cloneNode(true));
@@ -2264,9 +2559,9 @@
     setStatus(s.status);
     $("version").textContent = s.version || "dev";
     if ($("aboutVersion")) $("aboutVersion").textContent = s.version || "dev";
-    $("scanName").textContent = s.name || (s.id ? s.id : "Scan control");
-    $("findingHint").textContent = (s.name ? s.name + " · " : "") + "open ports, RFB services and passwordless hosts";
-    $("startedAt").textContent = s.started ? "started " + s.started : "no scan started";
+    $("scanName").textContent = s.name || (s.id ? s.id : t("Scan control"));
+    $("findingHint").textContent = (s.name ? s.name + " · " : "") + t("open ports, RFB services and passwordless hosts");
+    $("startedAt").textContent = s.started ? t("started") + " " + s.started : t("no scan started");
     $("runDir").textContent = s.run_dir || "";
 
     if (s.warning) {
@@ -2401,8 +2696,17 @@
     if (snap.id === activeID) render(snap);
   }
 
+  function lockPasswordlessCapture() {
+    var el = $("passwordlessCapture");
+    if (!el) return;
+    el.checked = true;
+    el.disabled = true;
+  }
+
   function openScanSetup() {
     showView("scans", "wizard");
+    applyProfileDefaults();
+    lockPasswordlessCapture();
     setWizardStep(1);
     $("form").classList.remove("hidden");
     $("target").focus();
@@ -2415,18 +2719,19 @@
       if (on) btn.setAttribute("aria-current", "step");
       else btn.removeAttribute("aria-current");
     });
-    if (step === 4) fillReview();
+    if (Number(step) === 4) fillReview();
   }
 
   function fillReview() {
     var box = $("wizardReview");
     box.innerHTML = "";
     var lines = [
-      "Target: " + ($("target").value || "—"),
-      "File: " + ($("file").value || "—"),
-      "Ports: " + ($("ports").value || "—"),
-      "Workers: " + ($("workers").value || "—"),
-      "Word list: " + ($("word_list").value || "built-in list")
+      t("Target") + ": " + ($("target").value || "—"),
+      t("File") + ": " + ($("file").value || "—"),
+      t("Ports") + ": " + ($("ports").value || "—"),
+      t("Workers") + ": " + ($("workers").value || "—"),
+      t("Word list") + ": " + ($("word_list").value || t("built-in list")),
+      t("Detect passwordless hosts and capture a screenshot") + ": " + t("always on")
     ];
     lines.forEach(function (line) {
       var p = document.createElement("p");
@@ -2434,7 +2739,7 @@
       box.appendChild(p);
     });
     var p = document.createElement("p");
-    p.textContent = "Next step asks you to confirm this scope is authorized.";
+    p.textContent = t("Next step asks you to confirm this scope is authorized.");
     box.appendChild(p);
   }
 
@@ -2502,9 +2807,9 @@
       var hits = (sum.passwordless || 0) + (sum.weak_credentials || 0);
       var meta = formatWhen(job.started);
       if (meta === "—") meta = "";
-      var rest = (job.status || "idle") + " · " + (job.done || 0) + "/" + (job.total || 0);
+      var rest = t(job.status || "idle") + " · " + (job.done || 0) + "/" + (job.total || 0);
       meta = meta ? meta + " · " + rest : rest;
-      if (hits) meta += " · " + hits + " notable";
+      if (hits) meta += " · " + hits + " " + t("notable");
       btn.querySelector(".scan-name").textContent = job.name || job.id;
       btn.querySelector(".scan-meta").textContent = meta;
     });
@@ -2518,6 +2823,7 @@
         if (snap && snap.id) scans[snap.id] = snap;
       });
     }
+    if (frame.profile) rememberProfile(frame.profile);
     if (frame.version) $("version").textContent = frame.version;
     if (frame.jobs) renderMenu(frame.jobs);
     if (frame.update) rememberScan(frame.update);
@@ -2546,6 +2852,32 @@
   $("newScan").addEventListener("click", openScanSetup);
   $("newScanRail").addEventListener("click", openScanSetup);
   $("scanSetupClose").addEventListener("click", closeScanSetup);
+  $("fileBrowse").addEventListener("click", function () {
+    $("filePicker").click();
+  });
+  $("filePicker").addEventListener("change", function () {
+    var picked = $("filePicker").files && $("filePicker").files[0];
+    $("filePicker").value = "";
+    if (!picked) return;
+    var body = new FormData();
+    body.append("file", picked, picked.name || "targets.txt");
+    fetch("/api/target-file", {
+      method: "POST",
+      headers: { "X-Vncshot-Token": token },
+      body: body
+    }).then(function (res) {
+      if (!res.ok) return res.text().then(function (msg) { throw new Error(msg.trim() || res.statusText); });
+      return res.json();
+    }).then(function (doc) {
+      if (!doc || !doc.path) throw new Error(t("target file was not stored"));
+      $("file").value = doc.path;
+      saveForm();
+      toast(t("Target file ready"));
+    }).catch(function (err) {
+      $("errorBox").classList.remove("hidden");
+      $("errorBox").textContent = err.message;
+    });
+  });
 
   $("form").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -2578,7 +2910,7 @@
     };
     if (!body.authorized) {
       $("errorBox").classList.remove("hidden");
-      $("errorBox").textContent = "Confirm your authorization before starting a scan.";
+      $("errorBox").textContent = t("Confirm your authorization before starting a scan.");
       return;
     }
     api("/api/scans", { method: "POST", body: JSON.stringify(body) })
@@ -2730,7 +3062,7 @@
       return;
     }
     if (ev.key !== "Escape") return;
-    if (!$("palette").classList.contains("hidden")) $("palette").classList.add("hidden");
+    if (!$("palette").classList.contains("hidden")) closePalette();
     else if (!$("shortcutHelp").classList.contains("hidden")) $("shortcutHelp").classList.add("hidden");
     else if (!$("hostDrawer").classList.contains("hidden")) $("hostDrawer").classList.add("hidden");
     else if (!$("lightbox").classList.contains("hidden")) closeLightbox();
@@ -2750,16 +3082,25 @@
     document.querySelectorAll(".nav button[id^='nav-']").forEach(function (btn) {
       cmds.push({ label: btn.textContent.replace(/\s+/g, " ").trim(), run: function () { btn.click(); } });
     });
-    cmds.push({ label: "Theme light", run: function () { applyTheme("light"); } });
-    cmds.push({ label: "Theme dark", run: function () { applyTheme("dark"); } });
-    cmds.push({ label: "Theme system", run: function () { applyTheme("system"); } });
-    cmds.push({ label: "New scan", run: openScanSetup });
+    cmds.push({ label: t("Theme light"), run: function () { applyTheme("light"); } });
+    cmds.push({ label: t("Theme dark"), run: function () { applyTheme("dark"); } });
+    cmds.push({ label: t("Theme system"), run: function () { applyTheme("system"); } });
+    cmds.push({ label: t("New scan"), run: openScanSetup });
     return cmds;
   }
 
+  function closePalette() {
+    $("palette").classList.add("hidden");
+    $("paletteBackdrop").classList.add("hidden");
+  }
+
   function openPalette() {
-    var box = $("palette");
-    box.classList.remove("hidden");
+    if (!$("palette").classList.contains("hidden")) {
+      closePalette();
+      return;
+    }
+    $("palette").classList.remove("hidden");
+    $("paletteBackdrop").classList.remove("hidden");
     $("paletteInput").value = "";
     paintPalette("");
     $("paletteInput").focus();
@@ -2767,18 +3108,35 @@
 
   function paintPalette(q) {
     var list = $("paletteList");
-    list.innerHTML = "";
-    var query = (q || "").toLowerCase();
-    paletteCommands().filter(function (cmd) {
-      return !query || cmd.label.toLowerCase().indexOf(query) >= 0;
-    }).forEach(function (cmd, i) {
+    list.textContent = "";
+    var query = (q || "").trim().toLowerCase();
+    // An empty search is only the field. Listing every page here leaves a
+    // second menu parked in the middle of the screen.
+    if (!query) {
+      var hint = document.createElement("li");
+      hint.className = "palette-hint";
+      hint.textContent = t("Type to search");
+      list.appendChild(hint);
+      return;
+    }
+    var matches = paletteCommands().filter(function (cmd) {
+      return cmd.label.toLowerCase().indexOf(query) >= 0;
+    });
+    if (!matches.length) {
+      var none = document.createElement("li");
+      none.className = "palette-hint";
+      none.textContent = t("No matches");
+      list.appendChild(none);
+      return;
+    }
+    matches.forEach(function (cmd, i) {
       var li = document.createElement("li");
       var btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = cmd.label;
       if (i === 0) btn.className = "active";
       btn.addEventListener("click", function () {
-        $("palette").classList.add("hidden");
+        closePalette();
         cmd.run();
       });
       li.appendChild(btn);
@@ -2788,8 +3146,11 @@
 
   $("openPalette").addEventListener("click", openPalette);
   $("paletteInput").addEventListener("input", function () { paintPalette($("paletteInput").value); });
-  $("palette").addEventListener("click", function (ev) { if (ev.target === $("palette")) $("palette").classList.add("hidden"); });
-  $("hostDrawerClose").addEventListener("click", function () { $("hostDrawer").classList.add("hidden"); });
+  $("paletteBackdrop").addEventListener("click", closePalette);
+  $("hostDrawerClose").addEventListener("click", function () {
+    openHostFinding = null;
+    $("hostDrawer").classList.add("hidden");
+  });
   $("shortcutClose").addEventListener("click", function () { $("shortcutHelp").classList.add("hidden"); });
   $("wizardSteps").addEventListener("click", function (ev) {
     var step = ev.target.getAttribute && ev.target.getAttribute("data-step");
@@ -2797,9 +3158,9 @@
   });
   $("logPause").addEventListener("click", function () {
     logPaused = !logPaused;
-    $("logPause").textContent = logPaused ? "Resume" : "Pause";
+    $("logPause").textContent = t(logPaused ? "Resume" : "Pause");
     if (!logPaused) { lastLogKey = ""; if (state) renderLog(state); }
-    else toast("Live log paused");
+    else toast(t("Live log paused"));
   });
   $("logSearch").addEventListener("input", function () {
     lastLogKey = "";
@@ -2836,16 +3197,47 @@
 
   function applyLang(lang) {
     currentLang = lang === "tr" ? "tr" : "en";
+    document.documentElement.lang = currentLang;
     document.querySelectorAll("[data-i18n]").forEach(function (el) {
       el.textContent = t(el.getAttribute("data-i18n"));
+    });
+    document.querySelectorAll("[data-i18n-placeholder]").forEach(function (el) {
+      el.placeholder = t(el.getAttribute("data-i18n-placeholder"));
+    });
+    document.querySelectorAll("[data-i18n-aria]").forEach(function (el) {
+      el.setAttribute("aria-label", t(el.getAttribute("data-i18n-aria")));
     });
     document.querySelectorAll(".nav-label").forEach(function (el) {
       var en = el.getAttribute("data-en") || el.textContent;
       el.setAttribute("data-en", en);
       el.textContent = t(en);
+      var btn = el.closest("button");
+      if (btn) btn.title = el.textContent;
     });
+    if ($("logPause")) $("logPause").textContent = t(logPaused ? "Resume" : "Pause");
+    if ($("hostDrawer") && $("hostDrawer").classList.contains("hidden")) {
+      $("hostDrawerTitle").textContent = t("Host");
+    } else if (openHostFinding) {
+      openHost(openHostFinding);
+    }
+    if (!state) {
+      $("scanName").textContent = t("Scan control");
+      $("progressText").textContent = "0 / 0 " + t("probes");
+    }
     showView(currentView || "scans");
-    if (historyRuns) renderHistory(historyRuns);
+    if (state) {
+      lastFindingKey = "";
+      lastLogKey = "";
+      render(state);
+    }
+    if (historyRuns) {
+      renderHistory(historyRuns);
+      fillBaselineOptions(historyRuns);
+    }
+    if (trendRuns) renderTrends();
+    if (lastCompare) renderCompare(lastCompare.base, lastCompare.target, lastCompare.diff);
+    if ($("form") && !$("form").classList.contains("hidden") && $("form").getAttribute("data-step") === "4") fillReview();
+    if ($("palette") && !$("palette").classList.contains("hidden")) paintPalette($("paletteInput").value);
     var menu = $("scanMenu");
     if (menu) delete menu.dataset.ids;
     renderMenu(menuJobs);

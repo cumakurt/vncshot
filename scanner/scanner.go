@@ -471,9 +471,9 @@ func probeWith(ctx context.Context, t Target, opts Options, doProbe vncProbeFunc
 	res.ScreenWidth = vncRes.Width
 	res.ScreenHeight = vncRes.Height
 
-	// Capture whenever the session is established, whether it was open or
-	// reached with a weak password. The client closes the session right
-	// after reading this single frame.
+	// A passwordless session always keeps this one frame. The same capture
+	// runs after a weak password. The client closes the session right after
+	// reading it. There is no option to skip the passwordless screenshot.
 	if (!vncRes.Passwordless && vncRes.Password == "") || vncRes.Frame == nil {
 		return res
 	}
