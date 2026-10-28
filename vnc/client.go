@@ -92,6 +92,13 @@ type Result struct {
 	TLSInfo *TLSInfo
 	// ServerName is the desktop name from ServerInit.
 	ServerName string
+	// RFBVersion is the version the server advertised in its banner, as
+	// "major.minor" (for example "3.8"). This is the raw fingerprint input
+	// before version selection, so a hint can tell a 3.3-era server from a
+	// 3.8-era one even though both negotiate the same session version. It
+	// is set as soon as the banner is parsed, including for probes that
+	// fail later.
+	RFBVersion string
 	Width      int
 	Height     int
 	// AuthRequired is true when the server did not offer the "None"
@@ -413,6 +420,7 @@ func (c *client) handshake() error {
 	major, minor := selectVersion(sMajor, sMinor)
 	c.version = [2]int{major, minor}
 	c.result.SawBanner = true
+	c.result.RFBVersion = fmt.Sprintf("%d.%d", sMajor, sMinor)
 
 	if err := c.write(formatVersion(major, minor)); err != nil {
 		return fmt.Errorf("write protocol version: %w", err)
